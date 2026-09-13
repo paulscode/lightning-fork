@@ -36,6 +36,7 @@ type Chain struct {
 
 	Blake2bActivationHeight uint32 `long:"blake2b-activation-height" description:"Height of the first BLAKE2b block on the connected chain. Required on regtest and simnet, where it must match the node's -testactivationheight=blake2b@N; on testnet4 it overrides what the node reports; it cannot be set on mainnet, where the height is fixed at 961640."`
 	ChainHashOverride       string `long:"chain-hash-override" description:"Hex chain hash to advertise in the Lightning protocol instead of the built-in one. Accepted on regtest only, for interoperability testing against an implementation that identifies the BLAKE2b chain differently."`
+	ChainIdentityFile       string `long:"chain-identity-file" description:"Absolute path of the chain-identity status file (states waiting, confirmed, refused). By default it is chain-identity.json in the network's chain directory, next to channel.backup; point it somewhere else when a wrapper should read the outcome without access to the wallet."`
 }
 
 // Validate performs validation on our chain config.

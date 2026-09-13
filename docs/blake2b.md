@@ -82,7 +82,9 @@ used, so any node on either chain can answer.
 The outcome is written to `chain-identity.json` next to `channel.backup` in
 the network's data directory (for example
 `~/.lnd/data/chain/bitcoin/mainnet/chain-identity.json`), so a wrapper can
-show it before the RPC server is reachable:
+show it before the RPC server is reachable. `--bitcoin.chain-identity-file`
+moves it to any absolute path, for a wrapper that should read the outcome
+without being given the directory that holds the wallet and macaroons:
 
 ```json
 {

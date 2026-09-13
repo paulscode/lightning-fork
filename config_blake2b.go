@@ -2,6 +2,7 @@ package lnd
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -50,6 +51,18 @@ func applyBlake2bChainConfig(cfg *Config) error {
 			"on %s: set it to the height the node activates BLAKE2b "+
 			"at (its -testactivationheight=blake2b@N)",
 			cfg.ActiveNetParams.Name)
+	}
+
+	// The status file is what a wrapper reads to show the outcome of the
+	// chain-identity check, so its location must not depend on the
+	// working directory the daemon happened to start in.
+	if cfg.Bitcoin.ChainIdentityFile != "" {
+		path := CleanAndExpandPath(cfg.Bitcoin.ChainIdentityFile)
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("bitcoin.chain-identity-file must be an "+
+				"absolute path, got %q", cfg.Bitcoin.ChainIdentityFile)
+		}
+		cfg.Bitcoin.ChainIdentityFile = path
 	}
 
 	zpay32.RegisterInvoiceHRP(params.Name, params.InvoiceHRP)

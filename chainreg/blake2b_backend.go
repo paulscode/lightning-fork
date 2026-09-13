@@ -5,6 +5,20 @@ import (
 	"github.com/lightningnetwork/lnd/lncfg"
 )
 
+// chainIdentityStatusPath returns where the chain-identity status file is
+// written: the configured path when there is one, otherwise next to
+// channel.backup in the network's chain directory.
+func chainIdentityStatusPath(cfg *Config) string {
+	if cfg.Bitcoin.ChainIdentityFile != "" {
+		return cfg.Bitcoin.ChainIdentityFile
+	}
+
+	return ChainIdentityStatusPath(
+		cfg.Bitcoin.ChainDir,
+		lncfg.NormalizeNetwork(cfg.ActiveNetParams.Name),
+	)
+}
+
 // verifyBlake2bBackend runs the chain-identity check against the bitcoind
 // backend before it is used, then keeps re-checking in the background until
 // quit is closed. It returns an error when the node is not on the Bitcoin
@@ -13,9 +27,7 @@ func verifyBlake2bBackend(rpc *rpcclient.Client, cfg *Config,
 	quit <-chan struct{}) error {
 
 	params := cfg.ActiveNetParams
-	statusPath := ChainIdentityStatusPath(
-		cfg.Bitcoin.ChainDir, lncfg.NormalizeNetwork(params.Name),
-	)
+	statusPath := chainIdentityStatusPath(cfg)
 
 	// Development builds may follow a SHA256d regtest so that upstream's
 	// integration tests keep running. Say so loudly; a release build

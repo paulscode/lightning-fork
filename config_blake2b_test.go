@@ -1,6 +1,7 @@
 package lnd
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -148,4 +149,44 @@ func TestBackendChoicesRefused(t *testing.T) {
 	if err := validate(t, bitcoindBackendName); err != nil {
 		require.NotContains(t, err.Error(), "not supported")
 	}
+}
+
+// TestBlake2bChainIdentityFileOption: the status-file override is expanded
+// and must be absolute, so a wrapper always finds it where it was told.
+func TestBlake2bChainIdentityFileOption(t *testing.T) {
+	t.Run("absent leaves the default", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams, nil)
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+		require.Empty(t, cfg.Bitcoin.ChainIdentityFile)
+	})
+
+	t.Run("absolute path kept", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams,
+			func(c *Config) {
+				c.Bitcoin.ChainIdentityFile = "/status//chain-identity.json"
+			})
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+		require.Equal(t, "/status/chain-identity.json",
+			cfg.Bitcoin.ChainIdentityFile)
+	})
+
+	t.Run("home expanded", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams,
+			func(c *Config) {
+				c.Bitcoin.ChainIdentityFile = "~/status.json"
+			})
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+		require.True(t, filepath.IsAbs(cfg.Bitcoin.ChainIdentityFile))
+		require.NotContains(t, cfg.Bitcoin.ChainIdentityFile, "~")
+	})
+
+	t.Run("relative path refused", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams,
+			func(c *Config) {
+				c.Bitcoin.ChainIdentityFile = "status/chain-identity.json"
+			})
+		err := applyBlake2bChainConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "absolute")
+	})
 }
