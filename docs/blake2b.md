@@ -86,7 +86,10 @@ the network's data directory (for example
 `~/.lnd/data/chain/bitcoin/mainnet/chain-identity.json`), so a wrapper can
 show it before the RPC server is reachable. `--bitcoin.chain-identity-file`
 moves it to any absolute path, for a wrapper that should read the outcome
-without being given the directory that holds the wallet and macaroons:
+without being given the directory that holds the wallet and macaroons. Once
+confirmed, the file also carries `reduced_data`, the state of the chain's
+temporary block-size reduction as the node reports it (`active`, `height`,
+`expiry_time`), refreshed with every re-check and logged when it changes:
 
 ```json
 {
@@ -156,6 +159,14 @@ until the channel type that requires the opt-in on both sides exists; until
 then, prefer funding channels from coins received after the fork. The
 justice transactions handed to a watchtower are signed the legacy way too,
 because the tower reconstructs their witnesses without a hash type byte.
+
+A channel funded before the fork is the one thing this cannot protect: its
+funding output exists on both chains, and its commitment transactions carry
+the protocol's hash types. The daemon lists every such channel at startup,
+at WARN, with the advice to close it and reopen with coins received after
+block 961640. Restoring a stock LND seed here recovers the on-chain wallet
+only; its pre-fork coins are the same keys on both chains, and spending them
+here with the opt-in leaves their SHA256d twins untouched.
 
 The opt-in is on by default and cannot be turned off on mainnet
 (`--bitcoin.no-unified-sighash` is accepted on regtest, simnet and testnet4
