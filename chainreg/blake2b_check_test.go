@@ -410,3 +410,38 @@ func TestBitcoindChainName(t *testing.T) {
 	require.Equal(t, "regtest", bitcoindChainName(&chaincfg.RegressionNetParams))
 	require.Equal(t, "", bitcoindChainName(&chaincfg.SimNetParams))
 }
+
+// TestChainIdentityReducedData: the reduced_data deployment the node reports
+// rides along in the confirmed status, and its absence is tolerated.
+func TestChainIdentityReducedData(t *testing.T) {
+	dir := t.TempDir()
+	path := ChainIdentityStatusPath(dir, "mainnet")
+	rpc := mainnetRPC(t)
+	rpc.deployment = json.RawMessage(`{"deployments":{"reduced_data":{
+		"type":"buried","active":true,"height":961640,
+		"expiry_time":1819417600}}}`)
+	c := newTestChecker(t, rpc, BitcoinMainNetParams, path)
+
+	_, err := c.run(make(chan struct{}))
+	require.NoError(t, err)
+	st := readStatus(t, path)
+	require.Equal(t, ChainIdentityConfirmed, st.State)
+	require.NotNil(t, st.ReducedData)
+	require.True(t, st.ReducedData.Active)
+	require.Equal(t, int64(961640), st.ReducedData.Height)
+	require.Equal(t, int64(1819417600), st.ReducedData.ExpiryTime)
+
+	// A node that reports no such deployment leaves the field out.
+	rpc.deployment = nil
+	dir2 := t.TempDir()
+	c2 := newTestChecker(t, rpc, BitcoinMainNetParams,
+		ChainIdentityStatusPath(dir2, "mainnet"))
+	_, err = c2.run(make(chan struct{}))
+	require.NoError(t, err)
+	require.Nil(t, readStatus(t,
+		ChainIdentityStatusPath(dir2, "mainnet")).ReducedData)
+
+	// An expiry renders as a date; none as words.
+	require.Equal(t, "2027-08-28T01:46:40Z", formatExpiry(1819417600))
+	require.Equal(t, "no expiry the node reports", formatExpiry(0))
+}

@@ -2254,6 +2254,10 @@ func (s *server) Start(ctx context.Context) error {
 	cleanup := cleaner{}
 
 	s.start.Do(func() {
+		// Say so before anything else runs if a channel predates the
+		// fork; nothing below depends on it.
+		s.warnPreForkChannels()
+
 		// Before starting any subsystems, repair any link nodes that
 		// may have been incorrectly pruned due to the race condition
 		// that was fixed in the link node pruning logic. This must

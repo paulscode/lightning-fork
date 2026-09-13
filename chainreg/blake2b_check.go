@@ -80,7 +80,22 @@ type ChainIdentityStatus struct {
 	ActivationHeight uint32             `json:"activation_height"`
 	ActivationHash   string             `json:"activation_hash,omitempty"`
 	NodeHeaders      int32              `json:"node_headers,omitempty"`
-	UpdatedAt        time.Time          `json:"updated_at"`
+
+	// ReducedData is the state of the chain's temporary block-size
+	// reduction (RDTS), read from the node's getdeploymentinfo once the
+	// chain is confirmed; nil when the node does not report it.
+	ReducedData *ReducedDataStatus `json:"reduced_data,omitempty"`
+
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ReducedDataStatus describes the reduced_data deployment as the node
+// reports it: whether it is active at the tip, and the height and expiry
+// the node gives for it, when it gives them.
+type ReducedDataStatus struct {
+	Active     bool  `json:"active"`
+	Height     int64 `json:"height,omitempty"`
+	ExpiryTime int64 `json:"expiry_time,omitempty"`
 }
 
 // ErrWrongChain is returned when the connected node is not on the Bitcoin
@@ -116,6 +131,10 @@ type chainIdentityChecker struct {
 
 	// now is a field so tests can pin timestamps.
 	now func() time.Time
+
+	// reduced is the reduced_data state last reported, so a change is
+	// logged once.
+	reduced *ReducedDataStatus
 }
 
 func newChainIdentityChecker(rpc blake2bChainRPC, params BitcoinNetParams,
@@ -194,6 +213,67 @@ func (c *chainIdentityChecker) activationHeight() (uint32, error) {
 	}
 
 	return uint32(dep.Height), nil
+}
+
+// reducedData reads the reduced_data deployment from the node. Any failure
+// returns nil: the block-size reduction is a fact about the chain the
+// daemon reports for the operator, never something it refuses over.
+func (c *chainIdentityChecker) reducedData() *ReducedDataStatus {
+	resp, err := c.rpc.RawRequest("getdeploymentinfo", nil)
+	if err != nil {
+		return nil
+	}
+
+	info := struct {
+		Deployments map[string]struct {
+			Active     *bool `json:"active"`
+			Height     int64 `json:"height"`
+			ExpiryTime int64 `json:"expiry_time"`
+		} `json:"deployments"`
+	}{}
+	if err := json.Unmarshal(resp, &info); err != nil {
+		return nil
+	}
+
+	dep, ok := info.Deployments["reduced_data"]
+	if !ok || dep.Active == nil {
+		return nil
+	}
+
+	return &ReducedDataStatus{
+		Active:     *dep.Active,
+		Height:     dep.Height,
+		ExpiryTime: dep.ExpiryTime,
+	}
+}
+
+// logReducedData reports a change in the reduced_data deployment, and its
+// state the first time it is seen.
+func (c *chainIdentityChecker) logReducedData(prev, cur *ReducedDataStatus) {
+	switch {
+	case cur == nil:
+		if prev != nil {
+			c.log.Infof("The node no longer reports the reduced_data " +
+				"deployment")
+		}
+	case prev == nil || prev.Active != cur.Active:
+		if cur.Active {
+			c.log.Infof("Reduced data (RDTS) is active: blocks are "+
+				"limited to 800 kWU until %s; expect slower "+
+				"confirmation under load", formatExpiry(cur.ExpiryTime))
+		} else {
+			c.log.Infof("Reduced data (RDTS) is not active at the tip")
+		}
+	}
+}
+
+// formatExpiry renders a deployment's expiry time, or says there is none.
+func formatExpiry(expiry int64) string {
+	if expiry <= 0 {
+		return "no expiry the node reports"
+	}
+
+	return time.Unix(expiry, 0).UTC().Format(time.RFC3339)
 }
 
 // verifyOnce reads the activation header and decides. It returns the block
@@ -365,15 +445,19 @@ func (c *chainIdentityChecker) run(quit <-chan struct{}) (uint32, error) {
 		return 0, err
 	}
 
+	rd := c.reducedData()
 	c.writeStatus(ChainIdentityStatus{
 		State:            ChainIdentityConfirmed,
 		ActivationHeight: height,
 		ActivationHash:   hash.String(),
+		ReducedData:      rd,
 	})
 	c.log.Infof("Bitcoin BLAKE2b chain confirmed: block %d is %v (%d-byte "+
 		"header v2); Lightning chain_hash %v, invoice prefix ln%s",
 		height, hash, wire.BlockHeaderLenV2, c.params.ChainHash,
 		c.params.InvoiceHRP)
+	c.logReducedData(nil, rd)
+	c.reduced = rd
 
 	return height, nil
 }
@@ -407,11 +491,15 @@ func (c *chainIdentityChecker) watch(height uint32, interval time.Duration,
 			return
 		}
 
+		rd := c.reducedData()
 		c.writeStatus(ChainIdentityStatus{
 			State:            ChainIdentityConfirmed,
 			ActivationHeight: height,
 			ActivationHash:   hash.String(),
+			ReducedData:      rd,
 		})
+		c.logReducedData(c.reduced, rd)
+		c.reduced = rd
 	}
 }
 
