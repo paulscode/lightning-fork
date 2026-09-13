@@ -965,6 +965,10 @@ func testCoopClose(t *testing.T, testCase coopCloseTestCase) {
 // force close generates HTLC resolutions that are capable of sweeping both
 // incoming and outgoing HTLC's.
 func TestForceClose(t *testing.T) {
+	// The sweep assertion below expects the unified opt-in, whatever the
+	// build's default.
+	withUnifiedSigHash(t)
+
 	t.Run("tweakless", func(t *testing.T) {
 		testForceClose(t, &forceCloseTestCase{
 			chanType:             channeldb.SingleFunderTweaklessBit,

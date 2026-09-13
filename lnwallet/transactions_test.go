@@ -202,9 +202,9 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 	// hash type of our own signature on the second-level HTLC
 	// transactions, which the unified opt-in changes; run them as the spec
 	// signs.
+	// Not parallel: the opt-in is process-wide, and a parallel test would
+	// hold it off for every other test running beside it.
 	withoutUnifiedSigHash(t)
-
-	t.Parallel()
 
 	vectorSets := []struct {
 		name     string
@@ -1092,5 +1092,14 @@ func withoutUnifiedSigHash(t *testing.T) {
 	t.Helper()
 	prev := input.UnifiedSigHash()
 	input.SetUnifiedSigHash(false)
+	t.Cleanup(func() { input.SetUnifiedSigHash(prev) })
+}
+
+// withUnifiedSigHash turns the unified signature hash opt-in on for the
+// duration of a test, whatever the build's default.
+func withUnifiedSigHash(t *testing.T) {
+	t.Helper()
+	prev := input.UnifiedSigHash()
+	input.SetUnifiedSigHash(true)
 	t.Cleanup(func() { input.SetUnifiedSigHash(prev) })
 }

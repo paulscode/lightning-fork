@@ -75,6 +75,11 @@ func applyBlake2bChainConfig(cfg *Config) error {
 		return fmt.Errorf("bitcoin.no-unified-sighash cannot be set on " +
 			"mainnet")
 	}
+	if cfg.Bitcoin.MainNet && !input.DefaultUnifiedSigHash() {
+		return fmt.Errorf("this is a development build, which does not " +
+			"opt its signatures into the unified signature hash, and " +
+			"cannot run on mainnet; use a release build")
+	}
 	// A development or integration build never opts in: it runs upstream's
 	// tests against a stock SHA256d regtest.
 	applyUnifiedSigHash(
@@ -98,11 +103,15 @@ func applyUnifiedSigHash(enabled bool) {
 			txscript.SigHashUnified
 		txauthor.TaprootSigHashType = txscript.SigHashAll |
 			txscript.SigHashUnified
-		txauthor.LegacySigHashType = txscript.SigHashAll |
-			txscript.SigHashUnified
-		return
+	} else {
+		txauthor.WitnessSigHashType = txscript.SigHashAll
+		txauthor.TaprootSigHashType = txscript.SigHashDefault
 	}
-	txauthor.WitnessSigHashType = txscript.SigHashAll
-	txauthor.TaprootSigHashType = txscript.SigHashDefault
+
+	// Bare and P2SH inputs keep SIGHASH_ALL either way: the library's
+	// legacy signer hashes the legacy message, and a legacy digest with
+	// the bit appended is what the fork chain rejects. The wallet hands
+	// out no such addresses, so this only concerns coins imported from
+	// elsewhere, which stay spendable, and replayable.
 	txauthor.LegacySigHashType = txscript.SigHashAll
 }

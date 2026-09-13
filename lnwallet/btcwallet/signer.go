@@ -360,7 +360,7 @@ func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
 
 	amt := signDesc.Output.Value
 	sig, err := txscript.RawTxInWitnessSignature(
-		tx, signDesc.SigHashes, signDesc.InputIndex, amt,
+		tx, input.SigHashesFor(tx, signDesc), signDesc.InputIndex, amt,
 		witnessScript, signDesc.HashType, privKey,
 	)
 	if err != nil {
@@ -389,8 +389,8 @@ func (b *BtcWallet) ComputeInputScript(tx *wire.MsgTx,
 
 	// Let the wallet compute the input script now.
 	witness, sigScript, err := b.wallet.ComputeInputScript(
-		tx, signDesc.Output, signDesc.InputIndex, signDesc.SigHashes,
-		signDesc.HashType, privKeyTweaker,
+		tx, signDesc.Output, signDesc.InputIndex,
+		input.SigHashesFor(tx, signDesc), signDesc.HashType, privKeyTweaker,
 	)
 	if err != nil {
 		return nil, err

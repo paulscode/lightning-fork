@@ -149,30 +149,9 @@ func (b *BtcWallet) FundPsbt(packet *psbt.Packet, minConfs int32,
 		return changeIndex, err
 	}
 
-	optInFundedInputs(packet)
+	input.OptInPsbtInputs(packet)
 
 	return changeIndex, nil
-}
-
-// optInFundedInputs raises the hash type of every input the wallet library
-// stamped with its defaults (SIGHASH_ALL for witness v0, SIGHASH_DEFAULT for
-// taproot) to the sole-signer hash type, so that the inputs this wallet
-// funds and later signs opt into the unified signature hash. An input that
-// declares any other hash type was set deliberately and is left alone.
-func optInFundedInputs(packet *psbt.Packet) {
-	if !input.UnifiedSigHash() {
-		return
-	}
-	for i := range packet.Inputs {
-		in := &packet.Inputs[i]
-		if in.WitnessUtxo == nil {
-			continue
-		}
-		taproot := txscript.IsPayToTaproot(in.WitnessUtxo.PkScript)
-		if in.SighashType == input.LegacySoleSignerSigHash(taproot) {
-			in.SighashType = input.SoleSignerSigHash(taproot)
-		}
-	}
 }
 
 // SignPsbt expects a partial transaction with all inputs and outputs fully
@@ -186,6 +165,11 @@ func optInFundedInputs(packet *psbt.Packet) {
 // input/output/fee value validation, PSBT finalization). Any input that is
 // incomplete will be skipped.
 func (b *BtcWallet) SignPsbt(packet *psbt.Packet) ([]uint32, error) {
+	// The hash type comes from the chain this wallet is on, not from the
+	// packet: inputs declaring nothing or the library defaults are signed
+	// with the sole-signer type.
+	input.OptInPsbtInputs(packet)
+
 	// In signedInputs we return the indices of psbt inputs that were signed
 	// by our wallet. This way the caller can check if any inputs were signed.
 	var signedInputs []uint32
@@ -632,9 +616,11 @@ func (b *BtcWallet) FinalizePsbt(packet *psbt.Packet, accountName string) error 
 		accountNum = account
 	}
 
-	// A signature made elsewhere without the opt-in would make the whole
-	// transaction replayable on the SHA256d chain; refuse to be the one
-	// that finalizes it.
+	// Whatever this wallet still has to sign here opts in; a signature
+	// made elsewhere without the opt-in would make the whole transaction
+	// replayable on the SHA256d chain, so refuse to be the one that
+	// finalizes it.
+	input.OptInPsbtInputs(packet)
 	if err := input.CheckPsbtSigHashOptIn(packet); err != nil {
 		return err
 	}
@@ -651,7 +637,16 @@ func (b *BtcWallet) FinalizePsbt(packet *psbt.Packet, accountName string) error 
 func (b *BtcWallet) DecorateInputs(packet *psbt.Packet,
 	failOnUnknown bool) error {
 
-	return b.wallet.DecorateInputs(packet, failOnUnknown)
+	err := b.wallet.DecorateInputs(packet, failOnUnknown)
+	if err != nil {
+		return err
+	}
+
+	// The library stamps the inputs it recognizes with its default hash
+	// types; raise them to the sole-signer type as FundPsbt does.
+	input.OptInPsbtInputs(packet)
+
+	return nil
 }
 
 // lookupFirstCustomAccount returns the first custom account found. In theory,

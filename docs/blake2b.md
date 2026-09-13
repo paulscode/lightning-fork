@@ -170,13 +170,23 @@ here with the opt-in leaves their SHA256d twins untouched.
 
 The opt-in is on by default and cannot be turned off on mainnet
 (`--bitcoin.no-unified-sighash` is accepted on regtest, simnet and testnet4
-for interoperability testing). A PSBT that arrives with signatures made
-elsewhere without the bit is refused at finalization, since the whole
-transaction would be replayable; `--bitcoin.allow-legacy-sighash` overrides
-that for an operator who knows the coins exist on one chain only. PSBTs the
-wallet funds are stamped with the opt-in hash type on the inputs it adds,
-so an external signer that honours the PSBT's `SIGHASH_TYPE` field opts in
-too.
+for interoperability testing; a development build, which does not opt in,
+refuses to start on mainnet). The hash type comes from the chain, not from
+the request: a PSBT input that declares nothing or one of the usual
+defaults is signed with the opt-in, whether the wallet funds it, signs it,
+or finalizes it, with a local or a remote signer. A PSBT or funding
+transaction that arrives with signatures made elsewhere without the bit,
+partial or already finalized, is refused, since the whole transaction
+would be replayable; `--bitcoin.allow-legacy-sighash` overrides that for an
+operator who knows the coins exist on one chain only.
+
+Two things stay as they were. Bare and P2SH inputs, which the wallet never
+hands out addresses for, are signed with `SIGHASH_ALL`: the legacy signer
+has no way to opt in, and a legacy digest with the bit appended is what
+the chain rejects. Sweeps whose descriptors were stored before this
+version keep the hash type they were stored with, which the chain still
+accepts; they opt in once the channel they belong to is resolved and new
+descriptors are written.
 
 ## Verifying the constants yourself
 

@@ -308,6 +308,19 @@ func (s *Server) SignOutputRaw(_ context.Context, in *SignReq) (*SignResp,
 		prevOutputFetcher = txscript.NewMultiPrevOutFetcher(nil)
 	)
 
+	// An opted-in (SIGHASH_UNIFIED) signature commits to every spent
+	// output, so a request for one has to carry them all; without them
+	// the digest would silently be wrong.
+	for _, signDesc := range in.SignDescs {
+		hashType := txscript.SigHashType(signDesc.Sighash)
+		if input.OptInSigHash(hashType) && len(in.PrevOutputs) == 0 {
+			return nil, fmt.Errorf("sighash 0x%x opts into the "+
+				"unified signature hash, which commits to every "+
+				"spent output: prev_outputs must be set for all "+
+				"inputs", hashType)
+		}
+	}
+
 	// If we're spending one or more SegWit v1 (Taproot) inputs, then we
 	// need the full UTXO information available.
 	if len(in.PrevOutputs) > 0 {
@@ -534,6 +547,19 @@ func (s *Server) ComputeInputScript(ctx context.Context,
 		sigHashCache      = input.NewTxSigHashesV0Only(&txToSign)
 		prevOutputFetcher = txscript.NewMultiPrevOutFetcher(nil)
 	)
+
+	// An opted-in (SIGHASH_UNIFIED) signature commits to every spent
+	// output, so a request for one has to carry them all; without them
+	// the digest would silently be wrong.
+	for _, signDesc := range in.SignDescs {
+		hashType := txscript.SigHashType(signDesc.Sighash)
+		if input.OptInSigHash(hashType) && len(in.PrevOutputs) == 0 {
+			return nil, fmt.Errorf("sighash 0x%x opts into the "+
+				"unified signature hash, which commits to every "+
+				"spent output: prev_outputs must be set for all "+
+				"inputs", hashType)
+		}
+	}
 
 	// If we're spending one or more SegWit v1 (Taproot) inputs, then we
 	// need the full UTXO information available.

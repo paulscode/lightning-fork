@@ -210,6 +210,9 @@ func (r *RPCKeyRing) SignPsbt(packet *psbt.Packet) ([]uint32, error) {
 	ctxt, cancel := context.WithTimeout(context.Background(), r.rpcTimeout)
 	defer cancel()
 
+	// The remote signer honours the packet's hash types; decide them here.
+	input.OptInPsbtInputs(packet)
+
 	var buf bytes.Buffer
 	if err := packet.Serialize(&buf); err != nil {
 		return nil, fmt.Errorf("error serializing PSBT: %w", err)
@@ -285,6 +288,14 @@ func (r *RPCKeyRing) FinalizePsbt(packet *psbt.Packet, _ string) error {
 	// input needs nonWitness Utxo or witness Utxo data specified.
 	err := psbt.InputsReadyToSign(packet)
 	if err != nil {
+		return err
+	}
+
+	// Whatever is still ours to sign opts in; a signature made elsewhere
+	// without the opt-in makes the transaction replayable, and this is the
+	// last chance to refuse it.
+	input.OptInPsbtInputs(packet)
+	if err := input.CheckPsbtSigHashOptIn(packet); err != nil {
 		return err
 	}
 

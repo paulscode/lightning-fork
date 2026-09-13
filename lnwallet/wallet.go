@@ -829,15 +829,23 @@ func (l *LightningWallet) PsbtFundingFinalize(pid [32]byte, packet *psbt.Packet,
 		return fmt.Errorf("incompatible funding intent")
 	}
 
-	// Either the PSBT or the raw TX must be set.
+	// Either the PSBT or the raw TX must be set. Whoever signed the
+	// funding inputs must have opted into the unified signature hash, or
+	// the channel's funding transaction is replayable.
 	switch {
 	case packet != nil && rawTx == nil:
+		if err := input.CheckPsbtSigHashOptIn(packet); err != nil {
+			return fmt.Errorf("funding PSBT: %w", err)
+		}
 		err := psbtIntent.Finalize(packet)
 		if err != nil {
 			return fmt.Errorf("error finalizing PSBT: %w", err)
 		}
 
 	case rawTx != nil && packet == nil:
+		if err := input.CheckTxSigHashOptIn(rawTx); err != nil {
+			return fmt.Errorf("funding transaction: %w", err)
+		}
 		err := psbtIntent.FinalizeRawTX(rawTx)
 		if err != nil {
 			return fmt.Errorf("error finalizing raw TX: %w", err)
@@ -2113,59 +2121,70 @@ func (l *LightningWallet) handleSingleContribution(req *addSingleContributionMsg
 func (l *LightningWallet) verifyFundingInputs(fundingTx *wire.MsgTx,
 	remoteInputScripts []*input.Script) error {
 
+	// Attach the remote input scripts and look up their spent outputs.
+	// The verification below hashes with every output it has: an opted-in
+	// (SIGHASH_UNIFIED) signature commits to every spent output, so a
+	// remote input signed that way over a transaction that also carries
+	// our own inputs fails to verify rather than verifying wrongly.
+	if len(remoteInputScripts) == 0 {
+		return nil
+	}
+
 	sigIndex := 0
-	fundingHashCache := input.NewTxSigHashesV0Only(fundingTx)
-	inputScripts := remoteInputScripts
+	remote := make([]bool, len(fundingTx.TxIn))
+	prevOuts := make(map[wire.OutPoint]*wire.TxOut, len(fundingTx.TxIn))
 	for i, txin := range fundingTx.TxIn {
-		if len(inputScripts) != 0 && len(txin.Witness) == 0 {
-			// Attach the input scripts so we can verify it below.
-			txin.Witness = inputScripts[sigIndex].Witness
-			txin.SignatureScript = inputScripts[sigIndex].SigScript
+		if len(txin.Witness) != 0 {
+			continue
+		}
+		txin.Witness = remoteInputScripts[sigIndex].Witness
+		txin.SignatureScript = remoteInputScripts[sigIndex].SigScript
+		remote[i] = true
+		sigIndex++
 
-			// Fetch the alleged previous output along with the
-			// pkscript referenced by this input.
-			//
-			// TODO(roasbeef): when dual funder pass actual
-			// height-hint
-			//
-			// TODO(roasbeef): this fails for neutrino always as it
-			// treats the height hint as an exact birthday of the
-			// utxo rather than a lower bound
-			pkScript, err := txscript.ComputePkScript(
-				txin.SignatureScript, txin.Witness,
-			)
-			if err != nil {
-				return fmt.Errorf("cannot create script: %w",
-					err)
-			}
-			output, err := l.Cfg.ChainIO.GetUtxo(
-				&txin.PreviousOutPoint,
-				pkScript.Script(), 0, l.quit,
-			)
-			if output == nil {
-				return fmt.Errorf("input to funding tx does "+
-					"not exist: %v", err)
-			}
+		// Fetch the alleged previous output along with the pkscript
+		// referenced by this input.
+		//
+		// TODO(roasbeef): when dual funder pass actual height-hint
+		//
+		// TODO(roasbeef): this fails for neutrino always as it treats
+		// the height hint as an exact birthday of the utxo rather than a
+		// lower bound
+		pkScript, err := txscript.ComputePkScript(
+			txin.SignatureScript, txin.Witness,
+		)
+		if err != nil {
+			return fmt.Errorf("cannot create script: %w", err)
+		}
+		output, err := l.Cfg.ChainIO.GetUtxo(
+			&txin.PreviousOutPoint, pkScript.Script(), 0, l.quit,
+		)
+		if output == nil {
+			return fmt.Errorf("input to funding tx does not exist: %v",
+				err)
+		}
+		prevOuts[txin.PreviousOutPoint] = output
+	}
 
-			// Ensure that the witness+sigScript combo is valid.
-			vm, err := txscript.NewEngine(
-				output.PkScript, fundingTx, i,
-				txscript.StandardVerifyFlags, nil,
-				fundingHashCache, output.Value,
-				txscript.NewCannedPrevOutputFetcher(
-					output.PkScript, output.Value,
-				),
-			)
-			if err != nil {
-				return fmt.Errorf("cannot create script "+
-					"engine: %s", err)
-			}
-			if err = vm.Execute(); err != nil {
-				return fmt.Errorf("cannot validate "+
-					"transaction: %s", err)
-			}
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
+	fundingHashCache := txscript.NewTxSigHashes(fundingTx, prevOutFetcher)
+	for i, txin := range fundingTx.TxIn {
+		if !remote[i] {
+			continue
+		}
+		output := prevOuts[txin.PreviousOutPoint]
 
-			sigIndex++
+		// Ensure that the witness+sigScript combo is valid.
+		vm, err := txscript.NewEngine(
+			output.PkScript, fundingTx, i,
+			txscript.StandardVerifyFlags, nil,
+			fundingHashCache, output.Value, prevOutFetcher,
+		)
+		if err != nil {
+			return fmt.Errorf("cannot create script engine: %s", err)
+		}
+		if err = vm.Execute(); err != nil {
+			return fmt.Errorf("cannot validate transaction: %s", err)
 		}
 	}
 
