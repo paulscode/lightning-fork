@@ -222,6 +222,15 @@ type Config struct {
 	// PubKeyBytes is the serialized, compressed public key of this peer.
 	PubKeyBytes [33]byte
 
+	// ChainHash is the BOLT chain_hash this node advertises in the
+	// networks list of its init message.
+	ChainHash chainhash.Hash
+
+	// RequirePeerNetworks disconnects a peer whose init message does not
+	// list ChainHash in its networks, including a peer that sends no
+	// networks at all.
+	RequirePeerNetworks bool
+
 	// Addr is the network address of the peer.
 	Addr *lnwire.NetAddress
 
@@ -5021,6 +5030,15 @@ func (p *Brontide) handleInitMsg(msg *lnwire.Init) error {
 		return fmt.Errorf("data loss protection required")
 	}
 
+	// Refuse a peer that serves another chain, or that will not say which
+	// chain it serves when we insist on knowing.
+	err = checkPeerNetworks(
+		msg.Networks, p.cfg.ChainHash, p.cfg.RequirePeerNetworks,
+	)
+	if err != nil {
+		return err
+	}
+
 	// If we have an AuxChannelNegotiator and the peer sent aux features,
 	// process them.
 	p.cfg.AuxChannelNegotiator.WhenSome(
@@ -5093,6 +5111,11 @@ func (p *Brontide) sendInitMsg(legacyChan bool) error {
 		legacyFeatures.RawFeatureVector,
 		features.RawFeatureVector,
 	)
+
+	// Always say which chain we serve. Bitcoin and Bitcoin BLAKE2b share
+	// a genesis block, so this list is the only thing at the handshake
+	// that tells a peer on the other chain that we are not for them.
+	msg.Networks = []chainhash.Hash{p.cfg.ChainHash}
 
 	var err error
 

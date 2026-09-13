@@ -8,6 +8,20 @@
 
 <img src="logo.png">
 
+## Lightning Fork
+
+This is **Lightning Fork** (`github.com/paulscode/lightning-fork`), a fork of
+`lnd` that follows the **Bitcoin BLAKE2b chain** (Bitcoin Knots v29.4.1,
+mainnet activation at height 961640 on 2026-08-30) and refuses to run against,
+connect to, or pay any node on the SHA256d chain it shares a genesis block
+with. Read [docs/blake2b.md](docs/blake2b.md) for what differs from `lnd`:
+the chain hash and invoice prefix, the activation-header check, the `init`
+networks handshake, and the configuration options. It builds against
+[`paulscode/btcd-blake2b`](https://github.com/paulscode/btcd-blake2b), which
+parses the 164-byte header and computes the BLAKE2b block id.
+
+Everything below this section is the upstream `lnd` README.
+
 The Lightning Network Daemon (`lnd`) - is a complete implementation of a
 [Lightning Network](https://lightning.network) node.  `lnd` has several pluggable back-end
 chain services including [`btcd`](https://github.com/btcsuite/btcd) (a

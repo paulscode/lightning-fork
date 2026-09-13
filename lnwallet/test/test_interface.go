@@ -330,6 +330,7 @@ func createTestWallet(t *testing.T, tempTestDir string,
 		ChainIO:               bio,
 		FeeEstimator:          chainfee.NewStaticEstimator(2500, 0),
 		NetParams:             *netParams,
+		ChainHash:             *netParams.GenesisHash,
 		CoinSelectionStrategy: wallet.CoinSelectionLargest,
 	}
 

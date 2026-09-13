@@ -649,6 +649,13 @@ func (d *DefaultWalletImpl) BuildWalletConfig(ctx context.Context,
 		},
 		BlockCache:         blockCache,
 		WalletUnlockParams: &walletInitParams,
+		OnChainMismatch: func(err error) {
+			// The node changed chains under a running daemon. The
+			// only safe thing to do is stop; the wrapper restarts
+			// into the startup check, which refuses in words.
+			d.logger.Criticalf("Stopping: %v", err)
+			d.interceptor.RequestShutdown()
+		},
 	}
 
 	// Let's go ahead and create the partial chain control now that is only
@@ -790,6 +797,7 @@ func (d *DefaultWalletImpl) BuildChainControl(
 		SecretKeyRing:         keyRing,
 		ChainIO:               walletController,
 		NetParams:             *walletConfig.NetParams,
+		ChainHash:             d.cfg.ActiveNetParams.ChainHash,
 		CoinSelectionStrategy: walletConfig.CoinSelectionStrategy,
 		AuxLeafStore:          partialChainControl.Cfg.AuxLeafStore,
 		AuxSigner:             partialChainControl.Cfg.AuxSigner,
@@ -910,6 +918,7 @@ func (d *RPCSignerWalletImpl) BuildChainControl(
 		SecretKeyRing:         rpcKeyRing,
 		ChainIO:               walletController,
 		NetParams:             *walletConfig.NetParams,
+		ChainHash:             d.cfg.ActiveNetParams.ChainHash,
 		CoinSelectionStrategy: walletConfig.CoinSelectionStrategy,
 	}
 
@@ -1169,7 +1178,7 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 			graphMig := func(tx *sqlc.Queries) error {
 				cfg := &graphdbmig1.SQLStoreConfig{
 					//nolint:ll
-					ChainHash: *d.cfg.ActiveNetParams.GenesisHash,
+					ChainHash: d.cfg.ActiveNetParams.ChainHash,
 					QueryCfg:  queryCfg,
 				}
 				err := graphdbmig1.MigrateGraphToSQL(
@@ -1312,7 +1321,7 @@ func (d *DefaultDatabaseBuilder) BuildDatabase(
 
 		graphStore, err = graphdb.NewSQLStore(
 			&graphdb.SQLStoreConfig{
-				ChainHash: *d.cfg.ActiveNetParams.GenesisHash,
+				ChainHash: d.cfg.ActiveNetParams.ChainHash,
 				QueryCfg:  queryCfg,
 			},
 			graphExecutor, graphDBOptions...,

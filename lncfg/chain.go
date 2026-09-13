@@ -33,6 +33,9 @@ type Chain struct {
 	FeeRate             lnwire.MilliSatoshi `long:"feerate" description:"The fee rate used when forwarding payments on our channels. The total fee charged is basefee + (amount * feerate / 1000000), where amount is the forwarded amount."`
 	TimeLockDelta       uint32              `long:"timelockdelta" description:"The CLTV delta we will subtract from a forwarded HTLC's timelock value"`
 	DNSSeeds            []string            `long:"dnsseed" description:"The seed DNS server(s) to use for initial peer discovery. Must be specified as a '<primary_dns>[,<soa_primary_dns>]' tuple where the SOA address is needed for DNS resolution through Tor but is optional for clearnet users. Multiple tuples can be specified, will overwrite the default seed servers."`
+
+	Blake2bActivationHeight uint32 `long:"blake2b-activation-height" description:"Height of the first BLAKE2b block on the connected chain. Required on regtest and simnet, where it must match the node's -testactivationheight=blake2b@N; on testnet4 it overrides what the node reports; it cannot be set on mainnet, where the height is fixed at 961640."`
+	ChainHashOverride       string `long:"chain-hash-override" description:"Hex chain hash to advertise in the Lightning protocol instead of the built-in one. Accepted on regtest only, for interoperability testing against an implementation that identifies the BLAKE2b chain differently."`
 }
 
 // Validate performs validation on our chain config.

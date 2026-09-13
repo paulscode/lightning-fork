@@ -391,6 +391,7 @@ func createTestWallet(cdb *channeldb.ChannelStateDB, netParams *chaincfg.Params,
 		ChainIO:               bio,
 		FeeEstimator:          estimator,
 		NetParams:             *netParams,
+		ChainHash:             *netParams.GenesisHash,
 		CoinSelectionStrategy: wallet.CoinSelectionLargest,
 	})
 	if err != nil {

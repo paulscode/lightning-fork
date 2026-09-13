@@ -4560,7 +4560,7 @@ func (f *Manager) newChanAnnouncement(localPubKey,
 	ourPolicy *models.ChannelEdgePolicy,
 	chanType channeldb.ChannelType) (*chanAnnouncement, error) {
 
-	chainHash := *f.cfg.Wallet.Cfg.NetParams.GenesisHash
+	chainHash := f.cfg.Wallet.Cfg.ChainHash
 
 	// The unconditional section of the announcement is the ShortChannelID
 	// itself which compactly encodes the location of the funding output
@@ -5243,7 +5243,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	reservation.SetState(lnwallet.SentOpenChannel)
 
 	fundingOpen := lnwire.OpenChannel{
-		ChainHash:             *f.cfg.Wallet.Cfg.NetParams.GenesisHash,
+		ChainHash:             f.cfg.Wallet.Cfg.ChainHash,
 		PendingChannelID:      chanID,
 		FundingAmount:         capacity,
 		PushAmount:            msg.PushAmt,

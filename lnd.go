@@ -581,7 +581,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 				towerKeyDesc, activeChainControl.KeyRing,
 			),
 			PublishTx: activeChainControl.Wallet.PublishTransaction,
-			ChainHash: *cfg.ActiveNetParams.GenesisHash,
+			ChainHash: cfg.ActiveNetParams.ChainHash,
 		}
 
 		// If there is a tor controller (user wants auto hidden

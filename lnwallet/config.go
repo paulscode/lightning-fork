@@ -2,6 +2,7 @@ package lnwallet
 
 import (
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcwallet/wallet"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
@@ -54,6 +55,12 @@ type Config struct {
 	// NetParams is the set of parameters that tells the wallet which chain
 	// it will be operating on.
 	NetParams chaincfg.Params
+
+	// ChainHash is the Lightning-level identifier of the chain this wallet
+	// funds channels on: the value carried in open_channel, gossip and
+	// channel backups. On the Bitcoin BLAKE2b chain it is not the genesis
+	// hash, which that chain shares with Bitcoin.
+	ChainHash chainhash.Hash
 
 	// Rebroadcaster is an optional config param that can be used to
 	// passively rebroadcast transactions in the background until they're

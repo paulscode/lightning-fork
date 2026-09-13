@@ -89,3 +89,10 @@ coverage.txt
 
 # All test data generated from rapid.
 */testdata
+/references/
+/internal_docs/
+
+
+# Local workspace pointing at the sibling btcd-blake2b checkout.
+go.work
+go.work.sum

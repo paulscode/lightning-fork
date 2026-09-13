@@ -2,8 +2,68 @@ package lnwire
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightningnetwork/lnd/tlv"
 )
+
+// InitNetworksRecordType is the TLV type of the BOLT 1 `networks` field of
+// the init message: the chain hashes of the networks the sender will gossip
+// or open channels for.
+const InitNetworksRecordType tlv.Type = 1
+
+// InitNetworks is the BOLT 1 `networks` record of the init message: a list of
+// chain hashes, 32 bytes each, with no count prefix.
+type InitNetworks []chainhash.Hash
+
+// Record returns the TLV record for the networks list.
+func (n *InitNetworks) Record() tlv.Record {
+	sizeFunc := func() uint64 {
+		return uint64(len(*n) * chainhash.HashSize)
+	}
+	return tlv.MakeDynamicRecord(
+		InitNetworksRecordType, n, sizeFunc, encodeInitNetworks,
+		decodeInitNetworks,
+	)
+}
+
+func encodeInitNetworks(w io.Writer, val interface{}, _ *[8]byte) error {
+	nets, ok := val.(*InitNetworks)
+	if !ok {
+		return tlv.NewTypeForEncodingErr(val, "*lnwire.InitNetworks")
+	}
+	for _, h := range *nets {
+		if _, err := w.Write(h[:]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decodeInitNetworks(r io.Reader, val interface{}, _ *[8]byte,
+	l uint64) error {
+
+	nets, ok := val.(*InitNetworks)
+	if !ok {
+		return tlv.NewTypeForDecodingErr(val, "*lnwire.InitNetworks", l, 0)
+	}
+	if l%chainhash.HashSize != 0 {
+		return fmt.Errorf("init networks record length %d is not a "+
+			"multiple of %d", l, chainhash.HashSize)
+	}
+
+	count := int(l / chainhash.HashSize)
+	out := make(InitNetworks, count)
+	for i := 0; i < count; i++ {
+		if _, err := io.ReadFull(r, out[i][:]); err != nil {
+			return err
+		}
+	}
+	*nets = out
+	return nil
+}
 
 // Init is the first message reveals the features supported or required by this
 // node. Nodes wait for receipt of the other's features to simplify error
@@ -23,6 +83,14 @@ type Init struct {
 	// message, any GlobalFeatures should be merged into the unified
 	// Features field.
 	Features *RawFeatureVector
+
+	// Networks is the BOLT 1 `networks` list: the chain hashes the sender
+	// will gossip or open channels for. Nil when the sender omitted it.
+	// Two chains that share a genesis block (Bitcoin and Bitcoin BLAKE2b)
+	// can only be told apart at the handshake through this field, so a
+	// node on the BLAKE2b chain always sends it and may refuse peers that
+	// do not list its chain.
+	Networks []chainhash.Hash
 
 	// CustomRecords maps TLV types to byte slices, storing arbitrary data
 	// intended for inclusion in the ExtraData field of the init message.
@@ -66,13 +134,18 @@ func (msg *Init) Decode(r io.Reader, pver uint32) error {
 		return err
 	}
 
-	customRecords, _, extraDData, err := ParseAndExtractCustomRecords(
-		msgExtraData,
+	var networks InitNetworks
+	customRecords, parsed, extraDData, err := ParseAndExtractCustomRecords(
+		msgExtraData, &networks,
 	)
 	if err != nil {
 		return err
 	}
 
+	msg.Networks = nil
+	if parsed.Contains(InitNetworksRecordType) {
+		msg.Networks = networks
+	}
 	msg.CustomRecords = customRecords
 	msg.ExtraData = extraDData
 
@@ -92,7 +165,18 @@ func (msg *Init) Encode(w *bytes.Buffer, pver uint32) error {
 		return err
 	}
 
-	extraData, err := MergeAndEncode(nil, msg.ExtraData, msg.CustomRecords)
+	// A nil list means the field is omitted; an empty non-nil list is an
+	// empty record, so that a message decoded with one re-encodes to the
+	// same bytes.
+	var knownRecords []tlv.RecordProducer
+	if msg.Networks != nil {
+		networks := InitNetworks(msg.Networks)
+		knownRecords = append(knownRecords, &networks)
+	}
+
+	extraData, err := MergeAndEncode(
+		knownRecords, msg.ExtraData, msg.CustomRecords,
+	)
 	if err != nil {
 		return err
 	}

@@ -120,11 +120,20 @@ func Decode(invoice string, net *chaincfg.Params, opts ...DecodeOption) (
 	// not optimal for LN). See
 	// https://github.com/lightningnetwork/lightning-rfc/pull/844 for more
 	// information.
-	expectedPrefix := net.Bech32HRPSegwit
-	if net.Name == chaincfg.SigNetParams.Name {
-		expectedPrefix = "tbs"
-	}
+	expectedPrefix := InvoiceHRP(net)
 	if !strings.HasPrefix(hrp[2:], expectedPrefix) {
+		// A registered prefix means this daemon is on the Bitcoin
+		// BLAKE2b chain; name the other chain when the invoice is
+		// plainly one of its, because the two are otherwise
+		// identical to a user.
+		if expectedPrefix != net.Bech32HRPSegwit &&
+			isBitcoinInvoiceHRP(hrp[2:]) {
+
+			return nil, fmt.Errorf("invoice is for the SHA256 "+
+				"Bitcoin network (prefix %q), not for the Bitcoin "+
+				"BLAKE2b chain this node runs on (expected prefix "+
+				"ln%s)", hrp, expectedPrefix)
+		}
 		return nil, fmt.Errorf(
 			"invoice not for current active network '%s'", net.Name)
 	}

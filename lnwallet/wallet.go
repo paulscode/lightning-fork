@@ -888,9 +888,9 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 
 	// If the funding request is for a different chain than the one the
 	// wallet is aware of, then we'll reject the request.
-	if !bytes.Equal(l.Cfg.NetParams.GenesisHash[:], req.ChainHash[:]) {
+	if !bytes.Equal(l.Cfg.ChainHash[:], req.ChainHash[:]) {
 		err := ErrChainMismatch(
-			l.Cfg.NetParams.GenesisHash, req.ChainHash,
+			&l.Cfg.ChainHash, req.ChainHash,
 		)
 		req.err <- err
 		req.resp <- nil
@@ -1079,7 +1079,7 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 
 	id := atomic.AddUint64(&l.nextFundingID, 1)
 	reservation, err := NewChannelReservation(
-		capacity, localFundingAmt, l, id, l.Cfg.NetParams.GenesisHash,
+		capacity, localFundingAmt, l, id, &l.Cfg.ChainHash,
 		thawHeight, req,
 	)
 	if err != nil {

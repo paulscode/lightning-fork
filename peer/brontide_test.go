@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -1078,6 +1079,9 @@ func TestStaticRemoteDowngrade(t *testing.T) {
 			legacy:   false,
 			features: featureOptional,
 			expectedInit: &lnwire.Init{
+				// The peer always lists the chain it serves; the
+				// test harness leaves the chain hash zero.
+				Networks:       []chainhash.Hash{{}},
 				GlobalFeatures: rawLegacy,
 				Features:       rawFeatureOptional,
 			},
@@ -1087,6 +1091,9 @@ func TestStaticRemoteDowngrade(t *testing.T) {
 			legacy:   true,
 			features: featureOptional,
 			expectedInit: &lnwire.Init{
+				// The peer always lists the chain it serves; the
+				// test harness leaves the chain hash zero.
+				Networks:       []chainhash.Hash{{}},
 				GlobalFeatures: rawLegacy,
 				Features:       rawFeatureOptional,
 			},
@@ -1096,6 +1103,9 @@ func TestStaticRemoteDowngrade(t *testing.T) {
 			legacy:   false,
 			features: featureRequired,
 			expectedInit: &lnwire.Init{
+				// The peer always lists the chain it serves; the
+				// test harness leaves the chain hash zero.
+				Networks:       []chainhash.Hash{{}},
 				GlobalFeatures: rawLegacy,
 				Features:       rawFeatureRequired,
 			},
@@ -1110,6 +1120,9 @@ func TestStaticRemoteDowngrade(t *testing.T) {
 			legacy:   true,
 			features: featureRequired,
 			expectedInit: &lnwire.Init{
+				// The peer always lists the chain it serves; the
+				// test harness leaves the chain hash zero.
+				Networks:       []chainhash.Hash{{}},
 				GlobalFeatures: legacyCombinedOptional,
 				Features:       rawFeatureOptional,
 			},

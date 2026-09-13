@@ -955,6 +955,7 @@ func createTestCtx(t *testing.T, startHeight uint32, isChanPeer bool) (
 		ChanSeries:  channelSeries,
 		ChainIO:     chain,
 		ChainParams: &chaincfg.MainNetParams,
+		ChainHash:   *chaincfg.MainNetParams.GenesisHash,
 		Notifier:    notifier,
 		Broadcast: func(senders map[route.Vertex]struct{},
 			msgs ...lnwire.Message) error {
@@ -1636,6 +1637,7 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 	//nolint:ll
 	gossiper := New(Config{
 		ChainParams:            &chaincfg.MainNetParams,
+		ChainHash:              *chaincfg.MainNetParams.GenesisHash,
 		Notifier:               tCtx.gossiper.cfg.Notifier,
 		Broadcast:              tCtx.gossiper.cfg.Broadcast,
 		NotifyWhenOnline:       tCtx.gossiper.reliableSender.cfg.NotifyWhenOnline,
@@ -5136,6 +5138,7 @@ func TestProcessRemoteAnnouncementPeerQuit(t *testing.T) {
 	// peer quit signal the only ready case.
 	gossiper := New(Config{
 		ChainParams: &chaincfg.MainNetParams,
+		ChainHash:   *chaincfg.MainNetParams.GenesisHash,
 	}, selfKeyDesc)
 
 	// Create a peer whose quit channel is already closed.
@@ -5162,6 +5165,7 @@ func TestProcessRemoteAnnouncementCtxCancel(t *testing.T) {
 
 	gossiper := New(Config{
 		ChainParams: &chaincfg.MainNetParams,
+		ChainHash:   *chaincfg.MainNetParams.GenesisHash,
 	}, selfKeyDesc)
 
 	peer := &mockPeer{
@@ -5190,6 +5194,7 @@ func TestProcessRemoteAnnouncementGossiperQuit(t *testing.T) {
 
 	gossiper := New(Config{
 		ChainParams: &chaincfg.MainNetParams,
+		ChainHash:   *chaincfg.MainNetParams.GenesisHash,
 	}, selfKeyDesc)
 
 	// Close the gossiper's quit channel to simulate shutdown.

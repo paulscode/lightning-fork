@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/contractcourt"
@@ -40,6 +41,40 @@ type chanDBRestorer struct {
 	secretKeys keychain.SecretKeyRing
 
 	chainArb *contractcourt.ChainArbitrator
+
+	// chainHash is the chain this daemon runs on. A backup for any other
+	// chain is refused: on the Bitcoin BLAKE2b chain a Bitcoin backup is
+	// the most likely one to be offered, and its channels live on the
+	// other chain with peers on the other chain.
+	chainHash chainhash.Hash
+}
+
+// ErrBackupWrongChain is returned when a channel backup was written for a
+// different chain than the one this daemon runs on.
+type ErrBackupWrongChain struct {
+	Backup chainhash.Hash
+	Ours   chainhash.Hash
+}
+
+// Error implements the error interface.
+func (e *ErrBackupWrongChain) Error() string {
+	return fmt.Sprintf("channel backup is for chain %v but this daemon runs "+
+		"on the Bitcoin BLAKE2b chain (%v); channels of a node on another "+
+		"chain cannot be restored here", e.Backup, e.Ours)
+}
+
+// checkBackupChain refuses any backup whose chain hash is not ours.
+func checkBackupChain(ours chainhash.Hash,
+	backups ...chanbackup.Single) error {
+
+	for _, backup := range backups {
+		if backup.ChainHash != ours {
+			return &ErrBackupWrongChain{
+				Backup: backup.ChainHash, Ours: ours,
+			}
+		}
+	}
+	return nil
 }
 
 // openChannelShell maps the static channel back up into an open channel
@@ -214,6 +249,10 @@ func (c *chanDBRestorer) openChannelShell(backup chanbackup.Single) (
 //
 // NOTE: Part of the chanbackup.ChannelRestorer interface.
 func (c *chanDBRestorer) RestoreChansFromSingles(backups ...chanbackup.Single) error {
+	if err := checkBackupChain(c.chainHash, backups...); err != nil {
+		return err
+	}
+
 	channelShells := make([]*channeldb.ChannelShell, 0, len(backups))
 	firstChanHeight := uint32(math.MaxUint32)
 	for _, backup := range backups {
@@ -236,6 +275,11 @@ func (c *chanDBRestorer) RestoreChansFromSingles(backups ...chanbackup.Single) e
 	if firstChanHeight == math.MaxUint32 {
 		chainHash := channelShells[0].Chan.ChainHash
 		switch {
+		// A backup from this daemon on the BLAKE2b mainnet cannot hold
+		// a channel funded before the chain existed.
+		case chainHash.IsEqual(chainreg.Blake2bMainnetActivationHash):
+			firstChanHeight = chainreg.Blake2bMainnetActivationHeight
+
 		case chainHash.IsEqual(chaincfg.MainNetParams.GenesisHash):
 			firstChanHeight = mainnetSCBLaunchBlock
 

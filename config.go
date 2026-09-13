@@ -430,6 +430,8 @@ type Config struct {
 
 	NoBackupArchive bool `long:"no-backup-archive" description:"If set to true, channel backups will be deleted or replaced rather than being archived to a separate location."`
 
+	AllowPeersWithoutNetworks bool `long:"allow-peers-without-networks" description:"Keep a peer whose init message carries no networks list. By default such a peer is disconnected: Bitcoin and Bitcoin BLAKE2b share a genesis block, and a peer that does not say which chain it serves is most likely a Bitcoin SHA256d node. A peer that lists other chains but not ours is always disconnected. Set this only on a test network when interoperating with an implementation that does not send the field."`
+
 	FeeURL string `long:"feeurl" description:"DEPRECATED: Use 'fee.url' option. Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network. Must be set for neutrino on mainnet." hidden:"true"`
 
 	Bitcoin      *lncfg.Chain    `group:"Bitcoin" namespace:"bitcoin"`
@@ -1433,15 +1435,19 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		return nil, mkErr("error validating bitcoin params: %v", err)
 	}
 
+	// The network is now fixed, so the Bitcoin BLAKE2b chain identity can
+	// be applied to it: the activation height and chain hash overrides a
+	// test network may need, the refusal to run a local network without an
+	// activation height, and the invoice prefix registration.
+	if err := applyBlake2bChainConfig(&cfg); err != nil {
+		return nil, mkErr("%v", err)
+	}
+
 	switch cfg.Bitcoin.Node {
 	case btcdBackendName:
-		err := parseRPCParams(
-			cfg.Bitcoin, cfg.BtcdMode, cfg.ActiveNetParams,
-		)
-		if err != nil {
-			return nil, mkErr("unable to load RPC "+
-				"credentials for btcd: %v", err)
-		}
+		return nil, mkErr("bitcoin.node=btcd is not supported: this " +
+			"daemon follows the Bitcoin BLAKE2b chain, which only a " +
+			"Bitcoin Knots bitcoind backend can serve")
 	case bitcoindBackendName:
 		if cfg.Bitcoin.SimNet {
 			return nil, mkErr("bitcoind does not " +
@@ -1456,15 +1462,18 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 				"credentials for bitcoind: %v", err)
 		}
 	case neutrinoBackendName:
-		// No need to get RPC parameters.
+		return nil, mkErr("bitcoin.node=neutrino is not supported: this " +
+			"daemon follows the Bitcoin BLAKE2b chain and does not " +
+			"validate its proof of work itself; use a Bitcoin Knots " +
+			"bitcoind backend")
 
 	case "nochainbackend":
 		// Nothing to configure, we're running without any chain
 		// backend whatsoever (pure signing mode).
 
 	default:
-		str := "only btcd, bitcoind, and neutrino mode " +
-			"supported for bitcoin at this time"
+		str := "only bitcoind (a Bitcoin Knots node on the Bitcoin " +
+			"BLAKE2b chain) and nochainbackend are supported"
 
 		return nil, mkErr(str)
 	}

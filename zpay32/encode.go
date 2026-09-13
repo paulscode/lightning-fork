@@ -7,7 +7,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -59,10 +58,7 @@ func (invoice *Invoice) Encode(signer MessageSigner) (string, error) {
 	// signet as for testnet3 which is not optimal for LN). See
 	// https://github.com/lightningnetwork/lightning-rfc/pull/844 for more
 	// information.
-	hrp := "ln" + invoice.Net.Bech32HRPSegwit
-	if invoice.Net.Name == chaincfg.SigNetParams.Name {
-		hrp = "lntbs"
-	}
+	hrp := "ln" + InvoiceHRP(invoice.Net)
 	if invoice.MilliSat != nil {
 		// Encode the amount using the fewest possible characters.
 		am, err := encodeAmount(*invoice.MilliSat)

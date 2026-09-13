@@ -2457,7 +2457,7 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	// be used to consume updates of the state of the pending channel.
 	return &funding.InitFundingMsg{
 		TargetPubkey:    nodePubKey,
-		ChainHash:       *r.cfg.ActiveNetParams.GenesisHash,
+		ChainHash:       r.cfg.ActiveNetParams.ChainHash,
 		LocalFundingAmt: localFundingAmt,
 		BaseFee:         channelBaseFee,
 		FeeRate:         channelFeeRate,
@@ -5361,7 +5361,7 @@ func (r *rpcServer) createRPCClosedChannel(
 	}
 
 	reports, err := r.server.miscDB.FetchChannelReports(
-		*r.cfg.ActiveNetParams.GenesisHash, &dbChannel.ChanPoint,
+		r.cfg.ActiveNetParams.ChainHash, &dbChannel.ChanPoint,
 	)
 	switch err {
 	// If the channel does not have its resolver outcomes stored,

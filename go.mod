@@ -220,3 +220,7 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 go 1.25.13
 
 retract v0.0.2
+
+// Lightning Fork follows the Bitcoin BLAKE2b chain; the block header and
+// block id logic lives in a btcd fork that keeps upstream's module path.
+replace github.com/btcsuite/btcd => github.com/paulscode/btcd-blake2b v0.25.1-blake2b.1

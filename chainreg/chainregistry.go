@@ -75,6 +75,11 @@ type Config struct {
 	// BlockCache is the main cache for storing block information.
 	BlockCache *blockcache.BlockCache
 
+	// OnChainMismatch is called when the periodic chain-identity check
+	// finds that the connected node is no longer on the Bitcoin BLAKE2b
+	// chain. It is expected to stop the daemon.
+	OnChainMismatch func(error)
+
 	// WalletUnlockParams are the parameters that were used for unlocking
 	// the main wallet.
 	WalletUnlockParams *walletunlocker.WalletUnlockParams
@@ -224,6 +229,10 @@ type ChainControl struct {
 //
 //nolint:ll
 func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
+
+	// chainIdentityQuit stops the periodic chain-identity re-check when
+	// the chain control is torn down.
+	chainIdentityQuit := make(chan struct{})
 	cc := &PartialChainControl{
 		Cfg: cfg,
 		RoutingPolicy: models.ForwardingPolicy{
@@ -420,6 +429,20 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 		// connection.
 		chainConn, err := rpcclient.New(rpcConfig, nil)
 		if err != nil {
+			return nil, nil, err
+		}
+
+		// Before anything else, make sure this node is on the Bitcoin
+		// BLAKE2b chain. It shares its genesis, network name and
+		// address format with Bitcoin, so every check above passes
+		// against a node on the other chain; only the header at the
+		// activation height tells them apart. The check waits for the
+		// node to reach that height, refuses on any doubt, and keeps
+		// re-checking while the daemon runs.
+		if err := verifyBlake2bBackend(
+			chainConn, cfg, chainIdentityQuit,
+		); err != nil {
+			bitcoindConn.Stop()
 			return nil, nil, err
 		}
 
@@ -736,6 +759,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 	}
 
 	ccCleanup := func() {
+		close(chainIdentityQuit)
 		if cc.FeeEstimator != nil {
 			if err := cc.FeeEstimator.Stop(); err != nil {
 				log.Errorf("Failed to stop feeEstimator: %v",

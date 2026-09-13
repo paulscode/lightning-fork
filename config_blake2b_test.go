@@ -1,0 +1,151 @@
+package lnd
+
+import (
+	"testing"
+
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/jessevdk/go-flags"
+	"github.com/lightningnetwork/lnd/chainreg"
+	"github.com/lightningnetwork/lnd/signal"
+	"github.com/lightningnetwork/lnd/zpay32"
+	"github.com/stretchr/testify/require"
+)
+
+func blake2bTestConfig(t *testing.T, params chainreg.BitcoinNetParams,
+	set func(*Config)) *Config {
+
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.ActiveNetParams = params
+	cfg.Bitcoin.MainNet = params.Name == chaincfg.MainNetParams.Name
+	cfg.Bitcoin.RegTest = params.Name == chaincfg.RegressionNetParams.Name
+	cfg.Bitcoin.SimNet = params.Name == chaincfg.SimNetParams.Name
+	cfg.Bitcoin.TestNet4 = params.Name == chaincfg.TestNet4Params.Name
+	cfg.Bitcoin.Node = bitcoindBackendName
+	if set != nil {
+		set(&cfg)
+	}
+	t.Cleanup(func() { zpay32.RegisterInvoiceHRP(params.Name, "") })
+	return &cfg
+}
+
+// TestApplyBlake2bChainConfig covers the network/option combinations the
+// chain-identity configuration accepts and refuses.
+func TestApplyBlake2bChainConfig(t *testing.T) {
+	t.Run("mainnet defaults", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams, nil)
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+		require.Equal(t, uint32(961640),
+			cfg.ActiveNetParams.Blake2bActivationHeight)
+		require.Equal(t, *chainreg.Blake2bMainnetActivationHash,
+			cfg.ActiveNetParams.ChainHash)
+		require.Equal(t, "blake", zpay32.InvoiceHRP(&chaincfg.MainNetParams))
+	})
+
+	t.Run("mainnet refuses height override", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams,
+			func(c *Config) { c.Bitcoin.Blake2bActivationHeight = 1 })
+		err := applyBlake2bChainConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "mainnet")
+	})
+
+	t.Run("mainnet refuses chain hash override", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams,
+			func(c *Config) {
+				c.Bitcoin.ChainHashOverride = chainreg.BitcoinMainNetParams.
+					ChainHash.String()
+			})
+		err := applyBlake2bChainConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "regtest")
+	})
+
+	t.Run("regtest requires activation height", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinRegTestNetParams, nil)
+		err := applyBlake2bChainConfig(cfg)
+		if chainreg.AllowSHA256Regtest() {
+			require.NoError(t, err)
+			return
+		}
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "blake2b-activation-height")
+	})
+
+	t.Run("regtest with height and override", func(t *testing.T) {
+		override := chainreg.SyntheticChainHash(
+			chaincfg.MainNetParams.GenesisHash,
+		)
+		cfg := blake2bTestConfig(t, chainreg.BitcoinRegTestNetParams,
+			func(c *Config) {
+				c.Bitcoin.Blake2bActivationHeight = 20
+				c.Bitcoin.ChainHashOverride = override.String()
+			})
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+		require.Equal(t, uint32(20),
+			cfg.ActiveNetParams.Blake2bActivationHeight)
+		require.Equal(t, override, cfg.ActiveNetParams.ChainHash)
+		require.Equal(t, "blakert",
+			zpay32.InvoiceHRP(&chaincfg.RegressionNetParams))
+	})
+
+	t.Run("regtest rejects malformed override", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinRegTestNetParams,
+			func(c *Config) {
+				c.Bitcoin.Blake2bActivationHeight = 20
+				c.Bitcoin.ChainHashOverride = "nothex"
+			})
+		require.Error(t, applyBlake2bChainConfig(cfg))
+	})
+
+	t.Run("regtest without chain backend needs no height", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinRegTestNetParams,
+			func(c *Config) { c.Bitcoin.Node = "nochainbackend" })
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+	})
+
+	t.Run("testnet4 height override accepted", func(t *testing.T) {
+		cfg := blake2bTestConfig(t, chainreg.BitcoinTestNet4Params,
+			func(c *Config) { c.Bitcoin.Blake2bActivationHeight = 150308 })
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+		require.Equal(t, uint32(150308),
+			cfg.ActiveNetParams.Blake2bActivationHeight)
+		require.Equal(t, "tblake", zpay32.InvoiceHRP(&chaincfg.TestNet4Params))
+	})
+
+	t.Run("peers without networks are refused by default", func(t *testing.T) {
+		require.False(t, DefaultConfig().AllowPeersWithoutNetworks)
+	})
+}
+
+// TestBackendChoicesRefused pins that the btcd and neutrino backends are
+// rejected at configuration time with a message naming the reason, and that
+// bitcoind on mainnet gets past that check.
+func TestBackendChoicesRefused(t *testing.T) {
+	validate := func(t *testing.T, node string) error {
+		t.Helper()
+		cfg := DefaultConfig()
+		cfg.LndDir = t.TempDir()
+		cfg.Bitcoin.Node = node
+		cfg.Bitcoin.MainNet = true
+		fileParser := flags.NewParser(&cfg, flags.Default)
+		flagParser := flags.NewParser(&cfg, flags.Default)
+		_, err := ValidateConfig(
+			cfg, signal.Interceptor{}, fileParser, flagParser,
+		)
+		return err
+	}
+
+	for _, node := range []string{btcdBackendName, neutrinoBackendName} {
+		err := validate(t, node)
+		require.Error(t, err, node)
+		require.Contains(t, err.Error(), "not supported", node)
+		require.Contains(t, err.Error(), "BLAKE2b", node)
+	}
+
+	// bitcoind is accepted by the backend switch; whatever fails later
+	// (RPC credentials are not configured here) must not be that message.
+	if err := validate(t, bitcoindBackendName); err != nil {
+		require.NotContains(t, err.Error(), "not supported")
+	}
+}

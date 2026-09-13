@@ -101,7 +101,7 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 	// the funding workflow.
 	req := &funding.InitFundingMsg{
 		TargetPubkey:     target,
-		ChainHash:        *c.netParams.GenesisHash,
+		ChainHash:        c.netParams.ChainHash,
 		SubtractFees:     true,
 		LocalFundingAmt:  amt,
 		PushAmt:          0,

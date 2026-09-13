@@ -205,6 +205,12 @@ type Config struct {
 	// node is participating on.
 	ChainParams *chaincfg.Params
 
+	// ChainHash is the BOLT chain_hash of the network this node gossips
+	// for. Announcements and updates for any other chain are rejected. On
+	// the Bitcoin BLAKE2b chain this is not the genesis hash, which that
+	// chain shares with Bitcoin.
+	ChainHash chainhash.Hash
+
 	// Graph is the subsystem which is responsible for managing the
 	// topology of lightning network. After incoming channel, node, channel
 	// updates announcements are validated they are sent to the router in
@@ -606,7 +612,7 @@ func New(cfg Config, selfKeyDesc *keychain.KeyDescriptor) *AuthenticatedGossiper
 	gossiper.vb = NewValidationBarrier(1000, gossiper.quit)
 
 	gossiper.syncMgr = newSyncManager(&SyncManagerCfg{
-		ChainHash:                *cfg.ChainParams.GenesisHash,
+		ChainHash:                cfg.ChainHash,
 		ChanSeries:               cfg.ChanSeries,
 		RotateTicker:             cfg.RotateTicker,
 		HistoricalSyncTicker:     cfg.HistoricalSyncTicker,
@@ -2670,7 +2676,7 @@ func (d *AuthenticatedGossiper) handleChanAnnouncement(ctx context.Context,
 	ops ...batch.SchedulerOption) ([]networkMsg, bool) {
 
 	scid := ann.ShortChannelID
-	chainHash := d.cfg.ChainParams.GenesisHash
+	chainHash := d.cfg.ChainHash
 
 	log.Debugf("Processing ChannelAnnouncement1: peer=%v, short_chan_id=%v",
 		nMsg.peer, scid.ToUint64())
@@ -3124,7 +3130,7 @@ func (d *AuthenticatedGossiper) handleChanUpdate(ctx context.Context,
 	log.Debugf("Processing ChannelUpdate: peer=%v, short_chan_id=%v, ",
 		nMsg.peer, upd.ShortChannelID.ToUint64())
 
-	chainHash := d.cfg.ChainParams.GenesisHash
+	chainHash := d.cfg.ChainHash
 
 	// We'll ignore any channel updates that target any chain other than
 	// the set of chains we know of.

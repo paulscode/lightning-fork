@@ -1168,6 +1168,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 		ChainIO:               s.cc.ChainIO,
 		Notifier:              s.cc.ChainNotifier,
 		ChainParams:           s.cfg.ActiveNetParams.Params,
+		ChainHash:             s.cfg.ActiveNetParams.ChainHash,
 		Broadcast:             s.BroadcastMessage,
 		ChanSeries:            chanSeries,
 		NotifyWhenOnline:      s.NotifyWhenOnline,
@@ -1214,7 +1215,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 		initAccessPerms: func() (map[string]channeldb.ChanCount,
 			error) {
 
-			genesisHash := *s.cfg.ActiveNetParams.GenesisHash
+			genesisHash := s.cfg.ActiveNetParams.ChainHash
 			return s.chanStateDB.FetchPermAndTempPeers(
 				genesisHash[:],
 			)
@@ -1263,7 +1264,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 	}
 
 	utxnStore, err := contractcourt.NewNurseryStore(
-		s.cfg.ActiveNetParams.GenesisHash, dbs.ChanStateDB,
+		&s.cfg.ActiveNetParams.ChainHash, dbs.ChanStateDB,
 	)
 	if err != nil {
 		srvrLog.Errorf("unable to create nursery store: %v", err)
@@ -1271,7 +1272,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 	}
 
 	sweeperStore, err := sweep.NewSweeperStore(
-		dbs.ChanStateDB, s.cfg.ActiveNetParams.GenesisHash,
+		dbs.ChanStateDB, &s.cfg.ActiveNetParams.ChainHash,
 	)
 	if err != nil {
 		srvrLog.Errorf("unable to create sweeper store: %v", err)
@@ -1359,7 +1360,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 
 	//nolint:ll
 	s.chainArb = contractcourt.NewChainArbitrator(contractcourt.ChainArbitratorConfig{
-		ChainHash:              *s.cfg.ActiveNetParams.GenesisHash,
+		ChainHash:              s.cfg.ActiveNetParams.ChainHash,
 		IncomingBroadcastDelta: lncfg.DefaultIncomingBroadcastDelta,
 		OutgoingBroadcastDelta: lncfg.DefaultOutgoingBroadcastDelta,
 		CustomHtlcChecker: fn.MapOption(
@@ -1882,7 +1883,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 			Dial:               cfg.net.Dial,
 			AuthDial:           authDial,
 			DB:                 dbs.TowerClientDB,
-			ChainHash:          *s.cfg.ActiveNetParams.GenesisHash,
+			ChainHash:          s.cfg.ActiveNetParams.ChainHash,
 			MinBackoff:         10 * time.Second,
 			MaxBackoff:         5 * time.Minute,
 			MaxTasksInMemQueue: cfg.WtClient.MaxTasksInMemQueue,
@@ -2532,6 +2533,7 @@ func (s *server) Start(ctx context.Context) error {
 			db:         s.chanStateDB,
 			secretKeys: s.cc.KeyRing,
 			chainArb:   s.chainArb,
+			chainHash:  s.cfg.ActiveNetParams.ChainHash,
 		}
 		if len(s.chansToRestore.PackedSingleChanBackups) != 0 {
 			_, err := chanbackup.UnpackAndRecoverSingles(
@@ -3134,7 +3136,7 @@ func initNetworkBootstrappers(s *server) ([]discovery.NetworkPeerBootstrapper, e
 	// seeds.
 	if !s.cfg.Bitcoin.IsLocalNetwork() {
 		//nolint:ll
-		dnsSeeds, ok := chainreg.ChainDNSSeeds[*s.cfg.ActiveNetParams.GenesisHash]
+		dnsSeeds, ok := chainreg.ChainDNSSeeds[s.cfg.ActiveNetParams.ChainHash]
 
 		// If we have a set of DNS seeds for this chain, then we'll add
 		// it as an additional bootstrapping source.
@@ -4558,6 +4560,8 @@ func (s *server) peerConnected(conn net.Conn, connReq *connmgr.ConnReq,
 		Inbound:                 inbound,
 		Features:                initFeatures,
 		LegacyFeatures:          legacyFeatures,
+		ChainHash:               s.cfg.ActiveNetParams.ChainHash,
+		RequirePeerNetworks:     !s.cfg.AllowPeersWithoutNetworks,
 		OutgoingCltvRejectDelta: lncfg.DefaultOutgoingCltvRejectDelta,
 		ChanActiveTimeout:       s.cfg.ChanEnableTimeout,
 		ErrorBuffer:             errBuffer,
