@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -129,6 +130,26 @@ func newChainIdentityChecker(rpc blake2bChainRPC, params BitcoinNetParams,
 		logInterval:  chainIdentityWaitLogInterval,
 		now:          time.Now,
 	}
+}
+
+// bitcoindChainName returns what bitcoind reports as "chain" in
+// getblockchaininfo for the network the daemon is configured for, or "" for
+// a network bitcoind has no name for (simnet), where no check is possible.
+func bitcoindChainName(params *chaincfg.Params) string {
+	switch params.Net {
+	case wire.MainNet:
+		return "main"
+	case wire.TestNet3:
+		return "test"
+	case wire.TestNet4:
+		return "testnet4"
+	case wire.SigNet:
+		return "signet"
+	case wire.TestNet:
+		return "regtest"
+	}
+
+	return ""
 }
 
 // ChainIdentityStatusPath returns where the status file lives for the given
@@ -271,6 +292,17 @@ func (c *chainIdentityChecker) waitForHeight(height uint32,
 			return fmt.Errorf("unable to query the node while waiting "+
 				"for the BLAKE2b activation height: %w", err)
 		}
+
+		// A node on another network never reaches the activation
+		// height, so waiting for it would look like syncing forever.
+		if want := bitcoindChainName(c.params.Params); want != "" &&
+			info.Chain != want {
+
+			return &ErrWrongChain{Reason: fmt.Sprintf("the node "+
+				"reports chain %q where %q was expected; it will "+
+				"never reach block %d", info.Chain, want, height)}
+		}
+
 		if info.Headers >= int32(height) {
 			return nil
 		}
@@ -312,6 +344,14 @@ func (c *chainIdentityChecker) run(quit <-chan struct{}) (uint32, error) {
 	}
 
 	if err := c.waitForHeight(height, quit); err != nil {
+		var wrong *ErrWrongChain
+		if errors.As(err, &wrong) {
+			c.writeStatus(ChainIdentityStatus{
+				State:            ChainIdentityRefused,
+				Reason:           err.Error(),
+				ActivationHeight: height,
+			})
+		}
 		return 0, err
 	}
 

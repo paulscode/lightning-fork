@@ -76,7 +76,9 @@ and requires:
 
 Any failure, including an RPC error or a node that cannot serve the block,
 is a refusal: the daemon does not start, or stops if the node changed chains
-under it. "Cannot tell" is never "probably fine". Only ordinary chain data is
+under it. A node that reports another network in `getblockchaininfo` (a
+signet or regtest node behind a mainnet configuration) is refused at once
+rather than waited for, since it would never reach the activation height. "Cannot tell" is never "probably fine". Only ordinary chain data is
 used, so any node on either chain can answer.
 
 The outcome is written to `chain-identity.json` next to `channel.backup` in

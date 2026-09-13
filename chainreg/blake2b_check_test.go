@@ -27,6 +27,7 @@ const lastSHA256HeaderHex = "10000a205fca17a6566978303e989d163e1aa9dc6715eef5542
 
 // scriptedRPC answers the three RPCs the check uses from fixed values.
 type scriptedRPC struct {
+	chain      string
 	headers    int32
 	infoErr    error
 	blockHash  map[int64]*chainhash.Hash
@@ -42,8 +43,12 @@ func (s *scriptedRPC) GetBlockChainInfo() (*btcjson.GetBlockChainInfoResult, err
 	if s.infoErr != nil {
 		return nil, s.infoErr
 	}
+	chain := s.chain
+	if chain == "" {
+		chain = "main"
+	}
 	return &btcjson.GetBlockChainInfoResult{
-		Chain: "main", Headers: s.headers, Blocks: s.headers,
+		Chain: chain, Headers: s.headers, Blocks: s.headers,
 	}, nil
 }
 
@@ -285,6 +290,7 @@ func TestChainIdentityRPCErrors(t *testing.T) {
 func TestChainIdentityRegtestFormatOnly(t *testing.T) {
 	act := headerHash(t, activationHeaderHex)
 	rpc := &scriptedRPC{
+		chain:     "regtest",
 		headers:   30,
 		blockHash: map[int64]*chainhash.Hash{20: act},
 		headerHex: map[string]string{act.String(): activationHeaderHex},
@@ -311,6 +317,7 @@ func TestChainIdentityRegtestFormatOnly(t *testing.T) {
 func TestChainIdentityHeightFromNode(t *testing.T) {
 	act := headerHash(t, activationHeaderHex)
 	rpc := &scriptedRPC{
+		chain:     "testnet4",
 		headers:   200000,
 		blockHash: map[int64]*chainhash.Hash{150308: act},
 		headerHex: map[string]string{act.String(): activationHeaderHex},
@@ -367,4 +374,39 @@ func TestChainIdentityStatusFileAtomic(t *testing.T) {
 	st, err := ReadChainIdentityStatus(path)
 	require.NoError(t, err)
 	require.Equal(t, ChainIdentityConfirmed, st.State)
+}
+
+// TestChainIdentityRefusesOtherNetwork: a node on another network is refused
+// at once rather than waited for, whatever its height.
+func TestChainIdentityRefusesOtherNetwork(t *testing.T) {
+	for _, headers := range []int32{900000, 971774} {
+		dir := t.TempDir()
+		path := ChainIdentityStatusPath(dir, "mainnet")
+		rpc := mainnetRPC(t)
+		rpc.chain = "signet"
+		rpc.headers = headers
+		c := newTestChecker(t, rpc, BitcoinMainNetParams, path)
+
+		_, err := c.run(make(chan struct{}))
+		var wrong *ErrWrongChain
+		require.ErrorAs(t, err, &wrong)
+		require.Contains(t, err.Error(), `"signet"`)
+		require.Contains(t, err.Error(), `"main"`)
+
+		st := readStatus(t, path)
+		require.Equal(t, ChainIdentityRefused, st.State)
+		require.Contains(t, st.Reason, "signet")
+		require.Equal(t, uint32(961640), st.ActivationHeight)
+	}
+}
+
+// TestBitcoindChainName pins the getblockchaininfo names the check compares
+// against, and that simnet has none.
+func TestBitcoindChainName(t *testing.T) {
+	require.Equal(t, "main", bitcoindChainName(&chaincfg.MainNetParams))
+	require.Equal(t, "test", bitcoindChainName(&chaincfg.TestNet3Params))
+	require.Equal(t, "testnet4", bitcoindChainName(&chaincfg.TestNet4Params))
+	require.Equal(t, "signet", bitcoindChainName(&chaincfg.SigNetParams))
+	require.Equal(t, "regtest", bitcoindChainName(&chaincfg.RegressionNetParams))
+	require.Equal(t, "", bitcoindChainName(&chaincfg.SimNetParams))
 }
