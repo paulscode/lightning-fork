@@ -15,6 +15,10 @@ This is **Lightning Fork** (`github.com/paulscode/lightning-fork`), a fork of
 mainnet activation at height 961640 on 2026-08-30) and refuses to run against,
 connect to, or pay any node on the SHA256d chain it shares a genesis block
 with. Read [docs/blake2b.md](docs/blake2b.md) for what differs from `lnd`:
+The identity constants another implementation needs to agree with (chain
+hashes, invoice prefixes, the `init` networks rule, which signatures opt
+into `SIGHASH_UNIFIED`, reserved feature bits) are in
+[docs/blake2b-chain-identity.md](docs/blake2b-chain-identity.md).
 the chain hash and invoice prefix, the activation-header check, the `init`
 networks handshake, and the configuration options. It builds against
 [`paulscode/btcd-blake2b`](https://github.com/paulscode/btcd-blake2b), which
