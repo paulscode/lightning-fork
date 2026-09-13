@@ -1485,7 +1485,7 @@ func (w *WalletKit) sweepNewInput(op *wire.OutPoint, currentHeight uint32,
 			PkScript: utxo.PkScript,
 			Value:    int64(utxo.Value),
 		},
-		HashType: txscript.SigHashAll,
+		HashType: input.SoleSignerSigHash(false),
 	}
 
 	var witnessType input.WitnessType
@@ -1496,7 +1496,7 @@ func (w *WalletKit) sweepNewInput(op *wire.OutPoint, currentHeight uint32,
 		witnessType = input.NestedWitnessKeyHash
 	case lnwallet.TaprootPubkey:
 		witnessType = input.TaprootPubKeySpend
-		signDesc.HashType = txscript.SigHashDefault
+		signDesc.HashType = input.SoleSignerSigHash(true)
 	default:
 		return fmt.Errorf("unknown input witness %v", op)
 	}

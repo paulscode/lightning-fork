@@ -346,6 +346,9 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 			subCfgValue.FieldByName("ActiveNetParams").Set(
 				reflect.ValueOf(activeNetParams),
 			)
+			subCfgValue.FieldByName("ChainHash").Set(
+				reflect.ValueOf(cfg.ActiveNetParams.ChainHash),
+			)
 
 			subCfgValue.FieldByName("GraphDB").Set(
 				reflect.ValueOf(graphDB),

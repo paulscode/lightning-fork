@@ -198,6 +198,12 @@ type testCase struct {
 // BOLT 03, Appendix C. This deterministically generates commitment and second
 // level HTLC transactions and checks that they match the expected values.
 func TestCommitmentAndHTLCTransactions(t *testing.T) {
+	// The vectors pin every byte of the spec's transactions, including the
+	// hash type of our own signature on the second-level HTLC
+	// transactions, which the unified opt-in changes; run them as the spec
+	// signs.
+	withoutUnifiedSigHash(t)
+
 	t.Parallel()
 
 	vectorSets := []struct {
@@ -1078,4 +1084,13 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	})
 
 	return channelRemote, channelLocal
+}
+
+// withoutUnifiedSigHash turns the unified signature hash opt-in off for the
+// duration of a test, for vectors that pin the legacy hash types.
+func withoutUnifiedSigHash(t *testing.T) {
+	t.Helper()
+	prev := input.UnifiedSigHash()
+	input.SetUnifiedSigHash(false)
+	t.Cleanup(func() { input.SetUnifiedSigHash(prev) })
 }

@@ -152,7 +152,7 @@ func (r *RPCKeyRing) SendOutputs(inputs fn.Set[wire.OutPoint],
 	outputFetcher := lnwallet.NewWalletPrevOutputFetcher(r.WalletController)
 	for i, txIn := range tx.TxIn {
 		signDesc := input.SignDescriptor{
-			HashType: txscript.SigHashAll,
+			HashType: input.SoleSignerSigHash(false),
 			SigHashes: txscript.NewTxSigHashes(
 				tx, outputFetcher,
 			),
@@ -171,7 +171,7 @@ func (r *RPCKeyRing) SendOutputs(inputs fn.Set[wire.OutPoint],
 		}
 
 		if txscript.IsPayToTaproot(info.PkScript) {
-			signDesc.HashType = txscript.SigHashDefault
+			signDesc.HashType = input.SoleSignerSigHash(true)
 		}
 
 		// Now that we know the input is ours, we'll populate the

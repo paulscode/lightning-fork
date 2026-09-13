@@ -126,18 +126,46 @@ paths, `lncli` and the RPC surface are unchanged; `lncli getinfo` reports
 `chain: bitcoin`, `network: mainnet` and a version string ending in
 `-blake2b.<n>`.
 
-## Replay across the two chains
+## Replay protection
 
 Coins that existed before height 961640 exist on both chains, and a
-signature made without the opt-in `SIGHASH_UNIFIED` flag is valid on both.
-A channel whose funding transaction spends such coins therefore exists on
-both chains too. Lightning Fork's answer is to sign every transaction it makes
-alone with the opt-in flag, so its funding transactions, sweeps and wallet
-sends cannot be replayed on the SHA256 chain; that work is tracked
-separately from the chain-identity work in this document and is not yet
-complete. Until then, prefer funding channels from coins that only exist on
-this chain (coins received after the fork), and treat any channel funded from
-pre-fork coins as replayable.
+signature made the ordinary way is valid on both: a transaction spending
+such coins on one chain can be copied to the other, where it spends their
+twins. The BLAKE2b chain's answer is an opt-in signature hash,
+`SIGHASH_UNIFIED` (hash type bit `0x20`): a signature that carries it
+commits to a message no other chain computes (a BIP341-shaped message under
+the tag `UnifiedSighash`, covering every spent output and a script type
+byte), so it is invalid anywhere the fork is not active, and the bit itself
+is committed to, so it cannot be stripped.
+
+Lightning Fork opts in for everything it signs alone: on-chain sends from
+its wallet, channel funding inputs it contributes, sweeps of its own outputs
+after a close, second-level HTLC transactions it broadcasts, justice
+transactions it broadcasts itself, and anchors. Those transactions cannot be
+replayed on the SHA256d chain, whichever coins they spend. Taproot key-path
+spends, which normally carry no hash type byte, carry `ALL|UNIFIED` (`0x21`)
+and are one byte longer.
+
+It does not opt in where a peer must be able to verify the signature under
+the protocol's fixed hash types: commitment transaction signatures, the HTLC
+signatures exchanged with the peer, and cooperative closes. Those are
+bilateral, and a channel opened with a peer that does not implement the
+opt-in has to stay valid to that peer. A commitment transaction that spends
+a funding output funded from pre-fork coins therefore remains replayable
+until the channel type that requires the opt-in on both sides exists; until
+then, prefer funding channels from coins received after the fork. The
+justice transactions handed to a watchtower are signed the legacy way too,
+because the tower reconstructs their witnesses without a hash type byte.
+
+The opt-in is on by default and cannot be turned off on mainnet
+(`--bitcoin.no-unified-sighash` is accepted on regtest, simnet and testnet4
+for interoperability testing). A PSBT that arrives with signatures made
+elsewhere without the bit is refused at finalization, since the whole
+transaction would be replayable; `--bitcoin.allow-legacy-sighash` overrides
+that for an operator who knows the coins exist on one chain only. PSBTs the
+wallet funds are stamped with the opt-in hash type on the inputs it adds,
+so an external signer that honours the PSBT's `SIGHASH_TYPE` field opts in
+too.
 
 ## Verifying the constants yourself
 

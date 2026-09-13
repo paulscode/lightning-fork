@@ -324,7 +324,7 @@ func CraftSweepAllTx(feeRate, maxFeeRate chainfee.SatPerKWeight,
 				PkScript: output.PkScript,
 				Value:    int64(output.Value),
 			},
-			HashType: txscript.SigHashAll,
+			HashType: input.SoleSignerSigHash(false),
 		}
 
 		pkScript := output.PkScript
@@ -347,7 +347,7 @@ func CraftSweepAllTx(feeRate, maxFeeRate chainfee.SatPerKWeight,
 
 		case lnwallet.TaprootPubkey:
 			witnessType = input.TaprootPubKeySpend
-			signDesc.HashType = txscript.SigHashDefault
+			signDesc.HashType = input.SoleSignerSigHash(true)
 
 		// All other output types we count as unknown and will fail to
 		// sweep.

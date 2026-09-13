@@ -110,7 +110,7 @@ func calculateFees(utxos []wallet.Coin, feeRate chainfee.SatPerKWeight,
 
 		case txscript.IsPayToTaproot(utxo.PkScript):
 			weightEstimate.AddTaprootKeySpendInput(
-				txscript.SigHashDefault,
+				input.SoleSignerSigHash(true),
 			)
 
 		default:

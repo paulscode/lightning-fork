@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/lightningnetwork/lnd/chainreg"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -65,7 +68,41 @@ func applyBlake2bChainConfig(cfg *Config) error {
 		cfg.Bitcoin.ChainIdentityFile = path
 	}
 
+	// Replay protection for everything this node signs alone. Mainnet
+	// has no off switch: a sweep or on-chain send made without the opt-in
+	// is a valid SHA256d transaction spending the same pre-fork coins.
+	if cfg.Bitcoin.NoUnifiedSigHash && cfg.Bitcoin.MainNet {
+		return fmt.Errorf("bitcoin.no-unified-sighash cannot be set on " +
+			"mainnet")
+	}
+	// A development or integration build never opts in: it runs upstream's
+	// tests against a stock SHA256d regtest.
+	applyUnifiedSigHash(
+		!cfg.Bitcoin.NoUnifiedSigHash && input.DefaultUnifiedSigHash(),
+	)
+	input.SetAllowLegacySigHash(cfg.Bitcoin.AllowLegacySigHash)
+
 	zpay32.RegisterInvoiceHRP(params.Name, params.InvoiceHRP)
 
 	return nil
+}
+
+// applyUnifiedSigHash switches the opt-in for every signing path the node
+// uses alone: the sign descriptors it builds (through input.SoleSignerSigHash)
+// and the wallet library's own on-chain sends, which choose their hash types
+// from package-level settings.
+func applyUnifiedSigHash(enabled bool) {
+	input.SetUnifiedSigHash(enabled)
+	if enabled {
+		txauthor.WitnessSigHashType = txscript.SigHashAll |
+			txscript.SigHashUnified
+		txauthor.TaprootSigHashType = txscript.SigHashAll |
+			txscript.SigHashUnified
+		txauthor.LegacySigHashType = txscript.SigHashAll |
+			txscript.SigHashUnified
+		return
+	}
+	txauthor.WitnessSigHashType = txscript.SigHashAll
+	txauthor.TaprootSigHashType = txscript.SigHashDefault
+	txauthor.LegacySigHashType = txscript.SigHashAll
 }

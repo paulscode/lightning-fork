@@ -1218,6 +1218,13 @@ func testForceClose(t *testing.T, testCase *forceCloseTestCase) {
 		t.Fatalf("htlc timeout spend is invalid: %v", err)
 	}
 
+	// The sweep is ours alone, so its signature opts into the unified
+	// signature hash.
+	sweepSig := sweepTx.TxIn[0].Witness[0]
+	require.True(t, input.OptInSigHash(
+		txscript.SigHashType(sweepSig[len(sweepSig)-1]),
+	), "second-level sweep signature did not opt in")
+
 	// Finally, the txid of the commitment transaction and the one returned
 	// as the closing transaction should also match.
 	closeTxHash := closeSummary.CloseTx.TxHash()

@@ -141,10 +141,38 @@ func (b *BtcWallet) FundPsbt(packet *psbt.Packet, minConfs int32,
 
 	// Let the wallet handle coin selection and/or fee estimation based on
 	// the partial TX information in the packet.
-	return b.wallet.FundPsbt(
+	changeIndex, err := b.wallet.FundPsbt(
 		packet, keyScope, minConfs, accountNum, feeSatPerKB,
 		strategy, opts...,
 	)
+	if err != nil {
+		return changeIndex, err
+	}
+
+	optInFundedInputs(packet)
+
+	return changeIndex, nil
+}
+
+// optInFundedInputs raises the hash type of every input the wallet library
+// stamped with its defaults (SIGHASH_ALL for witness v0, SIGHASH_DEFAULT for
+// taproot) to the sole-signer hash type, so that the inputs this wallet
+// funds and later signs opt into the unified signature hash. An input that
+// declares any other hash type was set deliberately and is left alone.
+func optInFundedInputs(packet *psbt.Packet) {
+	if !input.UnifiedSigHash() {
+		return
+	}
+	for i := range packet.Inputs {
+		in := &packet.Inputs[i]
+		if in.WitnessUtxo == nil {
+			continue
+		}
+		taproot := txscript.IsPayToTaproot(in.WitnessUtxo.PkScript)
+		if in.SighashType == input.LegacySoleSignerSigHash(taproot) {
+			in.SighashType = input.SoleSignerSigHash(taproot)
+		}
+	}
 }
 
 // SignPsbt expects a partial transaction with all inputs and outputs fully
@@ -602,6 +630,13 @@ func (b *BtcWallet) FinalizePsbt(packet *psbt.Packet, accountName string) error 
 		}
 		keyScope = &scope
 		accountNum = account
+	}
+
+	// A signature made elsewhere without the opt-in would make the whole
+	// transaction replayable on the SHA256d chain; refuse to be the one
+	// that finalizes it.
+	if err := input.CheckPsbtSigHashOptIn(packet); err != nil {
+		return err
 	}
 
 	return b.wallet.FinalizePsbt(keyScope, accountNum, packet)

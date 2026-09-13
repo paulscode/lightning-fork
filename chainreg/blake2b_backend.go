@@ -39,6 +39,11 @@ func verifyBlake2bBackend(rpc *rpcclient.Client, cfg *Config,
 			"this is an integration build: skipping the chain-identity "+
 			"check and following whatever chain the node serves",
 			params.Name)
+		// Such a build never opts into the unified signature hash
+		// (input.DefaultUnifiedSigHash); say so, since the node may be on
+		// a chain that does not know it.
+		log.Warnf("Signatures do not opt into the unified signature " +
+			"hash in this build")
 		if err := WriteChainIdentityStatus(statusPath, ChainIdentityStatus{
 			State:     ChainIdentitySkipped,
 			Reason:    "integration build on a local network without an activation height",

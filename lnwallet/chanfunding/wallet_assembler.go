@@ -162,9 +162,9 @@ func (f *FullIntent) CompileFundingTx(extraInputs []*wire.TxIn,
 
 		// We support spending a p2tr input ourselves. But not as part
 		// of their inputs.
-		signDesc.HashType = txscript.SigHashAll
+		signDesc.HashType = input.SoleSignerSigHash(false)
 		if txscript.IsPayToTaproot(info.PkScript) {
-			signDesc.HashType = txscript.SigHashDefault
+			signDesc.HashType = input.SoleSignerSigHash(true)
 		}
 
 		// Finally, we'll sign the input as is, and populate the input

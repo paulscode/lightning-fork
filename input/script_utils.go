@@ -1871,8 +1871,13 @@ func HtlcSpendSuccess(signer Signer, signDesc *SignDescriptor,
 	sweepTx.Version = 2
 
 	// As we mutated the transaction, we'll re-calculate the sighashes for
-	// this instance.
-	signDesc.SigHashes = NewTxSigHashesV0Only(sweepTx)
+	// this instance. The unified signature hash commits to the spent
+	// output, so the cache is built from a fetcher that knows it: the one
+	// the caller supplied, or the output in the descriptor for the
+	// single-input sweep this helper builds.
+	signDesc.SigHashes = txscript.NewTxSigHashes(
+		sweepTx, signDescPrevOutFetcher(signDesc),
+	)
 
 	// With the proper sequence and version set, we'll now sign the timeout
 	// transaction using the passed signed descriptor. In order to generate
@@ -1943,7 +1948,7 @@ func HtlcSecondLevelSpend(signer Signer, signDesc *SignDescriptor,
 	// witness script), in order to force execution to the second portion
 	// of the if clause.
 	witnessStack := wire.TxWitness(make([][]byte, 3))
-	witnessStack[0] = append(sweepSig.Serialize(), byte(txscript.SigHashAll))
+	witnessStack[0] = append(sweepSig.Serialize(), byte(signDesc.HashType))
 	witnessStack[1] = nil
 	witnessStack[2] = signDesc.WitnessScript
 
@@ -3223,4 +3228,22 @@ func ScriptIsOpReturn(script []byte) bool {
 		(txscript.IsSmallInt(tokenizer.Opcode()) ||
 			tokenizer.Opcode() <= txscript.OP_PUSHDATA4) &&
 		len(tokenizer.Data()) <= txscript.MaxDataCarrierSize
+}
+
+// signDescPrevOutFetcher returns the fetcher to hash a sign descriptor's
+// transaction with: the one it carries, or one answering with its own
+// output for every outpoint, which is exact for a single-input transaction.
+func signDescPrevOutFetcher(
+	signDesc *SignDescriptor) txscript.PrevOutputFetcher {
+
+	if signDesc.PrevOutputFetcher != nil {
+		return signDesc.PrevOutputFetcher
+	}
+	if signDesc.Output != nil {
+		return txscript.NewCannedPrevOutputFetcher(
+			signDesc.Output.PkScript, signDesc.Output.Value,
+		)
+	}
+
+	return txscript.NewCannedPrevOutputFetcher(nil, 0)
 }

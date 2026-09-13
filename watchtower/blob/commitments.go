@@ -50,8 +50,28 @@ func (c CommitmentType) ToLocalInput(info *lnwallet.BreachRetribution) (
 	}
 
 	return input.NewBaseInput(
-		&info.RemoteOutpoint, witnessType, info.RemoteOutputSignDesc, 0,
+		&info.RemoteOutpoint, witnessType,
+		c.towerSignDesc(info.RemoteOutputSignDesc), 0,
 	), nil
+}
+
+// towerSignDesc returns a copy of a breach sign descriptor with the hash
+// type the tower reconstructs the justice witness with: the blob carries a
+// bare signature and the tower appends SIGHASH_ALL, or expects a 64-byte
+// (SIGHASH_DEFAULT) Schnorr signature for taproot, so a signature handed to
+// it must not opt into the unified signature hash whatever this node does
+// for the spends it broadcasts itself.
+func (c CommitmentType) towerSignDesc(
+	desc *input.SignDescriptor) *input.SignDescriptor {
+
+	if desc == nil {
+		return nil
+	}
+	taproot := c == TaprootCommitment || c == TaprootFinalCommitment
+	towerDesc := *desc
+	towerDesc.HashType = input.LegacySoleSignerSigHash(taproot)
+
+	return &towerDesc
 }
 
 // ToRemoteInput constructs the input that will be used to spend the to_remote
@@ -68,7 +88,7 @@ func (c CommitmentType) ToRemoteInput(info *lnwallet.BreachRetribution) (
 	case LegacyCommitment, LegacyTweaklessCommitment:
 		return input.NewBaseInput(
 			&info.LocalOutpoint, witnessType,
-			info.LocalOutputSignDesc, 0,
+			c.towerSignDesc(info.LocalOutputSignDesc), 0,
 		), nil
 
 	case AnchorCommitment, TaprootCommitment, TaprootFinalCommitment:
@@ -77,7 +97,7 @@ func (c CommitmentType) ToRemoteInput(info *lnwallet.BreachRetribution) (
 		// delay of 1.
 		return input.NewCsvInput(
 			&info.LocalOutpoint, witnessType,
-			info.LocalOutputSignDesc, 0, 1,
+			c.towerSignDesc(info.LocalOutputSignDesc), 0, 1,
 		), nil
 
 	default:

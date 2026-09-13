@@ -6,7 +6,6 @@ import (
 	"sort"
 
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
@@ -81,7 +80,7 @@ func createWalletTxInput(utxo *lnwallet.Utxo) (input.Input, error) {
 			PkScript: utxo.PkScript,
 			Value:    int64(utxo.Value),
 		},
-		HashType: txscript.SigHashAll,
+		HashType: input.SoleSignerSigHash(false),
 	}
 
 	var witnessType input.WitnessType
@@ -92,7 +91,7 @@ func createWalletTxInput(utxo *lnwallet.Utxo) (input.Input, error) {
 		witnessType = input.NestedWitnessKeyHash
 	case lnwallet.TaprootPubkey:
 		witnessType = input.TaprootPubKeySpend
-		signDesc.HashType = txscript.SigHashDefault
+		signDesc.HashType = input.SoleSignerSigHash(true)
 	default:
 		return nil, fmt.Errorf("unknown address type %v",
 			utxo.AddressType)

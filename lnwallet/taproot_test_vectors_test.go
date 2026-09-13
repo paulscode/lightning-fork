@@ -1291,6 +1291,12 @@ func (tc *taprootTestContext) generateTransactionVectors() []TransactionTestCase
 // TestTaprootVectors either generates or verifies taproot test vectors
 // depending on the -generate-taproot-vectors flag.
 func TestTaprootVectors(t *testing.T) {
+	// The vectors pin every byte of the spec's transactions, including the
+	// hash type of our own signature on the second-level HTLC
+	// transactions, which the unified opt-in changes; run them as the spec
+	// signs.
+	withoutUnifiedSigHash(t)
+
 	if *generateTaprootVectors {
 		t.Log("Generating taproot test vectors...")
 		generateAndWriteTaprootVectors(t)

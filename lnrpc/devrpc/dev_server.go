@@ -288,7 +288,7 @@ func (s *Server) ImportGraph(ctx context.Context,
 		}
 
 		edge, err := models.NewV1Channel(
-			rpcEdge.ChannelId, s.cfg.ActiveNetParams.ChainHash,
+			rpcEdge.ChannelId, s.cfg.ChainHash,
 			node1, node2, &models.ChannelV1Fields{},
 			models.WithCapacity(btcutil.Amount(rpcEdge.Capacity)),
 			models.WithChannelPoint(*channelPoint),
