@@ -58,7 +58,10 @@ import (
 	"github.com/lightningnetwork/lnd/lnencrypt"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/offersrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnutils"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -68,7 +71,9 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/nat"
 	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/offerpay"
 	"github.com/lightningnetwork/lnd/offers"
+	"github.com/lightningnetwork/lnd/offerserve"
 	"github.com/lightningnetwork/lnd/onionmessage"
 	"github.com/lightningnetwork/lnd/onionmsg"
 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
@@ -77,6 +82,7 @@ import (
 	"github.com/lightningnetwork/lnd/pool"
 	"github.com/lightningnetwork/lnd/queue"
 	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/routing/blindedpath"
 	"github.com/lightningnetwork/lnd/routing/localchans"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/subscribe"
@@ -88,6 +94,7 @@ import (
 	"github.com/lightningnetwork/lnd/watchtower/wtclient"
 	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"
 	"github.com/lightningnetwork/lnd/watchtower/wtserver"
+	"github.com/lightningnetwork/lnd/zpay32"
 )
 
 const (
@@ -348,6 +355,15 @@ type server struct {
 
 	// onionMessenger carries BOLT 12 messages over onion messages.
 	onionMessenger *onionmsg.Messenger
+
+	// offerInvoices records the invoices issued for offers.
+	offerInvoices *offers.InvoiceStore
+
+	// offerServer answers invoice requests for this node's offers.
+	offerServer *offerserve.Server
+
+	// offerClient fetches invoices for other nodes' offers.
+	offerClient *offerpay.Client
 
 	htlcSwitch *htlcswitch.Switch
 
@@ -956,6 +972,39 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 		NodeReachable: func() bool {
 			return len(s.getNodeAnnouncement().Addresses) > 0
 		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.offerInvoices, err = offers.NewInvoiceStore(dbs.ChanStateDB)
+	if err != nil {
+		return nil, err
+	}
+	s.offerServer, err = offerserve.New(offerserve.Config{
+		Manager:    s.offersManager,
+		Invoices:   s.offerInvoices,
+		Messenger:  s.onionMessenger,
+		ChainHash:  [32]byte(*cfg.ActiveNetParams.GenesisHash),
+		NodeKey:    *nodeKeyDesc,
+		Signer:     cc.KeyRing,
+		AddInvoice: s.addOfferInvoice,
+		InvoiceSettled: func(ctx context.Context,
+			hash [32]byte) (bool, error) {
+
+			inv, err := s.invoices.LookupInvoice(ctx, hash)
+			if err != nil {
+				return false, err
+			}
+
+			return inv.State == invoices.ContractSettled, nil
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.offerClient, err = offerpay.New(offerpay.Config{
+		Messenger: s.onionMessenger,
+		ChainHash: [32]byte(*cfg.ActiveNetParams.GenesisHash),
 	})
 	if err != nil {
 		return nil, err
@@ -2368,6 +2417,14 @@ func (s *server) Start(ctx context.Context) error {
 		if !s.cfg.ProtocolOptions.NoOnionMessages() {
 			cleanup = cleanup.add(s.onionMessenger.Stop)
 			if err := s.onionMessenger.Start(); err != nil {
+				startErr = err
+				return
+			}
+			if err := s.offerServer.Start(); err != nil {
+				startErr = err
+				return
+			}
+			if err := s.offerClient.Start(); err != nil {
 				startErr = err
 				return
 			}
@@ -5635,6 +5692,171 @@ func (s *server) SendOnionMessage(ctx context.Context, peerPub [33]byte,
 	// Send the message as low-priority. For now we assume that all
 	// application-defined message are low priority.
 	return peer.SendMessageLazy(true, msg)
+}
+
+// offersDeps is what the offers sub-server gets from the node. Without
+// onion messages there is no client: fetching and paying are refused up
+// front rather than waiting for replies that cannot come.
+func (s *server) offersDeps() *offersrpc.Deps {
+	client := s.offerClient
+	if s.cfg.ProtocolOptions.NoOnionMessages() {
+		client = nil
+	}
+
+	return &offersrpc.Deps{
+		Manager:  s.offersManager,
+		Client:   client,
+		Invoices: s.offerInvoices,
+		LookupInvoice: func(ctx context.Context,
+			hash [32]byte) (*invoices.Invoice, error) {
+
+			inv, err := s.invoices.LookupInvoice(ctx, hash)
+			if err != nil {
+				return nil, err
+			}
+
+			return &inv, nil
+		},
+		PayInvoice: func(ctx context.Context,
+			payment *routing.LightningPayment) ([32]byte,
+			*route.Route, error) {
+
+			return s.chanRouter.SendPayment(ctx, payment)
+		},
+		LookupPayment: func(ctx context.Context,
+			hash [32]byte) ([32]byte, bool, bool, error) {
+
+			payment, err := s.controlTower.FetchPayment(
+				ctx, lntypes.Hash(hash),
+			)
+			if err != nil {
+				return [32]byte{}, false, false, err
+			}
+			settled, _ := payment.TerminalInfo()
+			if settled != nil && settled.Settle != nil {
+				return settled.Settle.Preimage, true, false, nil
+			}
+
+			return [32]byte{}, false, !payment.Terminated(), nil
+		},
+		ResolveIntro: s.onionMessenger.ResolveIntro,
+		NodeKey:      s.identityECDH.PubKey(),
+		PeerOverChannel: func(ctx context.Context,
+			scid lnwire.ShortChannelID) (*btcec.PublicKey, error) {
+
+			// The channel may be named by an alias.
+			if base, err := s.aliasMgr.FindBaseSCID(scid); err == nil {
+				scid = base
+			}
+			info, _, _, err := s.graphDB.FetchChannelEdgesByID(
+				ctx, scid.ToUint64(),
+			)
+			if err != nil {
+				return nil, err
+			}
+			other, err := info.OtherNodeKeyBytes(
+				s.identityECDH.PubKey().SerializeCompressed(),
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return btcec.ParsePubKey(other[:])
+		},
+		DecryptBlindedData: s.sphinxOnionMsg.DecryptBlindedHopData,
+		NextPathKey:        s.sphinxOnionMsg.NextEphemeral,
+	}
+}
+
+// addOfferInvoice creates the Lightning invoice behind a BOLT 12 invoice:
+// a registry invoice with blinded payment paths under the node's blinded
+// path settings, whose paths are read back for the BOLT 12 invoice to
+// carry.
+func (s *server) addOfferInvoice(ctx context.Context, amountMsat uint64,
+	description string, expiry time.Duration) (*offerserve.CreatedInvoice,
+	error) {
+
+	defaultDelta := s.cfg.Bitcoin.TimeLockDelta
+	blindCfg := s.cfg.Routing.BlindedPaths
+	restrictions := &routing.BlindedPathRestrictions{
+		MinDistanceFromIntroNode: blindCfg.MinNumRealHops,
+		NumHops:                  blindCfg.NumHops,
+		MaxNumPaths:              blindCfg.MaxNumPaths,
+		NodeOmissionSet:          fn.NewSet[route.Vertex](),
+	}
+	selfNode := route.NewVertex(s.identityECDH.PubKey())
+
+	addInvoiceCfg := &invoicesrpc.AddInvoiceConfig{
+		AddInvoice:        s.invoices.AddInvoice,
+		IsChannelActive:   s.htlcSwitch.HasActiveLink,
+		ChainParams:       s.cfg.ActiveNetParams.Params,
+		NodeSigner:        s.nodeSigner,
+		DefaultCLTVExpiry: defaultDelta,
+		ChanDB:            s.chanStateDB,
+		Graph:             s.v1Graph,
+		GenInvoiceFeatures: func() *lnwire.FeatureVector {
+			v := s.featureMgr.Get(feature.SetInvoice)
+
+			// A blinded invoice needs no payment address: the
+			// path_id in the final hop's data stands in for it.
+			v.Unset(lnwire.PaymentAddrRequired)
+			v.Set(lnwire.PaymentAddrOptional)
+
+			return feature.SetBit(
+				v, lnwire.Bolt11BlindedPathsRequired,
+			)
+		},
+		GenAmpInvoiceFeatures: func() *lnwire.FeatureVector {
+			return s.featureMgr.Get(feature.SetInvoiceAmp)
+		},
+		GetAlias:   s.aliasMgr.GetPeerAlias,
+		BestHeight: s.cc.BestBlockTracker.BestHeight,
+		QueryBlindedRoutes: func(amt lnwire.MilliSatoshi) (
+			[]*route.Route, error) {
+
+			return s.chanRouter.FindBlindedPaths(
+				selfNode, amt, s.defaultMC.GetProbability,
+				restrictions,
+			)
+		},
+	}
+	hash, invoice, err := invoicesrpc.AddInvoice(
+		ctx, addInvoiceCfg, &invoicesrpc.AddInvoiceData{
+			Memo:   description,
+			Value:  lnwire.MilliSatoshi(amountMsat),
+			Expiry: int64(expiry / time.Second),
+			BlindedPathCfg: &invoicesrpc.BlindedPathConfig{
+				RoutePolicyIncrMultiplier: blindCfg.
+					PolicyIncreaseMultiplier,
+				RoutePolicyDecrMultiplier: blindCfg.
+					PolicyDecreaseMultiplier,
+				DefaultDummyHopPolicy: &blindedpath.BlindedHopPolicy{
+					CLTVExpiryDelta: uint16(defaultDelta),
+					FeeRate:         uint32(s.cfg.Bitcoin.FeeRate),
+					BaseFee:         s.cfg.Bitcoin.BaseFee,
+					MinHTLCMsat:     s.cfg.Bitcoin.MinHTLCIn,
+				},
+				MinNumPathHops: blindCfg.NumHops,
+			},
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	payReq, err := zpay32.Decode(
+		string(invoice.PaymentRequest), s.cfg.ActiveNetParams.Params,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode the invoice just made: %w", err)
+	}
+
+	return &offerserve.CreatedInvoice{
+		PaymentHash: *hash,
+		Paths:       payReq.BlindedPaymentPaths,
+		CreatedAt:   invoice.CreationDate,
+		Expiry:      invoice.Terms.Expiry,
+		Features:    invoice.Terms.Features,
+	}, nil
 }
 
 // connectForOnionMessage connects to a node at one of its addresses so an

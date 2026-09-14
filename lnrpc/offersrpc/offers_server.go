@@ -15,8 +15,12 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/bolt12"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/offerpay"
 	"github.com/lightningnetwork/lnd/offers"
+	"github.com/lightningnetwork/lnd/onionmsg"
+	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -58,7 +62,29 @@ var (
 			Entity: "invoices",
 			Action: "read",
 		}},
+		"/offersrpc.Offers/FetchInvoice": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
+		"/offersrpc.Offers/PayOffer": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
+		"/offersrpc.Offers/ListOfferInvoices": {{
+			Entity: "invoices",
+			Action: "read",
+		}},
 	}
+)
+
+const (
+	// DefaultPayTimeout bounds a payment made by PayOffer when the
+	// request sets no timeout.
+	DefaultPayTimeout = 60 * time.Second
+
+	// DefaultMaxParts is how many parts a payment may be split into when
+	// the request does not say.
+	DefaultMaxParts = 16
 )
 
 // ServerShell is a shell struct holding a reference to the actual sub-server.
@@ -204,7 +230,7 @@ func (s *Server) CreateOffer(ctx context.Context,
 		params.AbsoluteExpiry = time.Unix(int64(req.AbsoluteExpiry), 0)
 	}
 
-	record, created, err := s.cfg.Manager.CreateOffer(ctx, params)
+	record, created, err := s.cfg.Deps.Manager.CreateOffer(ctx, params)
 	if err != nil {
 		return nil, rpcError(err)
 	}
@@ -220,7 +246,7 @@ func (s *Server) CreateOffer(ctx context.Context,
 func (s *Server) ListOffers(_ context.Context,
 	req *ListOffersRequest) (*ListOffersResponse, error) {
 
-	records, err := s.cfg.Manager.ListOffers(req.ActiveOnly)
+	records, err := s.cfg.Deps.Manager.ListOffers(req.ActiveOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +270,7 @@ func (s *Server) DisableOffer(_ context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if err := s.cfg.Manager.DisableOffer(id); err != nil {
+	if err := s.cfg.Deps.Manager.DisableOffer(id); err != nil {
 		return nil, rpcError(err)
 	}
 
@@ -259,7 +285,7 @@ func (s *Server) EnableOffer(_ context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if err := s.cfg.Manager.EnableOffer(id); err != nil {
+	if err := s.cfg.Deps.Manager.EnableOffer(id); err != nil {
 		return nil, rpcError(err)
 	}
 
@@ -271,7 +297,7 @@ func (s *Server) DecodeBolt12(_ context.Context,
 	req *DecodeBolt12Request) (*DecodeBolt12Response, error) {
 
 	bolt12Str := strings.TrimSpace(req.Bolt12)
-	decoded, err := s.cfg.Manager.DecodeBolt12(bolt12Str)
+	decoded, err := s.cfg.Deps.Manager.DecodeBolt12(bolt12Str)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -345,35 +371,7 @@ func (s *Server) DecodeBolt12(_ context.Context,
 			PayerNote:  string(optBlob(inv.InvreqPayerNote)),
 			Metadata:   optBlob(inv.InvreqMetadata),
 		}
-		var hash []byte
-		inv.InvoicePaymentHash.WhenSome(
-			func(r tlv.RecordT[tlv.TlvType168, [32]byte]) {
-				h := r.Val
-				hash = h[:]
-			},
-		)
-		numPaths := 0
-		inv.InvoicePaths.WhenSome(
-			func(r tlv.RecordT[tlv.TlvType160, lnwire.BlindedPaths]) {
-				numPaths = len(r.Val.Paths)
-			},
-		)
-		var relExp uint32
-		inv.InvoiceRelativeExp.WhenSome(
-			func(r tlv.RecordT[tlv.TlvType166, bolt12.TUint32]) {
-				relExp = uint32(r.Val)
-			},
-		)
-		resp.Invoice = &InvoiceInfo{
-			PaymentHash:    hash,
-			AmountMsat:     optU64(inv.InvoiceAmount),
-			NodeId:         pubKeyBytes(optPubKey(inv.InvoiceNodeID)),
-			CreatedAt:      optU64(inv.InvoiceCreatedAt),
-			RelativeExpiry: relExp,
-			NumPaths:       uint32(numPaths),
-			PayerId:        pubKeyBytes(optPubKey(inv.InvreqPayerID)),
-			SignatureValid: bolt12.VerifyInvoice(inv) == nil,
-		}
+		resp.Invoice = invoiceToRPC(inv)
 	}
 
 	return resp, nil
@@ -501,4 +499,320 @@ func pubKeyBytes(k *btcec.PublicKey) []byte {
 	}
 
 	return k.SerializeCompressed()
+}
+
+// FetchInvoice asks an offer's issuer for an invoice.
+func (s *Server) FetchInvoice(ctx context.Context,
+	req *FetchInvoiceRequest) (*FetchInvoiceResponse, error) {
+
+	fetched, err := s.fetch(ctx, req.Offer, req.AmountMsat, req.Quantity,
+		req.PayerNote, req.TimeoutSeconds)
+	if err != nil {
+		return nil, err
+	}
+	offerID, err := bolt12.InvoiceOfferID(fetched.Invoice)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &FetchInvoiceResponse{
+		Bolt12:  fetched.Bolt12,
+		Invoice: invoiceToRPC(fetched.Invoice),
+		OfferId: offerID[:],
+	}, nil
+}
+
+// fetch decodes an offer string and fetches an invoice for it.
+func (s *Server) fetch(ctx context.Context, offerStr string, amount,
+	quantity uint64, note string, timeoutSecs uint32) (*offerpay.Fetched,
+	error) {
+
+	if s.cfg.Deps.Client == nil {
+		return nil, status.Error(codes.Unavailable,
+			"onion messages are disabled")
+	}
+	decoded, err := s.cfg.Deps.Manager.DecodeBolt12(offerStr)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if decoded.Offer == nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"not an offer but a %s", decoded.HRP)
+	}
+	if !decoded.ForThisChain {
+		return nil, status.Error(codes.InvalidArgument,
+			"the offer is not for this chain")
+	}
+	if timeoutSecs != 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(
+			ctx, time.Duration(timeoutSecs)*time.Second,
+		)
+		defer cancel()
+	}
+	fetched, err := s.cfg.Deps.Client.FetchInvoice(ctx, offerpay.FetchParams{
+		Offer:      decoded.Offer,
+		AmountMsat: amount,
+		Quantity:   quantity,
+		PayerNote:  note,
+	})
+	if err != nil {
+		return nil, fetchError(err)
+	}
+
+	return fetched, nil
+}
+
+// fetchError maps a fetch failure to a gRPC code.
+func fetchError(err error) error {
+	switch {
+	case errors.Is(err, offerpay.ErrAmountRequired),
+		errors.Is(err, offerpay.ErrAmountBelowOffer),
+		errors.Is(err, offerpay.ErrQuantityNotOffered),
+		errors.Is(err, offerpay.ErrQuantityRequired),
+		errors.Is(err, bolt12.ErrUnsupportedChain),
+		errors.Is(err, bolt12.ErrOfferExpired):
+
+		return status.Error(codes.InvalidArgument, err.Error())
+
+	case errors.Is(err, offerpay.ErrTimeout),
+		errors.Is(err, context.DeadlineExceeded):
+
+		return status.Error(codes.DeadlineExceeded, err.Error())
+
+	case errors.Is(err, offerpay.ErrInvoiceError):
+		return status.Error(codes.Aborted, err.Error())
+
+	case errors.Is(err, offerpay.ErrOfferUnreachable),
+		errors.Is(err, onionmsg.ErrUnreachable):
+
+		return status.Error(codes.Unavailable, err.Error())
+	}
+
+	return status.Error(codes.Unknown, err.Error())
+}
+
+// PayOffer fetches an invoice for an offer and pays it, or pays an invoice
+// fetched earlier.
+func (s *Server) PayOffer(ctx context.Context,
+	req *PayOfferRequest) (*PayOfferResponse, error) {
+
+	var (
+		inv    *bolt12.Invoice
+		bolt12 string
+	)
+	switch {
+	case req.Offer != "" && req.Invoice != "":
+		return nil, status.Error(codes.InvalidArgument,
+			"offer and invoice exclude each other")
+
+	case req.Offer != "":
+		fetched, err := s.fetch(ctx, req.Offer, req.AmountMsat,
+			req.Quantity, req.PayerNote, req.TimeoutSeconds)
+		if err != nil {
+			return nil, err
+		}
+		inv, bolt12 = fetched.Invoice, fetched.Bolt12
+
+	case req.Invoice != "":
+		decoded, err := s.cfg.Deps.Manager.DecodeBolt12(req.Invoice)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument,
+				err.Error())
+		}
+		if decoded.Invoice == nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"not an invoice but a %s", decoded.HRP)
+		}
+		if !decoded.ForThisChain {
+			return nil, status.Error(codes.InvalidArgument,
+				"the invoice is not for this chain")
+		}
+		if err := offerpay.CheckInvoice(
+			decoded.Invoice, s.cfg.Deps.Manager.ChainHash(),
+			time.Now(),
+		); err != nil {
+			return nil, status.Error(codes.InvalidArgument,
+				err.Error())
+		}
+		inv, bolt12 = decoded.Invoice, strings.TrimSpace(req.Invoice)
+
+	default:
+		return nil, status.Error(codes.InvalidArgument,
+			"an offer or an invoice is required")
+	}
+	if s.cfg.Deps.PayInvoice == nil {
+		return nil, status.Error(codes.Unavailable,
+			"payments are not available")
+	}
+
+	amount := uint64(inv.InvoiceAmount.ValOpt().UnwrapOr(0))
+	feeLimit := req.FeeLimitMsat
+	if feeLimit == 0 {
+		// The wallet's rule, the one lncli payinvoice applies too.
+		feeLimit = uint64(lnwallet.DefaultRoutingFeeLimitForAmount(
+			lnwire.MilliSatoshi(amount),
+		))
+	}
+	timeout := DefaultPayTimeout
+	if req.TimeoutSeconds != 0 {
+		timeout = time.Duration(req.TimeoutSeconds) * time.Second
+	}
+	maxParts := req.MaxParts
+	if maxParts == 0 {
+		maxParts = DefaultMaxParts
+	}
+	intent, err := offerpay.PaymentIntent(ctx, inv, offerpay.PaymentParams{
+		FeeLimitMsat: feeLimit,
+		Timeout:      timeout,
+		MaxParts:     maxParts,
+	}, offerpay.IntentHooks{
+		NodeKey:            s.cfg.Deps.NodeKey,
+		ResolveIntro:       s.cfg.Deps.ResolveIntro,
+		PeerOverChannel:    s.cfg.Deps.PeerOverChannel,
+		DecryptBlindedData: s.cfg.Deps.DecryptBlindedData,
+		NextPathKey:        s.cfg.Deps.NextPathKey,
+	})
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	hash := intent.Identifier()
+	preimage, rt, err := s.cfg.Deps.PayInvoice(ctx, intent)
+	switch {
+	case err == nil:
+
+	case errors.Is(err, paymentsdb.ErrAlreadyPaid):
+		// Paying the same invoice again is the retry the caller is
+		// told to make: it returns what the first payment got.
+		if s.cfg.Deps.LookupPayment == nil {
+			return nil, status.Error(codes.AlreadyExists,
+				"invoice is already paid")
+		}
+		got, settled, _, lookupErr := s.cfg.Deps.LookupPayment(
+			ctx, hash,
+		)
+		if lookupErr != nil || !settled {
+			return nil, status.Errorf(codes.AlreadyExists,
+				"invoice is already paid; payment hash %x",
+				hash[:])
+		}
+		preimage = got
+
+	case errors.Is(err, paymentsdb.ErrPaymentInFlight):
+		return nil, status.Errorf(codes.AlreadyExists,
+			"a payment for this invoice is in flight; track "+
+				"payment hash %x", hash[:])
+
+	default:
+		// A failed attempt may still settle: the caller is given
+		// the hash to track it and the invoice to retry with, since
+		// fetching again would make a second invoice.
+		return nil, status.Errorf(codes.Aborted,
+			"payment failed: %v; payment hash %x; retry with "+
+				"this invoice, not the offer: %s", err, hash[:],
+			bolt12)
+	}
+	var fee uint64
+	if rt != nil {
+		fee = uint64(rt.TotalFees())
+	}
+
+	return &PayOfferResponse{
+		Bolt12:          bolt12,
+		PaymentHash:     hash[:],
+		PaymentPreimage: preimage[:],
+		AmountMsat:      amount,
+		FeeMsat:         fee,
+	}, nil
+}
+
+// ListOfferInvoices lists the invoices issued for this node's offers.
+func (s *Server) ListOfferInvoices(ctx context.Context,
+	req *ListOfferInvoicesRequest) (*ListOfferInvoicesResponse, error) {
+
+	if s.cfg.Deps.Invoices == nil {
+		return &ListOfferInvoicesResponse{}, nil
+	}
+	var (
+		issued []*offers.IssuedInvoice
+		err    error
+	)
+	if len(req.OfferId) > 0 {
+		id, err := parseOfferID(req.OfferId)
+		if err != nil {
+			return nil, err
+		}
+		issued, err = s.cfg.Deps.Invoices.ListForOffer(id)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		issued, err = s.cfg.Deps.Invoices.List()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	resp := &ListOfferInvoicesResponse{}
+	for _, inv := range issued {
+		out := &OfferInvoice{
+			PaymentHash: inv.PaymentHash[:],
+			OfferId:     inv.OfferID[:],
+			PayerId:     pubKeyBytes(inv.PayerID),
+			AmountMsat:  inv.AmountMsat,
+			Quantity:    inv.Quantity,
+			CreatedAt:   uint64(inv.CreatedAt.Unix()),
+			Bolt12:      inv.Bolt12,
+			State:       "UNKNOWN",
+		}
+		if s.cfg.Deps.LookupInvoice != nil {
+			registry, err := s.cfg.Deps.LookupInvoice(
+				ctx, inv.PaymentHash,
+			)
+			if err == nil {
+				out.State = strings.ToUpper(
+					registry.State.String(),
+				)
+				out.AmountPaidMsat = uint64(registry.AmtPaid)
+			}
+		}
+		resp.Invoices = append(resp.Invoices, out)
+	}
+
+	return resp, nil
+}
+
+// invoiceToRPC converts an invoice's own fields.
+func invoiceToRPC(inv *bolt12.Invoice) *InvoiceInfo {
+	var hash []byte
+	inv.InvoicePaymentHash.WhenSome(
+		func(r tlv.RecordT[tlv.TlvType168, [32]byte]) {
+			h := r.Val
+			hash = h[:]
+		},
+	)
+	numPaths := 0
+	inv.InvoicePaths.WhenSome(
+		func(r tlv.RecordT[tlv.TlvType160, lnwire.BlindedPaths]) {
+			numPaths = len(r.Val.Paths)
+		},
+	)
+	var relExp uint32
+	inv.InvoiceRelativeExp.WhenSome(
+		func(r tlv.RecordT[tlv.TlvType166, bolt12.TUint32]) {
+			relExp = uint32(r.Val)
+		},
+	)
+
+	return &InvoiceInfo{
+		PaymentHash:    hash,
+		AmountMsat:     optU64(inv.InvoiceAmount),
+		NodeId:         pubKeyBytes(optPubKey(inv.InvoiceNodeID)),
+		CreatedAt:      optU64(inv.InvoiceCreatedAt),
+		RelativeExpiry: relExp,
+		NumPaths:       uint32(numPaths),
+		PayerId:        pubKeyBytes(optPubKey(inv.InvreqPayerID)),
+		SignatureValid: bolt12.VerifyInvoice(inv) == nil,
+	}
 }

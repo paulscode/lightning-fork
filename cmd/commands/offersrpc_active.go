@@ -27,6 +27,9 @@ func offersCommands() []cli.Command {
 				disableOfferCommand,
 				enableOfferCommand,
 				decodeBolt12Command,
+				fetchInvoiceCommand,
+				payOfferCommand,
+				listOfferInvoicesCommand,
 			},
 		},
 	}
@@ -263,6 +266,173 @@ func decodeBolt12(ctx *cli.Context) error {
 	resp, err := client.DecodeBolt12(ctxc, &offersrpc.DecodeBolt12Request{
 		Bolt12: ctx.Args().First(),
 	})
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+	return nil
+}
+
+var fetchInvoiceCommand = cli.Command{
+	Name:     "fetchinvoice",
+	Category: "Offers",
+	Usage:    "Ask an offer's issuer for an invoice, without paying it.",
+	Description: `
+	Send an invoice request for the offer over onion messages and wait for
+	the invoice. The invoice is checked against the request and returned;
+	nothing is paid. Pay it with "offer pay --invoice".`,
+	ArgsUsage: "offer",
+	Flags: []cli.Flag{
+		cli.Uint64Flag{
+			Name: "amount_msat",
+			Usage: "the amount to ask to be invoiced, in " +
+				"millisatoshi; required for an offer without " +
+				"an amount",
+		},
+		cli.Uint64Flag{
+			Name:  "quantity",
+			Usage: "how many of the offer's item",
+		},
+		cli.StringFlag{
+			Name:  "payer_note",
+			Usage: "a note for the issuer",
+		},
+		cli.Uint64Flag{
+			Name:  "timeout",
+			Usage: "how long to wait for the invoice, in seconds",
+		},
+	},
+	Action: actionDecorator(fetchInvoice),
+}
+
+func fetchInvoice(ctx *cli.Context) error {
+	ctxc := getContext()
+	client, cleanUp := getOffersClient(ctx)
+	defer cleanUp()
+
+	if !ctx.Args().Present() {
+		return fmt.Errorf("offer argument missing")
+	}
+	resp, err := client.FetchInvoice(ctxc, &offersrpc.FetchInvoiceRequest{
+		Offer:          ctx.Args().First(),
+		AmountMsat:     ctx.Uint64("amount_msat"),
+		Quantity:       ctx.Uint64("quantity"),
+		PayerNote:      ctx.String("payer_note"),
+		TimeoutSeconds: uint32(ctx.Uint64("timeout")),
+	})
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+	return nil
+}
+
+var payOfferCommand = cli.Command{
+	Name:     "pay",
+	Category: "Offers",
+	Usage:    "Fetch an invoice for an offer and pay it.",
+	Description: `
+	Send an invoice request for the offer over onion messages, check the
+	invoice that comes back, and pay it. With --invoice, pay an invoice
+	fetched earlier instead.`,
+	ArgsUsage: "offer",
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name:  "invoice",
+			Usage: "an invoice fetched earlier to pay, lni1...",
+		},
+		cli.Uint64Flag{
+			Name: "amount_msat",
+			Usage: "the amount to ask to be invoiced, in " +
+				"millisatoshi; required for an offer without " +
+				"an amount",
+		},
+		cli.Uint64Flag{
+			Name:  "quantity",
+			Usage: "how many of the offer's item",
+		},
+		cli.StringFlag{
+			Name:  "payer_note",
+			Usage: "a note for the issuer",
+		},
+		cli.Uint64Flag{
+			Name: "timeout",
+			Usage: "how long to wait for the invoice and then " +
+				"for the payment, in seconds each",
+		},
+		cli.Uint64Flag{
+			Name: "fee_limit_msat",
+			Usage: "the most to pay in routing fees, in " +
+				"millisatoshi; zero means the node's default, " +
+				"as for payinvoice",
+		},
+		cli.Uint64Flag{
+			Name:  "max_parts",
+			Usage: "the most parts to split the payment into",
+		},
+	},
+	Action: actionDecorator(payOffer),
+}
+
+func payOffer(ctx *cli.Context) error {
+	ctxc := getContext()
+	client, cleanUp := getOffersClient(ctx)
+	defer cleanUp()
+
+	req := &offersrpc.PayOfferRequest{
+		Invoice:        ctx.String("invoice"),
+		AmountMsat:     ctx.Uint64("amount_msat"),
+		Quantity:       ctx.Uint64("quantity"),
+		PayerNote:      ctx.String("payer_note"),
+		TimeoutSeconds: uint32(ctx.Uint64("timeout")),
+		FeeLimitMsat:   ctx.Uint64("fee_limit_msat"),
+		MaxParts:       uint32(ctx.Uint64("max_parts")),
+	}
+	if ctx.Args().Present() {
+		req.Offer = ctx.Args().First()
+	}
+	if req.Offer == "" && req.Invoice == "" {
+		return fmt.Errorf("an offer argument or --invoice is required")
+	}
+	resp, err := client.PayOffer(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+	return nil
+}
+
+var listOfferInvoicesCommand = cli.Command{
+	Name:     "invoices",
+	Category: "Offers",
+	Usage:    "List the invoices issued for this node's offers.",
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name:  "offer_id",
+			Usage: "list only the invoices for this offer",
+		},
+	},
+	Action: actionDecorator(listOfferInvoices),
+}
+
+func listOfferInvoices(ctx *cli.Context) error {
+	ctxc := getContext()
+	client, cleanUp := getOffersClient(ctx)
+	defer cleanUp()
+
+	var id []byte
+	if ctx.IsSet("offer_id") {
+		var err error
+		id, err = hex.DecodeString(strings.TrimSpace(ctx.String("offer_id")))
+		if err != nil {
+			return fmt.Errorf("offer_id must be hex: %w", err)
+		}
+	}
+	resp, err := client.ListOfferInvoices(ctxc,
+		&offersrpc.ListOfferInvoicesRequest{OfferId: id})
 	if err != nil {
 		return err
 	}

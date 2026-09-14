@@ -53,6 +53,26 @@ service Offers {
     invoice (lni1...) and reports which chain it names.
     */
     rpc DecodeBolt12 (DecodeBolt12Request) returns (DecodeBolt12Response);
+
+    /* lncli: `offer fetchinvoice`
+    FetchInvoice asks an offer's issuer for an invoice over onion messages
+    and returns it once it has been checked against the request. Nothing is
+    paid.
+    */
+    rpc FetchInvoice (FetchInvoiceRequest) returns (FetchInvoiceResponse);
+
+    /* lncli: `offer pay`
+    PayOffer fetches an invoice for an offer and pays it, or pays an invoice
+    fetched earlier. It returns when the payment succeeds or fails.
+    */
+    rpc PayOffer (PayOfferRequest) returns (PayOfferResponse);
+
+    /* lncli: `offer invoices`
+    ListOfferInvoices lists the invoices this node has issued for its
+    offers, with their state in the invoice registry.
+    */
+    rpc ListOfferInvoices (ListOfferInvoicesRequest)
+        returns (ListOfferInvoicesResponse);
 }
 
 message CreateOfferRequest {
@@ -93,7 +113,8 @@ message CreateOfferRequest {
 }
 
 message Offer {
-    // The offer id: the BOLT 12 Merkle root of the offer's fields.
+    // The offer id: the SHA256 of the offer's TLV bytes, the way Core
+    // Lightning computes it, so the two agree on an offer's id.
     bytes offer_id = 1;
 
     // The offer as a bech32 string, lno1..., to hand to payers.
@@ -266,4 +287,120 @@ message DecodeBolt12Response {
 
     // Whether this node minted the offer.
     bool ours = 10;
+}
+
+message FetchInvoiceRequest {
+    // The offer, lno1....
+    string offer = 1;
+
+    // The amount to ask to be invoiced, in millisatoshi. Required for an
+    // offer without an amount; otherwise it may exceed the offer's amount
+    // but not fall short of it.
+    uint64 amount_msat = 2;
+
+    // How many of the offer's item, for an offer that sells by quantity.
+    uint64 quantity = 3;
+
+    // A note for the issuer.
+    string payer_note = 4;
+
+    // How long to wait for the invoice, in seconds. Zero means the default.
+    uint32 timeout_seconds = 5;
+}
+
+message FetchInvoiceResponse {
+    // The invoice, lni1....
+    string bolt12 = 1;
+
+    // The invoice's fields.
+    InvoiceInfo invoice = 2;
+
+    // The id of the offer the invoice answers.
+    bytes offer_id = 3;
+}
+
+message PayOfferRequest {
+    // The offer to fetch an invoice for and pay, lno1.... Leave empty when
+    // paying an invoice fetched earlier.
+    string offer = 1;
+
+    // An invoice fetched earlier to pay, lni1.... Excludes offer.
+    string invoice = 2;
+
+    // The amount to ask to be invoiced, as for FetchInvoice. Ignored when
+    // paying an invoice.
+    uint64 amount_msat = 3;
+
+    // How many of the offer's item, as for FetchInvoice.
+    uint64 quantity = 4;
+
+    // A note for the issuer, as for FetchInvoice.
+    string payer_note = 5;
+
+    // How long to wait for the invoice and then for the payment, in
+    // seconds each. Zero means the defaults.
+    uint32 timeout_seconds = 6;
+
+    // The most to pay in routing fees, in millisatoshi. Zero means the
+    // default limit.
+    uint64 fee_limit_msat = 7;
+
+    // The most parts the payment may be split into. Zero means the default.
+    uint32 max_parts = 8;
+}
+
+message PayOfferResponse {
+    // The invoice that was paid, lni1....
+    string bolt12 = 1;
+
+    // The payment hash.
+    bytes payment_hash = 2;
+
+    // The preimage, which is the proof of payment.
+    bytes payment_preimage = 3;
+
+    // The amount paid to the issuer, in millisatoshi.
+    uint64 amount_msat = 4;
+
+    // The routing fee paid, in millisatoshi.
+    uint64 fee_msat = 5;
+}
+
+message OfferInvoice {
+    // The payment hash.
+    bytes payment_hash = 1;
+
+    // The offer the invoice was issued for.
+    bytes offer_id = 2;
+
+    // The payer's key from the request.
+    bytes payer_id = 3;
+
+    // The invoiced amount in millisatoshi.
+    uint64 amount_msat = 4;
+
+    // The quantity requested, or zero.
+    uint64 quantity = 5;
+
+    // When the invoice was issued, as a Unix timestamp.
+    uint64 created_at = 6;
+
+    // The invoice, lni1....
+    string bolt12 = 7;
+
+    // The invoice's state in the invoice registry: OPEN, SETTLED, CANCELED
+    // or ACCEPTED.
+    string state = 8;
+
+    // The amount paid in millisatoshi, once settled.
+    uint64 amount_paid_msat = 9;
+}
+
+message ListOfferInvoicesRequest {
+    // List only the invoices for this offer, when set.
+    bytes offer_id = 1;
+}
+
+message ListOfferInvoicesResponse {
+    repeated OfferInvoice invoices = 1;
 }

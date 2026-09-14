@@ -485,6 +485,15 @@ func TestBuildPathsToSelf(t *testing.T) {
 	require.True(t, intros[intro1.id()] && intros[intro2.id()],
 		"the peers with channels are the introduction nodes")
 
+	// The same secret through the same peers builds the same paths, so
+	// an offer minted again is the same offer; another secret does not.
+	again, err := m.BuildOfferPaths(context.Background(), secret)
+	require.NoError(t, err)
+	require.Equal(t, paths, again)
+	other, err := m.BuildOfferPaths(context.Background(), [32]byte{8})
+	require.NoError(t, err)
+	require.NotEqual(t, paths, other)
+
 	// A sender connected to the first intro sends over the path and the
 	// message arrives with the secret as path_id.
 	sender := nw.newNode()

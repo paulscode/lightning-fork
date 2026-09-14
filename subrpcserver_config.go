@@ -32,7 +32,6 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/netann"
-	"github.com/lightningnetwork/lnd/offers"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/watchtower"
@@ -136,7 +135,7 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 	rpcLogger btclog.Logger, aliasMgr *aliasmgr.Manager,
 	auxDataParser fn.Option[AuxDataParser],
 	invoiceHtlcModifier *invoices.HtlcModificationInterceptor,
-	offersManager *offers.Manager) error {
+	offersDeps *offersrpc.Deps) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
 	// that allows us to programmatically inspect its fields.
@@ -365,8 +364,8 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 		case *offersrpc.Config:
 			subCfgValue := extractReflectValue(subCfg)
 
-			subCfgValue.FieldByName("Manager").Set(
-				reflect.ValueOf(offersManager),
+			subCfgValue.FieldByName("Deps").Set(
+				reflect.ValueOf(offersDeps),
 			)
 
 		case *peersrpc.Config:

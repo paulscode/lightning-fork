@@ -177,6 +177,105 @@
           "Offers"
         ]
       }
+    },
+    "/v2/offers/fetchinvoice": {
+      "post": {
+        "summary": "lncli: `offer fetchinvoice`\nFetchInvoice asks an offer's issuer for an invoice over onion messages\nand returns it once it has been checked against the request. Nothing is\npaid.",
+        "operationId": "Offers_FetchInvoice",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/offersrpcFetchInvoiceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/offersrpcFetchInvoiceRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v2/offers/invoices": {
+      "post": {
+        "summary": "lncli: `offer invoices`\nListOfferInvoices lists the invoices this node has issued for its\noffers, with their state in the invoice registry.",
+        "operationId": "Offers_ListOfferInvoices",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/offersrpcListOfferInvoicesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/offersrpcListOfferInvoicesRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v2/offers/pay": {
+      "post": {
+        "summary": "lncli: `offer pay`\nPayOffer fetches an invoice for an offer and pays it, or pays an invoice\nfetched earlier. It returns when the payment succeeds or fails.",
+        "operationId": "Offers_PayOffer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/offersrpcPayOfferResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/offersrpcPayOfferRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Offers"
+        ]
+      }
     }
   },
   "definitions": {
@@ -321,6 +420,52 @@
     "offersrpcEnableOfferResponse": {
       "type": "object"
     },
+    "offersrpcFetchInvoiceRequest": {
+      "type": "object",
+      "properties": {
+        "offer": {
+          "type": "string",
+          "description": "The offer, lno1...."
+        },
+        "amount_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount to ask to be invoiced, in millisatoshi. Required for an\noffer without an amount; otherwise it may exceed the offer's amount\nbut not fall short of it."
+        },
+        "quantity": {
+          "type": "string",
+          "format": "uint64",
+          "description": "How many of the offer's item, for an offer that sells by quantity."
+        },
+        "payer_note": {
+          "type": "string",
+          "description": "A note for the issuer."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "format": "int64",
+          "description": "How long to wait for the invoice, in seconds. Zero means the default."
+        }
+      }
+    },
+    "offersrpcFetchInvoiceResponse": {
+      "type": "object",
+      "properties": {
+        "bolt12": {
+          "type": "string",
+          "description": "The invoice, lni1...."
+        },
+        "invoice": {
+          "$ref": "#/definitions/offersrpcInvoiceInfo",
+          "description": "The invoice's fields."
+        },
+        "offer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The id of the offer the invoice answers."
+        }
+      }
+    },
     "offersrpcInvoiceInfo": {
       "type": "object",
       "properties": {
@@ -398,6 +543,28 @@
         }
       }
     },
+    "offersrpcListOfferInvoicesRequest": {
+      "type": "object",
+      "properties": {
+        "offer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "List only the invoices for this offer, when set."
+        }
+      }
+    },
+    "offersrpcListOfferInvoicesResponse": {
+      "type": "object",
+      "properties": {
+        "invoices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/offersrpcOfferInvoice"
+          }
+        }
+      }
+    },
     "offersrpcListOffersResponse": {
       "type": "object",
       "properties": {
@@ -416,7 +583,7 @@
         "offer_id": {
           "type": "string",
           "format": "byte",
-          "description": "The offer id: the BOLT 12 Merkle root of the offer's fields."
+          "description": "The offer id: the SHA256 of the offer's TLV bytes, the way Core\nLightning computes it, so the two agree on an offer's id."
         },
         "bolt12": {
           "type": "string",
@@ -484,6 +651,125 @@
         "quantity_any": {
           "type": "boolean",
           "description": "Whether a request may ask for any quantity."
+        }
+      }
+    },
+    "offersrpcOfferInvoice": {
+      "type": "object",
+      "properties": {
+        "payment_hash": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment hash."
+        },
+        "offer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The offer the invoice was issued for."
+        },
+        "payer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payer's key from the request."
+        },
+        "amount_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The invoiced amount in millisatoshi."
+        },
+        "quantity": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The quantity requested, or zero."
+        },
+        "created_at": {
+          "type": "string",
+          "format": "uint64",
+          "description": "When the invoice was issued, as a Unix timestamp."
+        },
+        "bolt12": {
+          "type": "string",
+          "description": "The invoice, lni1...."
+        },
+        "state": {
+          "type": "string",
+          "description": "The invoice's state in the invoice registry: OPEN, SETTLED, CANCELED\nor ACCEPTED."
+        },
+        "amount_paid_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount paid in millisatoshi, once settled."
+        }
+      }
+    },
+    "offersrpcPayOfferRequest": {
+      "type": "object",
+      "properties": {
+        "offer": {
+          "type": "string",
+          "description": "The offer to fetch an invoice for and pay, lno1.... Leave empty when\npaying an invoice fetched earlier."
+        },
+        "invoice": {
+          "type": "string",
+          "description": "An invoice fetched earlier to pay, lni1.... Excludes offer."
+        },
+        "amount_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount to ask to be invoiced, as for FetchInvoice. Ignored when\npaying an invoice."
+        },
+        "quantity": {
+          "type": "string",
+          "format": "uint64",
+          "description": "How many of the offer's item, as for FetchInvoice."
+        },
+        "payer_note": {
+          "type": "string",
+          "description": "A note for the issuer, as for FetchInvoice."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "format": "int64",
+          "description": "How long to wait for the invoice and then for the payment, in\nseconds each. Zero means the defaults."
+        },
+        "fee_limit_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The most to pay in routing fees, in millisatoshi. Zero means the\ndefault limit."
+        },
+        "max_parts": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The most parts the payment may be split into. Zero means the default."
+        }
+      }
+    },
+    "offersrpcPayOfferResponse": {
+      "type": "object",
+      "properties": {
+        "bolt12": {
+          "type": "string",
+          "description": "The invoice that was paid, lni1...."
+        },
+        "payment_hash": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment hash."
+        },
+        "payment_preimage": {
+          "type": "string",
+          "format": "byte",
+          "description": "The preimage, which is the proof of payment."
+        },
+        "amount_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount paid to the issuer, in millisatoshi."
+        },
+        "fee_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The routing fee paid, in millisatoshi."
         }
       }
     },

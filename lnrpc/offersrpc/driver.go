@@ -37,7 +37,7 @@ func createNewSubServer(configRegistry lnrpc.SubServerConfigDispatcher) (
 
 	// Before we try to make the new offers service instance, we'll perform
 	// some sanity checks on the arguments to ensure that they're usable.
-	if config.Manager == nil {
+	if config.Deps == nil || config.Deps.Manager == nil {
 		return nil, nil, fmt.Errorf("offers manager must be set to " +
 			"create offersrpc")
 	}
