@@ -17,3 +17,12 @@ http:
     - selector: offersrpc.Offers.DecodeBolt12
       post: "/v2/offers/decode"
       body: "*"
+    - selector: offersrpc.Offers.FetchInvoice
+      post: "/v2/offers/fetchinvoice"
+      body: "*"
+    - selector: offersrpc.Offers.PayOffer
+      post: "/v2/offers/pay"
+      body: "*"
+    - selector: offersrpc.Offers.ListOfferInvoices
+      post: "/v2/offers/invoices"
+      body: "*"

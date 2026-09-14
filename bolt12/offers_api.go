@@ -1,6 +1,8 @@
 package bolt12
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -22,48 +24,67 @@ func DecodeOffer(data []byte) (*Offer, error) {
 	return decodeOffer(data)
 }
 
-// OfferID returns the offer's identifier: the BOLT 12 Merkle root of its
-// signable records. Two offers with the same fields have the same id, which
-// is why an offer meant to be distinct carries offer_metadata.
+// OfferID returns the offer's identifier: the SHA256 of the offer's TLV
+// bytes. BOLT 12 does not define an offer id; this is Core Lightning's
+// definition, so an id shown here matches what its tools show for the same
+// offer. Two offers with the same fields have the same id, which is why an
+// offer meant to be distinct carries offer_metadata.
 func OfferID(o *Offer) ([32]byte, error) {
-	return merkleRoot(signableTLVs(o.AllRecords()))
+	return tlvDigest(o.AllRecords())
 }
 
 // RequestOfferID returns the id of the offer an invoice_request mirrors: the
-// Merkle root over the request's records in the offer range (1-79), which
-// equals OfferID of the offer when the request mirrors it faithfully. A
-// request that carries no offer fields at all has no offer, and an error is
+// digest of the request's records in the offer range (1-79), which equals
+// OfferID of the offer when the request mirrors it faithfully. A request
+// that carries no offer fields at all has no offer, and an error is
 // returned.
 func RequestOfferID(ir *InvoiceRequest) ([32]byte, error) {
-	var offerRecords []tlv.Record
-	for _, r := range ir.AllRecords() {
-		if r.Type() >= 1 && r.Type() < offerFieldsEnd {
-			offerRecords = append(offerRecords, r)
-		}
-	}
+	offerRecords := offerRange(ir.AllRecords())
 	if len(offerRecords) == 0 {
 		return [32]byte{}, fmt.Errorf("invoice request carries no " +
 			"offer fields")
 	}
 
-	return merkleRoot(signableTLVs(offerRecords))
+	return tlvDigest(offerRecords)
 }
 
 // InvoiceOfferID returns the id of the offer an invoice mirrors, by the same
 // rule as RequestOfferID.
 func InvoiceOfferID(inv *Invoice) ([32]byte, error) {
-	var offerRecords []tlv.Record
-	for _, r := range inv.AllRecords() {
-		if r.Type() >= 1 && r.Type() < offerFieldsEnd {
-			offerRecords = append(offerRecords, r)
-		}
-	}
+	offerRecords := offerRange(inv.AllRecords())
 	if len(offerRecords) == 0 {
 		return [32]byte{}, fmt.Errorf("invoice carries no offer " +
 			"fields")
 	}
 
-	return merkleRoot(signableTLVs(offerRecords))
+	return tlvDigest(offerRecords)
+}
+
+// offerRange keeps the records in the offer range, types 1 to 79.
+func offerRange(records []tlv.Record) []tlv.Record {
+	var out []tlv.Record
+	for _, r := range records {
+		if r.Type() >= 1 && r.Type() < offerFieldsEnd {
+			out = append(out, r)
+		}
+	}
+
+	return out
+}
+
+// tlvDigest is the SHA256 of the records' TLV encoding, without the writer
+// checks, so a foreign or invalid offer can still be named.
+func tlvDigest(records []tlv.Record) ([32]byte, error) {
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	var b bytes.Buffer
+	if err := stream.Encode(&b); err != nil {
+		return [32]byte{}, err
+	}
+
+	return sha256.Sum256(b.Bytes()), nil
 }
 
 // MerkleRoot exposes the BOLT 12 Merkle root of a record set, for callers

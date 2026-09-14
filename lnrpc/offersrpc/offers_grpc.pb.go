@@ -37,6 +37,19 @@ type OffersClient interface {
 	// DecodeBolt12 decodes an offer (lno1...), invoice request (lnr1...) or
 	// invoice (lni1...) and reports which chain it names.
 	DecodeBolt12(ctx context.Context, in *DecodeBolt12Request, opts ...grpc.CallOption) (*DecodeBolt12Response, error)
+	// lncli: `offer fetchinvoice`
+	// FetchInvoice asks an offer's issuer for an invoice over onion messages
+	// and returns it once it has been checked against the request. Nothing is
+	// paid.
+	FetchInvoice(ctx context.Context, in *FetchInvoiceRequest, opts ...grpc.CallOption) (*FetchInvoiceResponse, error)
+	// lncli: `offer pay`
+	// PayOffer fetches an invoice for an offer and pays it, or pays an invoice
+	// fetched earlier. It returns when the payment succeeds or fails.
+	PayOffer(ctx context.Context, in *PayOfferRequest, opts ...grpc.CallOption) (*PayOfferResponse, error)
+	// lncli: `offer invoices`
+	// ListOfferInvoices lists the invoices this node has issued for its
+	// offers, with their state in the invoice registry.
+	ListOfferInvoices(ctx context.Context, in *ListOfferInvoicesRequest, opts ...grpc.CallOption) (*ListOfferInvoicesResponse, error)
 }
 
 type offersClient struct {
@@ -92,6 +105,33 @@ func (c *offersClient) DecodeBolt12(ctx context.Context, in *DecodeBolt12Request
 	return out, nil
 }
 
+func (c *offersClient) FetchInvoice(ctx context.Context, in *FetchInvoiceRequest, opts ...grpc.CallOption) (*FetchInvoiceResponse, error) {
+	out := new(FetchInvoiceResponse)
+	err := c.cc.Invoke(ctx, "/offersrpc.Offers/FetchInvoice", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *offersClient) PayOffer(ctx context.Context, in *PayOfferRequest, opts ...grpc.CallOption) (*PayOfferResponse, error) {
+	out := new(PayOfferResponse)
+	err := c.cc.Invoke(ctx, "/offersrpc.Offers/PayOffer", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *offersClient) ListOfferInvoices(ctx context.Context, in *ListOfferInvoicesRequest, opts ...grpc.CallOption) (*ListOfferInvoicesResponse, error) {
+	out := new(ListOfferInvoicesResponse)
+	err := c.cc.Invoke(ctx, "/offersrpc.Offers/ListOfferInvoices", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OffersServer is the server API for Offers service.
 // All implementations must embed UnimplementedOffersServer
 // for forward compatibility
@@ -115,6 +155,19 @@ type OffersServer interface {
 	// DecodeBolt12 decodes an offer (lno1...), invoice request (lnr1...) or
 	// invoice (lni1...) and reports which chain it names.
 	DecodeBolt12(context.Context, *DecodeBolt12Request) (*DecodeBolt12Response, error)
+	// lncli: `offer fetchinvoice`
+	// FetchInvoice asks an offer's issuer for an invoice over onion messages
+	// and returns it once it has been checked against the request. Nothing is
+	// paid.
+	FetchInvoice(context.Context, *FetchInvoiceRequest) (*FetchInvoiceResponse, error)
+	// lncli: `offer pay`
+	// PayOffer fetches an invoice for an offer and pays it, or pays an invoice
+	// fetched earlier. It returns when the payment succeeds or fails.
+	PayOffer(context.Context, *PayOfferRequest) (*PayOfferResponse, error)
+	// lncli: `offer invoices`
+	// ListOfferInvoices lists the invoices this node has issued for its
+	// offers, with their state in the invoice registry.
+	ListOfferInvoices(context.Context, *ListOfferInvoicesRequest) (*ListOfferInvoicesResponse, error)
 	mustEmbedUnimplementedOffersServer()
 }
 
@@ -136,6 +189,15 @@ func (UnimplementedOffersServer) EnableOffer(context.Context, *EnableOfferReques
 }
 func (UnimplementedOffersServer) DecodeBolt12(context.Context, *DecodeBolt12Request) (*DecodeBolt12Response, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DecodeBolt12 not implemented")
+}
+func (UnimplementedOffersServer) FetchInvoice(context.Context, *FetchInvoiceRequest) (*FetchInvoiceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FetchInvoice not implemented")
+}
+func (UnimplementedOffersServer) PayOffer(context.Context, *PayOfferRequest) (*PayOfferResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PayOffer not implemented")
+}
+func (UnimplementedOffersServer) ListOfferInvoices(context.Context, *ListOfferInvoicesRequest) (*ListOfferInvoicesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListOfferInvoices not implemented")
 }
 func (UnimplementedOffersServer) mustEmbedUnimplementedOffersServer() {}
 
@@ -240,6 +302,60 @@ func _Offers_DecodeBolt12_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Offers_FetchInvoice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FetchInvoiceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OffersServer).FetchInvoice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/offersrpc.Offers/FetchInvoice",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OffersServer).FetchInvoice(ctx, req.(*FetchInvoiceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Offers_PayOffer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PayOfferRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OffersServer).PayOffer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/offersrpc.Offers/PayOffer",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OffersServer).PayOffer(ctx, req.(*PayOfferRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Offers_ListOfferInvoices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOfferInvoicesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OffersServer).ListOfferInvoices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/offersrpc.Offers/ListOfferInvoices",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OffersServer).ListOfferInvoices(ctx, req.(*ListOfferInvoicesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Offers_ServiceDesc is the grpc.ServiceDesc for Offers service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -266,6 +382,18 @@ var Offers_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DecodeBolt12",
 			Handler:    _Offers_DecodeBolt12_Handler,
+		},
+		{
+			MethodName: "FetchInvoice",
+			Handler:    _Offers_FetchInvoice_Handler,
+		},
+		{
+			MethodName: "PayOffer",
+			Handler:    _Offers_PayOffer_Handler,
+		},
+		{
+			MethodName: "ListOfferInvoices",
+			Handler:    _Offers_ListOfferInvoices_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

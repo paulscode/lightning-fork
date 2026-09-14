@@ -148,7 +148,8 @@ func (x *CreateOfferRequest) GetQuantityAny() bool {
 
 type Offer struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The offer id: the BOLT 12 Merkle root of the offer's fields.
+	// The offer id: the SHA256 of the offer's TLV bytes, the way Core
+	// Lightning computes it, so the two agree on an offer's id.
 	OfferId []byte `protobuf:"bytes,1,opt,name=offer_id,json=offerId,proto3" json:"offer_id,omitempty"`
 	// The offer as a bech32 string, lno1..., to hand to payers.
 	Bolt12 string `protobuf:"bytes,2,opt,name=bolt12,proto3" json:"bolt12,omitempty"`
@@ -1004,6 +1005,552 @@ func (x *DecodeBolt12Response) GetOurs() bool {
 	return false
 }
 
+type FetchInvoiceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The offer, lno1....
+	Offer string `protobuf:"bytes,1,opt,name=offer,proto3" json:"offer,omitempty"`
+	// The amount to ask to be invoiced, in millisatoshi. Required for an
+	// offer without an amount; otherwise it may exceed the offer's amount
+	// but not fall short of it.
+	AmountMsat uint64 `protobuf:"varint,2,opt,name=amount_msat,json=amountMsat,proto3" json:"amount_msat,omitempty"`
+	// How many of the offer's item, for an offer that sells by quantity.
+	Quantity uint64 `protobuf:"varint,3,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	// A note for the issuer.
+	PayerNote string `protobuf:"bytes,4,opt,name=payer_note,json=payerNote,proto3" json:"payer_note,omitempty"`
+	// How long to wait for the invoice, in seconds. Zero means the default.
+	TimeoutSeconds uint32 `protobuf:"varint,5,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *FetchInvoiceRequest) Reset() {
+	*x = FetchInvoiceRequest{}
+	mi := &file_offersrpc_offers_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchInvoiceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchInvoiceRequest) ProtoMessage() {}
+
+func (x *FetchInvoiceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_offersrpc_offers_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchInvoiceRequest.ProtoReflect.Descriptor instead.
+func (*FetchInvoiceRequest) Descriptor() ([]byte, []int) {
+	return file_offersrpc_offers_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *FetchInvoiceRequest) GetOffer() string {
+	if x != nil {
+		return x.Offer
+	}
+	return ""
+}
+
+func (x *FetchInvoiceRequest) GetAmountMsat() uint64 {
+	if x != nil {
+		return x.AmountMsat
+	}
+	return 0
+}
+
+func (x *FetchInvoiceRequest) GetQuantity() uint64 {
+	if x != nil {
+		return x.Quantity
+	}
+	return 0
+}
+
+func (x *FetchInvoiceRequest) GetPayerNote() string {
+	if x != nil {
+		return x.PayerNote
+	}
+	return ""
+}
+
+func (x *FetchInvoiceRequest) GetTimeoutSeconds() uint32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+type FetchInvoiceResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The invoice, lni1....
+	Bolt12 string `protobuf:"bytes,1,opt,name=bolt12,proto3" json:"bolt12,omitempty"`
+	// The invoice's fields.
+	Invoice *InvoiceInfo `protobuf:"bytes,2,opt,name=invoice,proto3" json:"invoice,omitempty"`
+	// The id of the offer the invoice answers.
+	OfferId       []byte `protobuf:"bytes,3,opt,name=offer_id,json=offerId,proto3" json:"offer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FetchInvoiceResponse) Reset() {
+	*x = FetchInvoiceResponse{}
+	mi := &file_offersrpc_offers_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FetchInvoiceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FetchInvoiceResponse) ProtoMessage() {}
+
+func (x *FetchInvoiceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_offersrpc_offers_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FetchInvoiceResponse.ProtoReflect.Descriptor instead.
+func (*FetchInvoiceResponse) Descriptor() ([]byte, []int) {
+	return file_offersrpc_offers_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *FetchInvoiceResponse) GetBolt12() string {
+	if x != nil {
+		return x.Bolt12
+	}
+	return ""
+}
+
+func (x *FetchInvoiceResponse) GetInvoice() *InvoiceInfo {
+	if x != nil {
+		return x.Invoice
+	}
+	return nil
+}
+
+func (x *FetchInvoiceResponse) GetOfferId() []byte {
+	if x != nil {
+		return x.OfferId
+	}
+	return nil
+}
+
+type PayOfferRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The offer to fetch an invoice for and pay, lno1.... Leave empty when
+	// paying an invoice fetched earlier.
+	Offer string `protobuf:"bytes,1,opt,name=offer,proto3" json:"offer,omitempty"`
+	// An invoice fetched earlier to pay, lni1.... Excludes offer.
+	Invoice string `protobuf:"bytes,2,opt,name=invoice,proto3" json:"invoice,omitempty"`
+	// The amount to ask to be invoiced, as for FetchInvoice. Ignored when
+	// paying an invoice.
+	AmountMsat uint64 `protobuf:"varint,3,opt,name=amount_msat,json=amountMsat,proto3" json:"amount_msat,omitempty"`
+	// How many of the offer's item, as for FetchInvoice.
+	Quantity uint64 `protobuf:"varint,4,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	// A note for the issuer, as for FetchInvoice.
+	PayerNote string `protobuf:"bytes,5,opt,name=payer_note,json=payerNote,proto3" json:"payer_note,omitempty"`
+	// How long to wait for the invoice and then for the payment, in
+	// seconds each. Zero means the defaults.
+	TimeoutSeconds uint32 `protobuf:"varint,6,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	// The most to pay in routing fees, in millisatoshi. Zero means the
+	// default limit.
+	FeeLimitMsat uint64 `protobuf:"varint,7,opt,name=fee_limit_msat,json=feeLimitMsat,proto3" json:"fee_limit_msat,omitempty"`
+	// The most parts the payment may be split into. Zero means the default.
+	MaxParts      uint32 `protobuf:"varint,8,opt,name=max_parts,json=maxParts,proto3" json:"max_parts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PayOfferRequest) Reset() {
+	*x = PayOfferRequest{}
+	mi := &file_offersrpc_offers_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PayOfferRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PayOfferRequest) ProtoMessage() {}
+
+func (x *PayOfferRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_offersrpc_offers_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PayOfferRequest.ProtoReflect.Descriptor instead.
+func (*PayOfferRequest) Descriptor() ([]byte, []int) {
+	return file_offersrpc_offers_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *PayOfferRequest) GetOffer() string {
+	if x != nil {
+		return x.Offer
+	}
+	return ""
+}
+
+func (x *PayOfferRequest) GetInvoice() string {
+	if x != nil {
+		return x.Invoice
+	}
+	return ""
+}
+
+func (x *PayOfferRequest) GetAmountMsat() uint64 {
+	if x != nil {
+		return x.AmountMsat
+	}
+	return 0
+}
+
+func (x *PayOfferRequest) GetQuantity() uint64 {
+	if x != nil {
+		return x.Quantity
+	}
+	return 0
+}
+
+func (x *PayOfferRequest) GetPayerNote() string {
+	if x != nil {
+		return x.PayerNote
+	}
+	return ""
+}
+
+func (x *PayOfferRequest) GetTimeoutSeconds() uint32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+func (x *PayOfferRequest) GetFeeLimitMsat() uint64 {
+	if x != nil {
+		return x.FeeLimitMsat
+	}
+	return 0
+}
+
+func (x *PayOfferRequest) GetMaxParts() uint32 {
+	if x != nil {
+		return x.MaxParts
+	}
+	return 0
+}
+
+type PayOfferResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The invoice that was paid, lni1....
+	Bolt12 string `protobuf:"bytes,1,opt,name=bolt12,proto3" json:"bolt12,omitempty"`
+	// The payment hash.
+	PaymentHash []byte `protobuf:"bytes,2,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// The preimage, which is the proof of payment.
+	PaymentPreimage []byte `protobuf:"bytes,3,opt,name=payment_preimage,json=paymentPreimage,proto3" json:"payment_preimage,omitempty"`
+	// The amount paid to the issuer, in millisatoshi.
+	AmountMsat uint64 `protobuf:"varint,4,opt,name=amount_msat,json=amountMsat,proto3" json:"amount_msat,omitempty"`
+	// The routing fee paid, in millisatoshi.
+	FeeMsat       uint64 `protobuf:"varint,5,opt,name=fee_msat,json=feeMsat,proto3" json:"fee_msat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PayOfferResponse) Reset() {
+	*x = PayOfferResponse{}
+	mi := &file_offersrpc_offers_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PayOfferResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PayOfferResponse) ProtoMessage() {}
+
+func (x *PayOfferResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_offersrpc_offers_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PayOfferResponse.ProtoReflect.Descriptor instead.
+func (*PayOfferResponse) Descriptor() ([]byte, []int) {
+	return file_offersrpc_offers_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *PayOfferResponse) GetBolt12() string {
+	if x != nil {
+		return x.Bolt12
+	}
+	return ""
+}
+
+func (x *PayOfferResponse) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *PayOfferResponse) GetPaymentPreimage() []byte {
+	if x != nil {
+		return x.PaymentPreimage
+	}
+	return nil
+}
+
+func (x *PayOfferResponse) GetAmountMsat() uint64 {
+	if x != nil {
+		return x.AmountMsat
+	}
+	return 0
+}
+
+func (x *PayOfferResponse) GetFeeMsat() uint64 {
+	if x != nil {
+		return x.FeeMsat
+	}
+	return 0
+}
+
+type OfferInvoice struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The payment hash.
+	PaymentHash []byte `protobuf:"bytes,1,opt,name=payment_hash,json=paymentHash,proto3" json:"payment_hash,omitempty"`
+	// The offer the invoice was issued for.
+	OfferId []byte `protobuf:"bytes,2,opt,name=offer_id,json=offerId,proto3" json:"offer_id,omitempty"`
+	// The payer's key from the request.
+	PayerId []byte `protobuf:"bytes,3,opt,name=payer_id,json=payerId,proto3" json:"payer_id,omitempty"`
+	// The invoiced amount in millisatoshi.
+	AmountMsat uint64 `protobuf:"varint,4,opt,name=amount_msat,json=amountMsat,proto3" json:"amount_msat,omitempty"`
+	// The quantity requested, or zero.
+	Quantity uint64 `protobuf:"varint,5,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	// When the invoice was issued, as a Unix timestamp.
+	CreatedAt uint64 `protobuf:"varint,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// The invoice, lni1....
+	Bolt12 string `protobuf:"bytes,7,opt,name=bolt12,proto3" json:"bolt12,omitempty"`
+	// The invoice's state in the invoice registry: OPEN, SETTLED, CANCELED
+	// or ACCEPTED.
+	State string `protobuf:"bytes,8,opt,name=state,proto3" json:"state,omitempty"`
+	// The amount paid in millisatoshi, once settled.
+	AmountPaidMsat uint64 `protobuf:"varint,9,opt,name=amount_paid_msat,json=amountPaidMsat,proto3" json:"amount_paid_msat,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *OfferInvoice) Reset() {
+	*x = OfferInvoice{}
+	mi := &file_offersrpc_offers_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OfferInvoice) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OfferInvoice) ProtoMessage() {}
+
+func (x *OfferInvoice) ProtoReflect() protoreflect.Message {
+	mi := &file_offersrpc_offers_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OfferInvoice.ProtoReflect.Descriptor instead.
+func (*OfferInvoice) Descriptor() ([]byte, []int) {
+	return file_offersrpc_offers_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *OfferInvoice) GetPaymentHash() []byte {
+	if x != nil {
+		return x.PaymentHash
+	}
+	return nil
+}
+
+func (x *OfferInvoice) GetOfferId() []byte {
+	if x != nil {
+		return x.OfferId
+	}
+	return nil
+}
+
+func (x *OfferInvoice) GetPayerId() []byte {
+	if x != nil {
+		return x.PayerId
+	}
+	return nil
+}
+
+func (x *OfferInvoice) GetAmountMsat() uint64 {
+	if x != nil {
+		return x.AmountMsat
+	}
+	return 0
+}
+
+func (x *OfferInvoice) GetQuantity() uint64 {
+	if x != nil {
+		return x.Quantity
+	}
+	return 0
+}
+
+func (x *OfferInvoice) GetCreatedAt() uint64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *OfferInvoice) GetBolt12() string {
+	if x != nil {
+		return x.Bolt12
+	}
+	return ""
+}
+
+func (x *OfferInvoice) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *OfferInvoice) GetAmountPaidMsat() uint64 {
+	if x != nil {
+		return x.AmountPaidMsat
+	}
+	return 0
+}
+
+type ListOfferInvoicesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// List only the invoices for this offer, when set.
+	OfferId       []byte `protobuf:"bytes,1,opt,name=offer_id,json=offerId,proto3" json:"offer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListOfferInvoicesRequest) Reset() {
+	*x = ListOfferInvoicesRequest{}
+	mi := &file_offersrpc_offers_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListOfferInvoicesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListOfferInvoicesRequest) ProtoMessage() {}
+
+func (x *ListOfferInvoicesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_offersrpc_offers_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListOfferInvoicesRequest.ProtoReflect.Descriptor instead.
+func (*ListOfferInvoicesRequest) Descriptor() ([]byte, []int) {
+	return file_offersrpc_offers_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ListOfferInvoicesRequest) GetOfferId() []byte {
+	if x != nil {
+		return x.OfferId
+	}
+	return nil
+}
+
+type ListOfferInvoicesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Invoices      []*OfferInvoice        `protobuf:"bytes,1,rep,name=invoices,proto3" json:"invoices,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListOfferInvoicesResponse) Reset() {
+	*x = ListOfferInvoicesResponse{}
+	mi := &file_offersrpc_offers_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListOfferInvoicesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListOfferInvoicesResponse) ProtoMessage() {}
+
+func (x *ListOfferInvoicesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_offersrpc_offers_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListOfferInvoicesResponse.ProtoReflect.Descriptor instead.
+func (*ListOfferInvoicesResponse) Descriptor() ([]byte, []int) {
+	return file_offersrpc_offers_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ListOfferInvoicesResponse) GetInvoices() []*OfferInvoice {
+	if x != nil {
+		return x.Invoices
+	}
+	return nil
+}
+
 var File_offersrpc_offers_proto protoreflect.FileDescriptor
 
 const file_offersrpc_offers_proto_rawDesc = "" +
@@ -1087,14 +1634,63 @@ const file_offersrpc_offers_proto_rawDesc = "" +
 	"\x05valid\x18\b \x01(\bR\x05valid\x12)\n" +
 	"\x10validation_error\x18\t \x01(\tR\x0fvalidationError\x12\x12\n" +
 	"\x04ours\x18\n" +
-	" \x01(\bR\x04ours2\x91\x03\n" +
+	" \x01(\bR\x04ours\"\xb0\x01\n" +
+	"\x13FetchInvoiceRequest\x12\x14\n" +
+	"\x05offer\x18\x01 \x01(\tR\x05offer\x12\x1f\n" +
+	"\vamount_msat\x18\x02 \x01(\x04R\n" +
+	"amountMsat\x12\x1a\n" +
+	"\bquantity\x18\x03 \x01(\x04R\bquantity\x12\x1d\n" +
+	"\n" +
+	"payer_note\x18\x04 \x01(\tR\tpayerNote\x12'\n" +
+	"\x0ftimeout_seconds\x18\x05 \x01(\rR\x0etimeoutSeconds\"{\n" +
+	"\x14FetchInvoiceResponse\x12\x16\n" +
+	"\x06bolt12\x18\x01 \x01(\tR\x06bolt12\x120\n" +
+	"\ainvoice\x18\x02 \x01(\v2\x16.offersrpc.InvoiceInfoR\ainvoice\x12\x19\n" +
+	"\boffer_id\x18\x03 \x01(\fR\aofferId\"\x89\x02\n" +
+	"\x0fPayOfferRequest\x12\x14\n" +
+	"\x05offer\x18\x01 \x01(\tR\x05offer\x12\x18\n" +
+	"\ainvoice\x18\x02 \x01(\tR\ainvoice\x12\x1f\n" +
+	"\vamount_msat\x18\x03 \x01(\x04R\n" +
+	"amountMsat\x12\x1a\n" +
+	"\bquantity\x18\x04 \x01(\x04R\bquantity\x12\x1d\n" +
+	"\n" +
+	"payer_note\x18\x05 \x01(\tR\tpayerNote\x12'\n" +
+	"\x0ftimeout_seconds\x18\x06 \x01(\rR\x0etimeoutSeconds\x12$\n" +
+	"\x0efee_limit_msat\x18\a \x01(\x04R\ffeeLimitMsat\x12\x1b\n" +
+	"\tmax_parts\x18\b \x01(\rR\bmaxParts\"\xb4\x01\n" +
+	"\x10PayOfferResponse\x12\x16\n" +
+	"\x06bolt12\x18\x01 \x01(\tR\x06bolt12\x12!\n" +
+	"\fpayment_hash\x18\x02 \x01(\fR\vpaymentHash\x12)\n" +
+	"\x10payment_preimage\x18\x03 \x01(\fR\x0fpaymentPreimage\x12\x1f\n" +
+	"\vamount_msat\x18\x04 \x01(\x04R\n" +
+	"amountMsat\x12\x19\n" +
+	"\bfee_msat\x18\x05 \x01(\x04R\afeeMsat\"\x9b\x02\n" +
+	"\fOfferInvoice\x12!\n" +
+	"\fpayment_hash\x18\x01 \x01(\fR\vpaymentHash\x12\x19\n" +
+	"\boffer_id\x18\x02 \x01(\fR\aofferId\x12\x19\n" +
+	"\bpayer_id\x18\x03 \x01(\fR\apayerId\x12\x1f\n" +
+	"\vamount_msat\x18\x04 \x01(\x04R\n" +
+	"amountMsat\x12\x1a\n" +
+	"\bquantity\x18\x05 \x01(\x04R\bquantity\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\x04R\tcreatedAt\x12\x16\n" +
+	"\x06bolt12\x18\a \x01(\tR\x06bolt12\x12\x14\n" +
+	"\x05state\x18\b \x01(\tR\x05state\x12(\n" +
+	"\x10amount_paid_msat\x18\t \x01(\x04R\x0eamountPaidMsat\"5\n" +
+	"\x18ListOfferInvoicesRequest\x12\x19\n" +
+	"\boffer_id\x18\x01 \x01(\fR\aofferId\"P\n" +
+	"\x19ListOfferInvoicesResponse\x123\n" +
+	"\binvoices\x18\x01 \x03(\v2\x17.offersrpc.OfferInvoiceR\binvoices2\x87\x05\n" +
 	"\x06Offers\x12L\n" +
 	"\vCreateOffer\x12\x1d.offersrpc.CreateOfferRequest\x1a\x1e.offersrpc.CreateOfferResponse\x12I\n" +
 	"\n" +
 	"ListOffers\x12\x1c.offersrpc.ListOffersRequest\x1a\x1d.offersrpc.ListOffersResponse\x12O\n" +
 	"\fDisableOffer\x12\x1e.offersrpc.DisableOfferRequest\x1a\x1f.offersrpc.DisableOfferResponse\x12L\n" +
 	"\vEnableOffer\x12\x1d.offersrpc.EnableOfferRequest\x1a\x1e.offersrpc.EnableOfferResponse\x12O\n" +
-	"\fDecodeBolt12\x12\x1e.offersrpc.DecodeBolt12Request\x1a\x1f.offersrpc.DecodeBolt12ResponseB1Z/github.com/lightningnetwork/lnd/lnrpc/offersrpcb\x06proto3"
+	"\fDecodeBolt12\x12\x1e.offersrpc.DecodeBolt12Request\x1a\x1f.offersrpc.DecodeBolt12Response\x12O\n" +
+	"\fFetchInvoice\x12\x1e.offersrpc.FetchInvoiceRequest\x1a\x1f.offersrpc.FetchInvoiceResponse\x12C\n" +
+	"\bPayOffer\x12\x1a.offersrpc.PayOfferRequest\x1a\x1b.offersrpc.PayOfferResponse\x12^\n" +
+	"\x11ListOfferInvoices\x12#.offersrpc.ListOfferInvoicesRequest\x1a$.offersrpc.ListOfferInvoicesResponseB1Z/github.com/lightningnetwork/lnd/lnrpc/offersrpcb\x06proto3"
 
 var (
 	file_offersrpc_offers_proto_rawDescOnce sync.Once
@@ -1108,21 +1704,28 @@ func file_offersrpc_offers_proto_rawDescGZIP() []byte {
 	return file_offersrpc_offers_proto_rawDescData
 }
 
-var file_offersrpc_offers_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_offersrpc_offers_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_offersrpc_offers_proto_goTypes = []any{
-	(*CreateOfferRequest)(nil),   // 0: offersrpc.CreateOfferRequest
-	(*Offer)(nil),                // 1: offersrpc.Offer
-	(*CreateOfferResponse)(nil),  // 2: offersrpc.CreateOfferResponse
-	(*ListOffersRequest)(nil),    // 3: offersrpc.ListOffersRequest
-	(*ListOffersResponse)(nil),   // 4: offersrpc.ListOffersResponse
-	(*DisableOfferRequest)(nil),  // 5: offersrpc.DisableOfferRequest
-	(*DisableOfferResponse)(nil), // 6: offersrpc.DisableOfferResponse
-	(*EnableOfferRequest)(nil),   // 7: offersrpc.EnableOfferRequest
-	(*EnableOfferResponse)(nil),  // 8: offersrpc.EnableOfferResponse
-	(*DecodeBolt12Request)(nil),  // 9: offersrpc.DecodeBolt12Request
-	(*InvoiceRequestInfo)(nil),   // 10: offersrpc.InvoiceRequestInfo
-	(*InvoiceInfo)(nil),          // 11: offersrpc.InvoiceInfo
-	(*DecodeBolt12Response)(nil), // 12: offersrpc.DecodeBolt12Response
+	(*CreateOfferRequest)(nil),        // 0: offersrpc.CreateOfferRequest
+	(*Offer)(nil),                     // 1: offersrpc.Offer
+	(*CreateOfferResponse)(nil),       // 2: offersrpc.CreateOfferResponse
+	(*ListOffersRequest)(nil),         // 3: offersrpc.ListOffersRequest
+	(*ListOffersResponse)(nil),        // 4: offersrpc.ListOffersResponse
+	(*DisableOfferRequest)(nil),       // 5: offersrpc.DisableOfferRequest
+	(*DisableOfferResponse)(nil),      // 6: offersrpc.DisableOfferResponse
+	(*EnableOfferRequest)(nil),        // 7: offersrpc.EnableOfferRequest
+	(*EnableOfferResponse)(nil),       // 8: offersrpc.EnableOfferResponse
+	(*DecodeBolt12Request)(nil),       // 9: offersrpc.DecodeBolt12Request
+	(*InvoiceRequestInfo)(nil),        // 10: offersrpc.InvoiceRequestInfo
+	(*InvoiceInfo)(nil),               // 11: offersrpc.InvoiceInfo
+	(*DecodeBolt12Response)(nil),      // 12: offersrpc.DecodeBolt12Response
+	(*FetchInvoiceRequest)(nil),       // 13: offersrpc.FetchInvoiceRequest
+	(*FetchInvoiceResponse)(nil),      // 14: offersrpc.FetchInvoiceResponse
+	(*PayOfferRequest)(nil),           // 15: offersrpc.PayOfferRequest
+	(*PayOfferResponse)(nil),          // 16: offersrpc.PayOfferResponse
+	(*OfferInvoice)(nil),              // 17: offersrpc.OfferInvoice
+	(*ListOfferInvoicesRequest)(nil),  // 18: offersrpc.ListOfferInvoicesRequest
+	(*ListOfferInvoicesResponse)(nil), // 19: offersrpc.ListOfferInvoicesResponse
 }
 var file_offersrpc_offers_proto_depIdxs = []int32{
 	1,  // 0: offersrpc.CreateOfferResponse.offer:type_name -> offersrpc.Offer
@@ -1130,21 +1733,29 @@ var file_offersrpc_offers_proto_depIdxs = []int32{
 	1,  // 2: offersrpc.DecodeBolt12Response.offer:type_name -> offersrpc.Offer
 	10, // 3: offersrpc.DecodeBolt12Response.invoice_request:type_name -> offersrpc.InvoiceRequestInfo
 	11, // 4: offersrpc.DecodeBolt12Response.invoice:type_name -> offersrpc.InvoiceInfo
-	0,  // 5: offersrpc.Offers.CreateOffer:input_type -> offersrpc.CreateOfferRequest
-	3,  // 6: offersrpc.Offers.ListOffers:input_type -> offersrpc.ListOffersRequest
-	5,  // 7: offersrpc.Offers.DisableOffer:input_type -> offersrpc.DisableOfferRequest
-	7,  // 8: offersrpc.Offers.EnableOffer:input_type -> offersrpc.EnableOfferRequest
-	9,  // 9: offersrpc.Offers.DecodeBolt12:input_type -> offersrpc.DecodeBolt12Request
-	2,  // 10: offersrpc.Offers.CreateOffer:output_type -> offersrpc.CreateOfferResponse
-	4,  // 11: offersrpc.Offers.ListOffers:output_type -> offersrpc.ListOffersResponse
-	6,  // 12: offersrpc.Offers.DisableOffer:output_type -> offersrpc.DisableOfferResponse
-	8,  // 13: offersrpc.Offers.EnableOffer:output_type -> offersrpc.EnableOfferResponse
-	12, // 14: offersrpc.Offers.DecodeBolt12:output_type -> offersrpc.DecodeBolt12Response
-	10, // [10:15] is the sub-list for method output_type
-	5,  // [5:10] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	11, // 5: offersrpc.FetchInvoiceResponse.invoice:type_name -> offersrpc.InvoiceInfo
+	17, // 6: offersrpc.ListOfferInvoicesResponse.invoices:type_name -> offersrpc.OfferInvoice
+	0,  // 7: offersrpc.Offers.CreateOffer:input_type -> offersrpc.CreateOfferRequest
+	3,  // 8: offersrpc.Offers.ListOffers:input_type -> offersrpc.ListOffersRequest
+	5,  // 9: offersrpc.Offers.DisableOffer:input_type -> offersrpc.DisableOfferRequest
+	7,  // 10: offersrpc.Offers.EnableOffer:input_type -> offersrpc.EnableOfferRequest
+	9,  // 11: offersrpc.Offers.DecodeBolt12:input_type -> offersrpc.DecodeBolt12Request
+	13, // 12: offersrpc.Offers.FetchInvoice:input_type -> offersrpc.FetchInvoiceRequest
+	15, // 13: offersrpc.Offers.PayOffer:input_type -> offersrpc.PayOfferRequest
+	18, // 14: offersrpc.Offers.ListOfferInvoices:input_type -> offersrpc.ListOfferInvoicesRequest
+	2,  // 15: offersrpc.Offers.CreateOffer:output_type -> offersrpc.CreateOfferResponse
+	4,  // 16: offersrpc.Offers.ListOffers:output_type -> offersrpc.ListOffersResponse
+	6,  // 17: offersrpc.Offers.DisableOffer:output_type -> offersrpc.DisableOfferResponse
+	8,  // 18: offersrpc.Offers.EnableOffer:output_type -> offersrpc.EnableOfferResponse
+	12, // 19: offersrpc.Offers.DecodeBolt12:output_type -> offersrpc.DecodeBolt12Response
+	14, // 20: offersrpc.Offers.FetchInvoice:output_type -> offersrpc.FetchInvoiceResponse
+	16, // 21: offersrpc.Offers.PayOffer:output_type -> offersrpc.PayOfferResponse
+	19, // 22: offersrpc.Offers.ListOfferInvoices:output_type -> offersrpc.ListOfferInvoicesResponse
+	15, // [15:23] is the sub-list for method output_type
+	7,  // [7:15] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_offersrpc_offers_proto_init() }
@@ -1158,7 +1769,7 @@ func file_offersrpc_offers_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_offersrpc_offers_proto_rawDesc), len(file_offersrpc_offers_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

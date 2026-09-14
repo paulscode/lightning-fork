@@ -8,6 +8,8 @@ package onionmsg
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -479,7 +481,11 @@ func (m *Messenger) BuildOfferPaths(_ context.Context,
 	}
 	var paths []lnwire.BlindedPath
 	for _, intro := range intros {
-		path, err := m.buildPathToSelf(intro, pathSecret[:])
+		// The path's session key derives from the secret and the
+		// introduction node, so minting the same offer again through
+		// the same peer builds the same path, and the same offer.
+		sessionKey := offerPathSessionKey(pathSecret, intro)
+		path, err := m.buildPathToSelf(intro, pathSecret[:], sessionKey)
 		if err != nil {
 			return nil, err
 		}
@@ -487,6 +493,19 @@ func (m *Messenger) BuildOfferPaths(_ context.Context,
 	}
 
 	return paths, nil
+}
+
+// offerPathSessionKey derives the blinding session key for an offer path
+// from the offer's path secret and the introduction node.
+func offerPathSessionKey(pathSecret [32]byte,
+	intro *btcec.PublicKey) *btcec.PrivateKey {
+
+	mac := hmac.New(sha256.New, pathSecret[:])
+	mac.Write([]byte("offer-path-session-key"))
+	mac.Write(intro.SerializeCompressed())
+	key, _ := btcec.PrivKeyFromBytes(mac.Sum(nil))
+
+	return key
 }
 
 // BuildReplyPath builds one blinded path to this node for a reply_path,
@@ -499,11 +518,11 @@ func (m *Messenger) BuildReplyPath(_ context.Context,
 	withChannel, without := m.introPeers(m.cfg.Peers())
 	switch {
 	case len(withChannel) > 0:
-		return m.buildPathToSelf(withChannel[0], pathID)
+		return m.buildPathToSelf(withChannel[0], pathID, nil)
 	case len(without) > 0:
-		return m.buildPathToSelf(without[0], pathID)
+		return m.buildPathToSelf(without[0], pathID, nil)
 	default:
-		return m.buildPathToSelf(nil, pathID)
+		return m.buildPathToSelf(nil, pathID, nil)
 	}
 }
 
@@ -528,9 +547,10 @@ func (m *Messenger) introPeers(peers []Peer) ([]*btcec.PublicKey,
 }
 
 // buildPathToSelf builds a blinded path ending at this node, through intro
-// when it is not nil, with pathID in the final hop's data.
-func (m *Messenger) buildPathToSelf(intro *btcec.PublicKey,
-	pathID []byte) (*lnwire.BlindedPath, error) {
+// when it is not nil, with pathID in the final hop's data, under the given
+// session key or a fresh one.
+func (m *Messenger) buildPathToSelf(intro *btcec.PublicKey, pathID []byte,
+	sessionKey *btcec.PrivateKey) (*lnwire.BlindedPath, error) {
 
 	var (
 		nodes []*btcec.PublicKey
@@ -547,7 +567,7 @@ func (m *Messenger) buildPathToSelf(intro *btcec.PublicKey,
 	nodes = append(nodes, m.cfg.NodeKey)
 	datas = append(datas, record.NewFinalHopBlindedRouteData(nil, pathID))
 
-	info, err := buildBlindedPath(nodes, datas)
+	info, err := buildBlindedPath(nodes, datas, sessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -556,10 +576,11 @@ func (m *Messenger) buildPathToSelf(intro *btcec.PublicKey,
 }
 
 // buildBlindedPath blinds a path through nodes with their hop data, padded
-// so that every hop's encrypted data has the same length, under a fresh
-// session key.
+// so that every hop's encrypted data has the same length, under the given
+// session key or a fresh one.
 func buildBlindedPath(nodes []*btcec.PublicKey,
-	datas []*record.BlindedRouteData) (*sphinx.BlindedPathInfo, error) {
+	datas []*record.BlindedRouteData,
+	sessionKey *btcec.PrivateKey) (*sphinx.BlindedPathInfo, error) {
 
 	plains, err := encodePadded(datas)
 	if err != nil {
@@ -569,9 +590,11 @@ func buildBlindedPath(nodes []*btcec.PublicKey,
 	for i := range nodes {
 		hops[i] = &sphinx.HopInfo{NodePub: nodes[i], PlainText: plains[i]}
 	}
-	sessionKey, err := btcec.NewPrivateKey()
-	if err != nil {
-		return nil, err
+	if sessionKey == nil {
+		sessionKey, err = btcec.NewPrivateKey()
+		if err != nil {
+			return nil, err
+		}
 	}
 	info, err := sphinx.BuildBlindedPath(sessionKey, hops)
 	if err != nil {
@@ -803,7 +826,7 @@ func (s *sender) pathToNode(ctx context.Context,
 			datas[i] = record.NewFinalHopBlindedRouteData(nil, nil)
 		}
 	}
-	info, err := buildBlindedPath(hops, datas)
+	info, err := buildBlindedPath(hops, datas, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -819,7 +842,7 @@ func (s *sender) pathToBlindedPath(ctx context.Context,
 	path *lnwire.BlindedPath) (*sphinx.BlindedPath, *btcec.PublicKey,
 	error) {
 
-	intro, err := s.m.resolveIntro(ctx, path.IntroductionNode)
+	intro, err := s.m.ResolveIntro(ctx, path.IntroductionNode)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -875,7 +898,7 @@ func (s *sender) pathToBlindedPath(ctx context.Context,
 			), override, nil,
 		)
 	}
-	info, err := buildBlindedPath(ours, datas)
+	info, err := buildBlindedPath(ours, datas, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -960,9 +983,9 @@ func (m *Messenger) peelOwnHop(ctx context.Context,
 	}, nil
 }
 
-// resolveIntro turns an introduction node into a node id, looking a channel
+// ResolveIntro turns an introduction node into a node id, looking a channel
 // and direction up in the graph.
-func (m *Messenger) resolveIntro(ctx context.Context,
+func (m *Messenger) ResolveIntro(ctx context.Context,
 	node lnwire.IntroductionNode) (*btcec.PublicKey, error) {
 
 	switch n := node.(type) {

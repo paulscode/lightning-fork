@@ -25,6 +25,10 @@ hashes, invoice prefixes, the `init` networks rule, which signatures opt
 into `SIGHASH_UNIFIED`, reserved feature bits) are in
 [docs/blake2b-chain-identity.md](docs/blake2b-chain-identity.md).
 
+The node mints BOLT 12 offers and serves and pays them over onion
+messages, which is how a mining pool that pays to offers pays a miner.
+Read [docs/bolt12-offers.md](docs/bolt12-offers.md).
+
 Everything below this section is the upstream `lnd` README.
 
 The Lightning Network Daemon (`lnd`) - is a complete implementation of a
