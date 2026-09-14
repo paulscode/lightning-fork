@@ -68,6 +68,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/nat"
 	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/offers"
 	"github.com/lightningnetwork/lnd/onionmessage"
 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
 	"github.com/lightningnetwork/lnd/peer"
@@ -340,6 +341,9 @@ type server struct {
 	paymentsDB paymentsdb.DB
 
 	aliasMgr *aliasmgr.Manager
+
+	// offersManager mints and serves BOLT 12 offers.
+	offersManager *offers.Manager
 
 	htlcSwitch *htlcswitch.Switch
 
@@ -874,6 +878,31 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 	}
 
 	s.aliasMgr, err = aliasmgr.NewManager(dbs.ChanStateDB, linkUpdater)
+	if err != nil {
+		return nil, err
+	}
+
+	// Offers name this chain and are signed by the node key. Blinded paths
+	// come in a later step; until then a node without an announced address
+	// mints offers that name it by node id only.
+	offersStore, err := offers.NewKVStore(dbs.ChanStateDB)
+	if err != nil {
+		return nil, err
+	}
+	offersSecret, err := offers.DeriveSecret(cc.KeyRing)
+	if err != nil {
+		return nil, err
+	}
+	s.offersManager, err = offers.NewManager(offers.Config{
+		ChainHash: [32]byte(*cfg.ActiveNetParams.GenesisHash),
+		IssuerKey: *nodeKeyDesc,
+		Secret:    offersSecret,
+		Store:     offersStore,
+		Clock:     clock.NewDefaultClock(),
+		NodeReachable: func() bool {
+			return len(s.getNodeAnnouncement().Addresses) > 0
+		},
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -801,7 +801,7 @@ func (r *rpcServer) addDeps(ctx context.Context, s *server,
 		genInvoiceFeatures, genAmpInvoiceFeatures,
 		s.getNodeAnnouncement, s.updateAndBroadcastSelfNode, parseAddr,
 		rpcsLog, s.aliasMgr, r.implCfg.AuxDataParser,
-		invoiceHtlcModifier,
+		invoiceHtlcModifier, s.offersManager,
 	)
 	if err != nil {
 		return err

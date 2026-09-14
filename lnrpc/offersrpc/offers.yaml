@@ -1,0 +1,19 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: offersrpc.Offers.CreateOffer
+      post: "/v2/offers"
+      body: "*"
+    - selector: offersrpc.Offers.ListOffers
+      get: "/v2/offers"
+    - selector: offersrpc.Offers.DisableOffer
+      post: "/v2/offers/disable"
+      body: "*"
+    - selector: offersrpc.Offers.EnableOffer
+      post: "/v2/offers/enable"
+      body: "*"
+    - selector: offersrpc.Offers.DecodeBolt12
+      post: "/v2/offers/decode"
+      body: "*"

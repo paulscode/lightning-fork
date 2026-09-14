@@ -48,7 +48,7 @@ function generate() {
     --custom_opt="$opts" \
     lightning.proto stateservice.proto walletunlocker.proto
   
-  PACKAGES="autopilotrpc chainrpc invoicesrpc neutrinorpc peersrpc routerrpc signrpc verrpc walletrpc watchtowerrpc wtclientrpc devrpc"
+  PACKAGES="autopilotrpc chainrpc invoicesrpc neutrinorpc offersrpc peersrpc routerrpc signrpc verrpc walletrpc watchtowerrpc wtclientrpc devrpc"
   for package in $PACKAGES; do
     opts="package_name=$package,js_stubs=1"
     pushd $package
