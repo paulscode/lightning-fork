@@ -276,3 +276,29 @@ func AssertUniqueTypes(r []tlv.Record) error {
 
 	return nil
 }
+
+// AddOpt appends a record producer for the given optional record to producers
+// when the optional is set, leaving producers unchanged otherwise.
+func AddOpt[T tlv.TlvType, V any](producers *[]tlv.RecordProducer,
+	opt tlv.OptionalRecordT[T, V]) {
+
+	opt.WhenSome(
+		func(r tlv.RecordT[T, V]) {
+			*producers = append(*producers, &r)
+		},
+	)
+}
+
+// SetOptFromMap marks target as Some(record) when record's TLV type appeared
+// on the wire (i.e., is a key in the decoded TypeMap).
+//
+// The caller must have passed record to the underlying Stream before decoding;
+// otherwise record.Val will not have been populated, and wrapping it as Some
+// would yield a zero-valued field.
+func SetOptFromMap[T tlv.TlvType, V any](typeMap tlv.TypeMap,
+	target *tlv.OptionalRecordT[T, V], record tlv.RecordT[T, V]) {
+
+	if _, ok := typeMap[record.TlvType()]; ok {
+		*target = tlv.SomeRecordT(record)
+	}
+}
