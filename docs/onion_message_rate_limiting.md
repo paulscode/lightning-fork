@@ -96,6 +96,26 @@ channel-presence gate: only peers with a channel ever allocate a
 per-peer bucket in the first place, so the set cannot grow
 unboundedly through connection churn.
 
+## On this chain the gate is off by default
+
+The onion messages a Lightning Fork node exists to receive are a mining
+pool's invoice requests for its BOLT 12 offers, and the replies to its own
+requests. Both come from a node that has no channel with it: a pool pays
+its miners over routes, not over channels to each of them, and Core
+Lightning hands an onion message straight to a node it is connected to
+whenever it is, channel or not. With the gate on, such a request is
+dropped before it is read, and the payout never happens. The gate is
+therefore off here: `protocol.onion-msg-channel-gate=true` turns it back
+on, for a node that wants upstream's behaviour and gets its onion
+messages from channel peers only. The rate limiters below still bound
+what any peer, channel or not, can send.
+
+The same gate on other lnd nodes is why a request or reply that reaches
+one of them through a peer connection without a channel is lost there.
+This node builds its own reply paths to start at itself whenever it hands
+a request straight to the node it is for, so the reply comes back the same
+way and meets no third node's gate.
+
 ## The escape hatch: `protocol.onion-msg-relay-all`
 
 Some operators run nodes that are supposed to accept onion messages
@@ -126,7 +146,8 @@ section.
 | `protocol.onion-msg-peer-burst-bytes` | `262144` | Per-peer token bucket depth in bytes. |
 | `protocol.onion-msg-global-kbps` | `5120` | Global sustained rate in decimal kilobits per second. |
 | `protocol.onion-msg-global-burst-bytes` | `1638400` | Global token bucket depth in bytes. |
-| `protocol.onion-msg-relay-all` | `false` | If true, skip the channel-presence gate. |
+| `protocol.onion-msg-channel-gate` | `false` | If true, drop onion messages from peers with no open channel, as upstream lnd does. Off here: see above. |
+| `protocol.onion-msg-relay-all` | `false` | Upstream's escape hatch; on this chain the gate is already off unless `onion-msg-channel-gate` is set, which this overrides. |
 
 ### Rules at startup
 

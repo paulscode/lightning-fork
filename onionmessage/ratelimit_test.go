@@ -1,9 +1,11 @@
 package onionmessage
 
 import (
+	"golang.org/x/time/rate"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -244,4 +246,51 @@ func TestPeerRateLimiterConcurrentAllowN(t *testing.T) {
 // accounting it cares about.
 func peerMapLen(p *PeerRateLimiter) int {
 	return p.peers.Len()
+}
+
+// TestPeerRateLimiterBounded checks that the registry never grows past
+// its bound: a newcomer takes a refilled bucket's place, and when every
+// bucket is drained it shares the overflow bucket instead.
+func TestPeerRateLimiterBounded(t *testing.T) {
+	t.Parallel()
+
+	// 1 kbps = 125 bytes/s, burst 100 bytes: a drained bucket refills
+	// in under a second, a nearly full one in a few milliseconds.
+	p := NewPeerRateLimiterBounded(1, 100, 2)
+	peer := func(i byte) [33]byte {
+		var k [33]byte
+		k[0] = i
+
+		return k
+	}
+
+	require.True(t, p.AllowN(peer(1), 10))
+	require.True(t, p.AllowN(peer(2), 10))
+	require.Equal(t, 2, p.Buckets())
+
+	// Once the buckets have refilled, the third peer evicts one of
+	// them and gets its own bucket; the registry stays at its bound.
+	time.Sleep(200 * time.Millisecond)
+	require.True(t, p.AllowN(peer(3), 10))
+	require.Equal(t, 2, p.Buckets())
+
+	// Drain every bucket in the registry, then a newcomer has nothing
+	// to evict and shares the overflow bucket: the first fills it, the
+	// second is refused, and the registry has not grown.
+	time.Sleep(200 * time.Millisecond)
+	p.peers.Range(func(key [33]byte, _ *rate.Limiter) bool {
+		require.True(t, p.AllowN(key, 100))
+
+		return true
+	})
+	require.True(t, p.AllowN(peer(4), 100), "the overflow bucket is full")
+	require.False(t, p.AllowN(peer(5), 100), "and shared")
+	require.Equal(t, 2, p.Buckets())
+
+	// An unbounded registry keeps every bucket.
+	u := NewPeerRateLimiterBounded(1, 100, 0)
+	for i := byte(1); i <= 10; i++ {
+		require.True(t, u.AllowN(peer(i), 1))
+	}
+	require.Equal(t, 10, u.Buckets())
 }

@@ -2,6 +2,7 @@ package onionmessage
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -132,14 +133,17 @@ func NewGlobalLimiter(kbps uint64, burstBytes uint64) RateLimiter {
 // often it cycles the connection, and the per-peer rate becomes a real
 // ceiling rather than a per-connection ceiling.
 //
-// The memory cost of retention is bounded by the number of channel
-// peers that have ever sent an onion message: the ingress call site
-// gates AllowN on the peer having at least one open channel before
-// touching this registry, so random connecting strangers never allocate
-// a bucket. At a realistic few hundred to few thousand channel partners
-// and ~200 bytes per entry (rate.Limiter plus SyncMap overhead), the
-// registry stays comfortably sub-megabyte for the lifetime of the
-// process.
+// The memory cost of retention is bounded by the registry itself, since
+// on this chain the ingress call site admits peers with no channel by
+// default (see lncfg.ProtocolOptions.OnionMsgChannelGate) and so any
+// node key that sends one message would otherwise pin an entry for the
+// life of the process. Past maxPeerBuckets entries, a new peer first
+// evicts a bucket that has refilled completely, which loses nothing:
+// a full bucket and a fresh one are the same bucket. When none has, the
+// new peer shares one overflow bucket with every other newcomer until
+// one frees up, so that a flood of identities throttles itself rather
+// than the registry growing. At ~200 bytes per entry (rate.Limiter plus
+// SyncMap overhead) the registry stays under a megabyte.
 //
 // The underlying bucket registry is an lnutils.SyncMap rather than a plain
 // map guarded by a mutex. Per-peer keys are stable for the lifetime of the
@@ -153,7 +157,18 @@ type PeerRateLimiter struct {
 	peers    lnutils.SyncMap[[33]byte, *rate.Limiter]
 	dropped  atomic.Uint64
 	firstLog atomic.Bool
+
+	// maxPeers bounds the registry; count tracks its size. The slow
+	// path that adds an entry past the bound holds evictMu.
+	maxPeers int
+	count    atomic.Int64
+	evictMu  sync.Mutex
+	overflow *rate.Limiter
 }
+
+// DefaultMaxPeerBuckets is the number of per-peer buckets kept before a
+// newcomer has to take a refilled one or share the overflow bucket.
+const DefaultMaxPeerBuckets = 4096
 
 // FirstDropClaim atomically returns true exactly once, on the first call.
 // The caller is responsible for only invoking it after a rejection has
@@ -170,10 +185,19 @@ func (p *PeerRateLimiter) FirstDropClaim() bool {
 // disables limiting; in that case AllowN always returns true and no
 // per-peer state is retained.
 func NewPeerRateLimiter(kbps uint64, burstBytes uint64) *PeerRateLimiter {
-	p := &PeerRateLimiter{}
+	return NewPeerRateLimiterBounded(kbps, burstBytes, DefaultMaxPeerBuckets)
+}
+
+// NewPeerRateLimiterBounded is NewPeerRateLimiter with the registry bound
+// given; a bound of zero or less keeps every bucket.
+func NewPeerRateLimiterBounded(kbps uint64, burstBytes uint64,
+	maxPeers int) *PeerRateLimiter {
+
+	p := &PeerRateLimiter{maxPeers: maxPeers}
 	if kbps > 0 && burstBytes > 0 {
 		p.rate = rate.Limit(kbpsToBytesPerSecond(kbps))
 		p.burst = int(burstBytes)
+		p.overflow = rate.NewLimiter(p.rate, p.burst)
 	}
 
 	return p
@@ -195,12 +219,7 @@ func (p *PeerRateLimiter) AllowN(peer [33]byte, n int) bool {
 
 	lim, ok := p.peers.Load(peer)
 	if !ok {
-		// Allocate a fresh limiter and race for ownership via
-		// LoadOrStore: if a concurrent caller inserted one first,
-		// we discard ours and use theirs so that every peer ends
-		// up with a single authoritative bucket.
-		newLim := rate.NewLimiter(p.rate, p.burst)
-		lim, _ = p.peers.LoadOrStore(peer, newLim)
+		lim = p.bucketFor(peer)
 	}
 
 	if lim.AllowN(time.Now(), n) {
@@ -209,6 +228,58 @@ func (p *PeerRateLimiter) AllowN(peer [33]byte, n int) bool {
 	p.dropped.Add(1)
 
 	return false
+}
+
+// bucketFor returns the bucket a peer not yet in the registry gets: its
+// own while the registry has room or a refilled bucket can make room,
+// the shared overflow bucket otherwise. The slow path is serialised so
+// the bound holds under concurrent newcomers.
+func (p *PeerRateLimiter) bucketFor(peer [33]byte) *rate.Limiter {
+	p.evictMu.Lock()
+	defer p.evictMu.Unlock()
+
+	// A concurrent caller may have added it while we waited.
+	if lim, ok := p.peers.Load(peer); ok {
+		return lim
+	}
+	if p.maxPeers > 0 && p.count.Load() >= int64(p.maxPeers) &&
+		!p.evictRefilled() {
+
+		return p.overflow
+	}
+	lim := rate.NewLimiter(p.rate, p.burst)
+	p.peers.Store(peer, lim)
+	p.count.Add(1)
+
+	return lim
+}
+
+// evictRefilled drops one bucket that has refilled completely, reporting
+// whether it found one. Only ever called with evictMu held.
+func (p *PeerRateLimiter) evictRefilled() bool {
+	var victim *[33]byte
+	p.peers.Range(func(key [33]byte, lim *rate.Limiter) bool {
+		if lim.Tokens() >= float64(p.burst) {
+			k := key
+			victim = &k
+
+			return false
+		}
+
+		return true
+	})
+	if victim == nil {
+		return false
+	}
+	p.peers.Delete(*victim)
+	p.count.Add(-1)
+
+	return true
+}
+
+// Buckets returns how many per-peer buckets the registry holds.
+func (p *PeerRateLimiter) Buckets() int {
+	return int(p.count.Load())
 }
 
 // Dropped returns the total number of onion messages this registry has
