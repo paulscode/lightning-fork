@@ -139,26 +139,35 @@ peer that sends no `networks` list.
   payment routed through Lightning Fork to a third node, a BOLT 12 offer
   paid each way, a cooperative close from Core Lightning and a force close
   from Lightning Fork, with both sides settling on chain.
-  Result on 2026-09-14 (Lightning Fork `v0.21.3-beta-blake2b.8` plus the two
-  changes below, this series on `v26.06.7-blake2b.3`):
+  Result on 2026-09-14 (Lightning Fork `v0.21.3-beta-blake2b.9`, this series on
+  `v26.06.7-blake2b.3` built by the lab's Dockerfile from these patches):
 
   ```
-  PASS: lf1 038905f7e53e1c6ea48c5efa429aa99a2ffeb996b955f8b8b0ac6d12f9d6c9093f, cln 025fa09dcaacf0b6aad4ede5495bb4c2025f7d42acdd2bf1257591439f1394ca04 (v26.06.7-blake2b.3-modded)
-  PASS: connected from each side
-  PASS: both wallets funded
+  PASS: lf1 03f8f2c7d8309dbc241eb3707061c9da769e2f4a896350394eaeff934a168b4237, cln 02bb6c805628485e517e4d94d7cf2406cfef2005b0ad1657200a0de4325409b3f8 (v26.06.7-blake2b.3-5-gf8f3674, chain identity applied)
+  PASS: connected from each side (cln's connection is inbound)
+  PASS: lnd-sha dropped at init
+  PASS: both wallets funded (lf1 from 91d7ed7d2ed9fbdbd789ed65142a5281a532cedf5019d041ce4da00d6a4766a4:1)
   PASS: channel from cln active
   PASS: channel from lf1 active
-  PASS: cln alias on lf1: cln-patched; lf1 alias on cln: lf1
+  PASS: cln alias on lf1: cln; lf1 alias on cln: lf1
   PASS: paid 100 sat to cln
   PASS: cln paid 200 sat to lf1
   PASS: routed payment complete, 51000 msat sent
   PASS: lf1 paid cln's offer, fee 0 msat
   PASS: cln paid lf1's offer
-  PASS: both channels closed: cln states ["ONCHAIN","ONCHAIN"], cln funds 100295680000 msat
+  PASS: both channels closed: cln states ["ONCHAIN","ONCHAIN","ONCHAIN"], lf1 close types ["COOPERATIVE_CLOSE","COOPERATIVE_CLOSE","LOCAL_FORCE_CLOSE"], cln funds 100295414000 msat
   CLN INTEROP PASSED
   ```
 - The released build in the same lab: dropped at `init` by Lightning Fork
   and dropping it, both directions (above).
+- Cooperative closes need the two nodes' fee estimates to overlap. lnd
+  sends `closing_signed` without a fee range, and Core Lightning then only
+  accepts an offer inside its own range; on the regtest lab lnd's fallback
+  of 25 sat/vB against Core Lightning's 1 sat/vB ended every cooperative
+  close unilateral after the `close` timeout, until lnd was given a fee
+  estimate (`fee.url`). Nodes with a working estimate, from their bitcoind
+  or a fee source, converge; the transcript above records the close as
+  mutual on Core Lightning's side and cooperative on Lightning Fork's.
 - Two things the lab found on the Lightning Fork side, fixed there and not
   part of this series: lnd drops onion messages from peers with no open
   channel (its channel-presence gate), and Core Lightning hands an onion
