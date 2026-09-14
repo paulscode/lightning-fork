@@ -5,17 +5,21 @@
 # or commit with --build-arg checkout=...; the default is the blake2b branch.
 #
 # If you change the Go version here please also update GO_VERSION in Makefile.
-FROM golang:1.26.6-alpine AS builder
-
-# Force Go to use the cgo based DNS resolver. This is required to ensure DNS
-# queries required to connect to linked containers succeed.
-ENV GODEBUG netdns=cgo
+#
+# The builder runs on the build machine's own architecture and cross-compiles
+# for the target (the release build has no cgo), so a multi-platform build
+# does not run the Go compiler under emulation.
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS builder
 
 ARG checkout="blake2b"
 ARG git_url="https://github.com/paulscode/lightning-fork"
+ARG TARGETOS
+ARG TARGETARCH
 
 # Install dependencies and build the binaries. The module path is upstream's
-# (github.com/lightningnetwork/lnd); go.mod replaces btcd with the fork.
+# (github.com/lightningnetwork/lnd); go.mod replaces btcd with the fork. Go
+# installs a cross-compiled binary under a per-platform directory, so it is
+# moved to where the final stage looks.
 RUN apk add --no-cache --update alpine-sdk \
     git \
     make \
@@ -25,10 +29,17 @@ RUN apk add --no-cache --update alpine-sdk \
 &&  git checkout $checkout \
 &&  git rev-parse HEAD > /lightning-fork-commit \
 &&  go list -m -f '{{.Replace.Path}} {{.Replace.Version}}' github.com/btcsuite/btcd > /btcd-blake2b-version \
-&&  make release-install
+&&  GOOS=$TARGETOS GOARCH=$TARGETARCH make release-install \
+&&  if [ -d /go/bin/${TARGETOS}_${TARGETARCH} ]; then \
+        mv /go/bin/${TARGETOS}_${TARGETARCH}/* /go/bin/; \
+    fi
 
 # Start a new, final image.
 FROM alpine AS final
+
+# Force Go to use the cgo based DNS resolver. This is required to ensure DNS
+# queries required to connect to linked containers succeed.
+ENV GODEBUG netdns=cgo
 
 # Define a root volume for data persistence.
 VOLUME /root/.lnd
