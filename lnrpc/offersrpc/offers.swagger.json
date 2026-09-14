@@ -1,0 +1,519 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "offersrpc/offers.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "Offers"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v2/offers": {
+      "get": {
+        "summary": "lncli: `offer list`\nListOffers lists the offers this node has minted, newest first.",
+        "operationId": "Offers_ListOffers",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/offersrpcListOffersResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "active_only",
+            "description": "List only offers that are enabled.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Offers"
+        ]
+      },
+      "post": {
+        "summary": "lncli: `offer create`\nCreateOffer mints a BOLT 12 offer for this node's chain and stores it. The\nnode answers invoice requests for it over onion messages for as long as\nit is active and unexpired.",
+        "operationId": "Offers_CreateOffer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/offersrpcCreateOfferResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/offersrpcCreateOfferRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v2/offers/decode": {
+      "post": {
+        "summary": "lncli: `offer decode`\nDecodeBolt12 decodes an offer (lno1...), invoice request (lnr1...) or\ninvoice (lni1...) and reports which chain it names.",
+        "operationId": "Offers_DecodeBolt12",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/offersrpcDecodeBolt12Response"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/offersrpcDecodeBolt12Request"
+            }
+          }
+        ],
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v2/offers/disable": {
+      "post": {
+        "summary": "lncli: `offer disable`\nDisableOffer stops the node from serving an offer. The offer stays listed\nand can be enabled again.",
+        "operationId": "Offers_DisableOffer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/offersrpcDisableOfferResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/offersrpcDisableOfferRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v2/offers/enable": {
+      "post": {
+        "summary": "lncli: `offer enable`\nEnableOffer resumes serving a disabled offer.",
+        "operationId": "Offers_EnableOffer",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/offersrpcEnableOfferResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/offersrpcEnableOfferRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Offers"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "offersrpcCreateOfferRequest": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "The offer's description, shown to the payer. Required when an amount\nis set. A mining pool that pays over BOLT 12 mandates its own text\nhere, for example \"OCEAN Payouts for \u003cbitcoin address\u003e\"."
+        },
+        "amount_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount the offer asks for, in millisatoshi. Zero lets the payer\nchoose the amount, which is what a pool payout needs."
+        },
+        "absolute_expiry": {
+          "type": "string",
+          "format": "uint64",
+          "description": "When the offer stops being valid, as a Unix timestamp in seconds. Zero\nmeans it does not expire."
+        },
+        "issuer": {
+          "type": "string",
+          "description": "Free text naming who is being paid."
+        },
+        "quantity_max": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The largest quantity a request may ask for. Zero leaves quantities\nout of the offer unless quantity_any is set."
+        },
+        "label": {
+          "type": "string",
+          "description": "A note kept with the offer on this node only."
+        },
+        "with_paths": {
+          "type": "boolean",
+          "description": "Put blinded paths on the offer even though the node announces an\naddress. Blinded paths hide the node id and let an unannounced node\nbe reached; they also make the offer string longer."
+        },
+        "no_paths": {
+          "type": "boolean",
+          "description": "Never put blinded paths on the offer, even when the node announces no\naddress. Payers must then reach the node by its id."
+        },
+        "quantity_any": {
+          "type": "boolean",
+          "description": "Let a request ask for any quantity. Excludes quantity_max."
+        }
+      }
+    },
+    "offersrpcCreateOfferResponse": {
+      "type": "object",
+      "properties": {
+        "offer": {
+          "$ref": "#/definitions/offersrpcOffer"
+        },
+        "created": {
+          "type": "boolean",
+          "description": "Whether the offer was minted now. The same fields always mint the same\noffer, so minting it again returns the stored offer with this false."
+        }
+      }
+    },
+    "offersrpcDecodeBolt12Request": {
+      "type": "object",
+      "properties": {
+        "bolt12": {
+          "type": "string",
+          "description": "An offer, invoice request or invoice string."
+        }
+      }
+    },
+    "offersrpcDecodeBolt12Response": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "What the string is: \"offer\", \"invoice_request\" or \"invoice\"."
+        },
+        "for_this_chain": {
+          "type": "boolean",
+          "description": "Whether the message names this node's chain, read from its chain\nfields alone. A message for another chain still decodes, so its chain\ncan be shown."
+        },
+        "chains": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "byte"
+          },
+          "description": "The chains the message names. Empty means it names none, which BOLT 12\nreads as Bitcoin mainnet."
+        },
+        "offer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The id of the offer the message is or mirrors, if it has one."
+        },
+        "offer": {
+          "$ref": "#/definitions/offersrpcOffer",
+          "description": "The offer's fields, for an offer, or the mirrored offer fields for a\nrequest or invoice."
+        },
+        "invoice_request": {
+          "$ref": "#/definitions/offersrpcInvoiceRequestInfo",
+          "description": "The request's own fields, for an invoice request or an invoice."
+        },
+        "invoice": {
+          "$ref": "#/definitions/offersrpcInvoiceInfo",
+          "description": "The invoice's own fields, for an invoice."
+        },
+        "valid": {
+          "type": "boolean",
+          "description": "For an offer: whether it passes the reader checks for this chain and\nthe current time. A request or invoice is not validated here, since\nthat needs the offer it answers."
+        },
+        "validation_error": {
+          "type": "string",
+          "description": "Why the offer is not valid, when it is not."
+        },
+        "ours": {
+          "type": "boolean",
+          "description": "Whether this node minted the offer."
+        }
+      }
+    },
+    "offersrpcDisableOfferRequest": {
+      "type": "object",
+      "properties": {
+        "offer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The id of the offer to disable."
+        }
+      }
+    },
+    "offersrpcDisableOfferResponse": {
+      "type": "object"
+    },
+    "offersrpcEnableOfferRequest": {
+      "type": "object",
+      "properties": {
+        "offer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The id of the offer to enable."
+        }
+      }
+    },
+    "offersrpcEnableOfferResponse": {
+      "type": "object"
+    },
+    "offersrpcInvoiceInfo": {
+      "type": "object",
+      "properties": {
+        "payment_hash": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment hash to pay to."
+        },
+        "amount_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount in millisatoshi."
+        },
+        "node_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The node id that signed the invoice, invoice_node_id."
+        },
+        "created_at": {
+          "type": "string",
+          "format": "uint64",
+          "description": "When the invoice was created, as a Unix timestamp."
+        },
+        "relative_expiry": {
+          "type": "integer",
+          "format": "int64",
+          "description": "How long the invoice is valid after created_at, in seconds."
+        },
+        "num_paths": {
+          "type": "integer",
+          "format": "int64",
+          "description": "How many blinded payment paths the invoice carries."
+        },
+        "payer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payer's key the invoice answers, invreq_payer_id."
+        },
+        "signature_valid": {
+          "type": "boolean",
+          "description": "Whether the invoice carries a valid signature by node_id."
+        }
+      }
+    },
+    "offersrpcInvoiceRequestInfo": {
+      "type": "object",
+      "properties": {
+        "payer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payer's key for this request, invreq_payer_id."
+        },
+        "amount_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount requested in millisatoshi, if the request sets one."
+        },
+        "quantity": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The quantity requested, if the request sets one."
+        },
+        "payer_note": {
+          "type": "string",
+          "description": "The payer's note, if any."
+        },
+        "metadata": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payer's metadata, invreq_metadata."
+        },
+        "signature_valid": {
+          "type": "boolean",
+          "description": "Whether the request carries a valid signature by payer_id. Always\nfalse for the request fields mirrored in an invoice, which carries the\nissuer's signature instead."
+        }
+      }
+    },
+    "offersrpcListOffersResponse": {
+      "type": "object",
+      "properties": {
+        "offers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/offersrpcOffer"
+          }
+        }
+      }
+    },
+    "offersrpcOffer": {
+      "type": "object",
+      "properties": {
+        "offer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The offer id: the BOLT 12 Merkle root of the offer's fields."
+        },
+        "bolt12": {
+          "type": "string",
+          "description": "The offer as a bech32 string, lno1..., to hand to payers."
+        },
+        "description": {
+          "type": "string",
+          "description": "The offer's description, if any."
+        },
+        "amount_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount the offer asks for in millisatoshi, or zero for any."
+        },
+        "absolute_expiry": {
+          "type": "string",
+          "format": "uint64",
+          "description": "When the offer expires as a Unix timestamp, or zero for never."
+        },
+        "created_at": {
+          "type": "string",
+          "format": "uint64",
+          "description": "When this node minted the offer, as a Unix timestamp. Zero for an\noffer this node did not mint."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether this node serves the offer. False for a disabled offer, and\nfor an offer this node did not mint."
+        },
+        "invoices_issued": {
+          "type": "string",
+          "format": "uint64",
+          "description": "How many invoices this node has issued for the offer."
+        },
+        "label": {
+          "type": "string",
+          "description": "The operator's note, kept on this node only."
+        },
+        "issuer_id": {
+          "type": "string",
+          "format": "byte",
+          "description": "The node id that signs the offer's invoices, offer_issuer_id, if the\noffer names one."
+        },
+        "num_paths": {
+          "type": "integer",
+          "format": "int64",
+          "description": "How many blinded paths the offer carries."
+        },
+        "chains": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "byte"
+          },
+          "description": "The chains the offer names. An offer that names none is for Bitcoin\nmainnet, which is not this node's chain."
+        },
+        "issuer": {
+          "type": "string",
+          "description": "Free text naming who is being paid, offer_issuer, if any."
+        },
+        "quantity_max": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The largest quantity a request may ask for, if the offer sets one.\nZero with quantity_any set means any quantity."
+        },
+        "quantity_any": {
+          "type": "boolean",
+          "description": "Whether a request may ask for any quantity."
+        }
+      }
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    }
+  }
+}

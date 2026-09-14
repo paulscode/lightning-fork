@@ -1,0 +1,269 @@
+syntax = "proto3";
+
+package offersrpc;
+
+option go_package = "github.com/lightningnetwork/lnd/lnrpc/offersrpc";
+
+/*
+ * Comments in this file will be directly parsed into the API
+ * Documentation as descriptions of the associated method, message, or field.
+ * These descriptions should go right above the definition of the object, and
+ * can be in either block or // comment format.
+ *
+ * An RPC method can be matched to an lncli command by placing a line in the
+ * beginning of the description in exactly the following format:
+ * lncli: `methodname`
+ *
+ * Failure to specify the exact name of the command will cause documentation
+ * generation to fail.
+ *
+ * More information on how exactly the gRPC documentation is generated from
+ * this proto file can be found here:
+ * https://github.com/lightninglabs/lightning-api
+ */
+
+// Offers is a service for BOLT 12 offers: minting offers this node will serve
+// invoices for, listing and disabling them, and decoding any BOLT 12 string.
+service Offers {
+    /* lncli: `offer create`
+    CreateOffer mints a BOLT 12 offer for this node's chain and stores it. The
+    node answers invoice requests for it over onion messages for as long as
+    it is active and unexpired.
+    */
+    rpc CreateOffer (CreateOfferRequest) returns (CreateOfferResponse);
+
+    /* lncli: `offer list`
+    ListOffers lists the offers this node has minted, newest first.
+    */
+    rpc ListOffers (ListOffersRequest) returns (ListOffersResponse);
+
+    /* lncli: `offer disable`
+    DisableOffer stops the node from serving an offer. The offer stays listed
+    and can be enabled again.
+    */
+    rpc DisableOffer (DisableOfferRequest) returns (DisableOfferResponse);
+
+    /* lncli: `offer enable`
+    EnableOffer resumes serving a disabled offer.
+    */
+    rpc EnableOffer (EnableOfferRequest) returns (EnableOfferResponse);
+
+    /* lncli: `offer decode`
+    DecodeBolt12 decodes an offer (lno1...), invoice request (lnr1...) or
+    invoice (lni1...) and reports which chain it names.
+    */
+    rpc DecodeBolt12 (DecodeBolt12Request) returns (DecodeBolt12Response);
+}
+
+message CreateOfferRequest {
+    // The offer's description, shown to the payer. Required when an amount
+    // is set. A mining pool that pays over BOLT 12 mandates its own text
+    // here, for example "OCEAN Payouts for <bitcoin address>".
+    string description = 1;
+
+    // The amount the offer asks for, in millisatoshi. Zero lets the payer
+    // choose the amount, which is what a pool payout needs.
+    uint64 amount_msat = 2;
+
+    // When the offer stops being valid, as a Unix timestamp in seconds. Zero
+    // means it does not expire.
+    uint64 absolute_expiry = 3;
+
+    // Free text naming who is being paid.
+    string issuer = 4;
+
+    // The largest quantity a request may ask for. Zero leaves quantities
+    // out of the offer unless quantity_any is set.
+    uint64 quantity_max = 5;
+
+    // A note kept with the offer on this node only.
+    string label = 6;
+
+    // Put blinded paths on the offer even though the node announces an
+    // address. Blinded paths hide the node id and let an unannounced node
+    // be reached; they also make the offer string longer.
+    bool with_paths = 7;
+
+    // Never put blinded paths on the offer, even when the node announces no
+    // address. Payers must then reach the node by its id.
+    bool no_paths = 8;
+
+    // Let a request ask for any quantity. Excludes quantity_max.
+    bool quantity_any = 9;
+}
+
+message Offer {
+    // The offer id: the BOLT 12 Merkle root of the offer's fields.
+    bytes offer_id = 1;
+
+    // The offer as a bech32 string, lno1..., to hand to payers.
+    string bolt12 = 2;
+
+    // The offer's description, if any.
+    string description = 3;
+
+    // The amount the offer asks for in millisatoshi, or zero for any.
+    uint64 amount_msat = 4;
+
+    // When the offer expires as a Unix timestamp, or zero for never.
+    uint64 absolute_expiry = 5;
+
+    // When this node minted the offer, as a Unix timestamp. Zero for an
+    // offer this node did not mint.
+    uint64 created_at = 6;
+
+    // Whether this node serves the offer. False for a disabled offer, and
+    // for an offer this node did not mint.
+    bool active = 7;
+
+    // How many invoices this node has issued for the offer.
+    uint64 invoices_issued = 8;
+
+    // The operator's note, kept on this node only.
+    string label = 9;
+
+    // The node id that signs the offer's invoices, offer_issuer_id, if the
+    // offer names one.
+    bytes issuer_id = 10;
+
+    // How many blinded paths the offer carries.
+    uint32 num_paths = 11;
+
+    // The chains the offer names. An offer that names none is for Bitcoin
+    // mainnet, which is not this node's chain.
+    repeated bytes chains = 12;
+
+    // Free text naming who is being paid, offer_issuer, if any.
+    string issuer = 13;
+
+    // The largest quantity a request may ask for, if the offer sets one.
+    // Zero with quantity_any set means any quantity.
+    uint64 quantity_max = 14;
+
+    // Whether a request may ask for any quantity.
+    bool quantity_any = 15;
+}
+
+message CreateOfferResponse {
+    Offer offer = 1;
+
+    // Whether the offer was minted now. The same fields always mint the same
+    // offer, so minting it again returns the stored offer with this false.
+    bool created = 2;
+}
+
+message ListOffersRequest {
+    // List only offers that are enabled.
+    bool active_only = 1;
+}
+
+message ListOffersResponse {
+    repeated Offer offers = 1;
+}
+
+message DisableOfferRequest {
+    // The id of the offer to disable.
+    bytes offer_id = 1;
+}
+
+message DisableOfferResponse {
+}
+
+message EnableOfferRequest {
+    // The id of the offer to enable.
+    bytes offer_id = 1;
+}
+
+message EnableOfferResponse {
+}
+
+message DecodeBolt12Request {
+    // An offer, invoice request or invoice string.
+    string bolt12 = 1;
+}
+
+message InvoiceRequestInfo {
+    // The payer's key for this request, invreq_payer_id.
+    bytes payer_id = 1;
+
+    // The amount requested in millisatoshi, if the request sets one.
+    uint64 amount_msat = 2;
+
+    // The quantity requested, if the request sets one.
+    uint64 quantity = 3;
+
+    // The payer's note, if any.
+    string payer_note = 4;
+
+    // The payer's metadata, invreq_metadata.
+    bytes metadata = 5;
+
+    // Whether the request carries a valid signature by payer_id. Always
+    // false for the request fields mirrored in an invoice, which carries the
+    // issuer's signature instead.
+    bool signature_valid = 6;
+}
+
+message InvoiceInfo {
+    // The payment hash to pay to.
+    bytes payment_hash = 1;
+
+    // The amount in millisatoshi.
+    uint64 amount_msat = 2;
+
+    // The node id that signed the invoice, invoice_node_id.
+    bytes node_id = 3;
+
+    // When the invoice was created, as a Unix timestamp.
+    uint64 created_at = 4;
+
+    // How long the invoice is valid after created_at, in seconds.
+    uint32 relative_expiry = 5;
+
+    // How many blinded payment paths the invoice carries.
+    uint32 num_paths = 6;
+
+    // The payer's key the invoice answers, invreq_payer_id.
+    bytes payer_id = 7;
+
+    // Whether the invoice carries a valid signature by node_id.
+    bool signature_valid = 8;
+}
+
+message DecodeBolt12Response {
+    // What the string is: "offer", "invoice_request" or "invoice".
+    string type = 1;
+
+    // Whether the message names this node's chain, read from its chain
+    // fields alone. A message for another chain still decodes, so its chain
+    // can be shown.
+    bool for_this_chain = 2;
+
+    // The chains the message names. Empty means it names none, which BOLT 12
+    // reads as Bitcoin mainnet.
+    repeated bytes chains = 3;
+
+    // The id of the offer the message is or mirrors, if it has one.
+    bytes offer_id = 4;
+
+    // The offer's fields, for an offer, or the mirrored offer fields for a
+    // request or invoice.
+    Offer offer = 5;
+
+    // The request's own fields, for an invoice request or an invoice.
+    InvoiceRequestInfo invoice_request = 6;
+
+    // The invoice's own fields, for an invoice.
+    InvoiceInfo invoice = 7;
+
+    // For an offer: whether it passes the reader checks for this chain and
+    // the current time. A request or invoice is not validated here, since
+    // that needs the offer it answers.
+    bool valid = 8;
+
+    // Why the offer is not valid, when it is not.
+    string validation_error = 9;
+
+    // Whether this node minted the offer.
+    bool ours = 10;
+}

@@ -33,6 +33,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/devrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/neutrinorpc"
+	"github.com/lightningnetwork/lnd/lnrpc/offersrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/peersrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
@@ -46,6 +47,7 @@ import (
 	"github.com/lightningnetwork/lnd/monitoring"
 	"github.com/lightningnetwork/lnd/msgmux"
 	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/offers"
 	"github.com/lightningnetwork/lnd/onionmessage"
 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
 	"github.com/lightningnetwork/lnd/peer"
@@ -200,6 +202,8 @@ func SetupLoggers(root *build.SubLoggerManager, interceptor signal.Interceptor) 
 	AddSubLogger(root, btcwallet.Subsystem, interceptor, btcwallet.UseLogger)
 	AddSubLogger(root, rpcwallet.Subsystem, interceptor, rpcwallet.UseLogger)
 	AddSubLogger(root, peersrpc.Subsystem, interceptor, peersrpc.UseLogger)
+	AddSubLogger(root, offers.Subsystem, interceptor, offers.UseLogger)
+	AddSubLogger(root, offersrpc.Subsystem, interceptor, offersrpc.UseLogger)
 	AddSubLogger(root, graph.Subsystem, interceptor, graph.UseLogger)
 	AddSubLogger(root, lncfg.Subsystem, interceptor, lncfg.UseLogger)
 	AddSubLogger(
