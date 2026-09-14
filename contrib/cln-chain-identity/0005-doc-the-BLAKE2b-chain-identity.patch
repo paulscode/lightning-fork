@@ -1,4 +1,4 @@
-From 2f92d9dc67eca673b9eb66d056ee5fe1048cb8de Mon Sep 17 00:00:00 2001
+From dc1d6118b36cfdbb185037df25d0dbb92d217c96 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 5/5] doc: the BLAKE2b chain identity
@@ -50,7 +50,7 @@ index 1963deec1..26f6fef25 100644
  This point release is recommended for all users.
 diff --git a/doc/blake2b-chain-identity.md b/doc/blake2b-chain-identity.md
 new file mode 100644
-index 000000000..363e92ad2
+index 000000000..ce287de44
 --- /dev/null
 +++ b/doc/blake2b-chain-identity.md
 @@ -0,0 +1,147 @@
@@ -90,8 +90,8 @@ index 000000000..363e92ad2
 +that same internal order, so the table above shows it reversed. On the
 +wire (`init`, `open_channel`, gossip, BOLT 12) every `chain_hash` is sent
 +in internal order, exactly like Bitcoin's genesis hash is. For regtest:
-+`TaggedHash("Lightning Fork chain_hash", reverse(0f9188f1…2206))` gives the
-+digest `1aab09d9…9425`, which is the wire value, printed as `2594d57b…ab1a`.
++`TaggedHash("Lightning Fork chain_hash", reverse(0f9188f1...2206))` gives the
++digest `1aab09d9...9425`, which is the wire value, printed as `2594d57b...ab1a`.
 +Mainnet uses the activation block's id
 +rather than a tagged hash so that the value is a fact about the chain
 +itself, checkable against any node with `getblockhash 961640`; the test
@@ -119,10 +119,10 @@ index 000000000..363e92ad2
 +
 +| Network | Prefix | Example |
 +| --- | --- | --- |
-+| mainnet | `blake` | `lnblake10n1…` |
-+| testnet4 | `tblake` | `lntblake…` |
-+| signet | `tbsblake` | `lntbsblake…` |
-+| regtest | `blakert` | `lnblakert…` |
++| mainnet | `blake` | `lnblake10n1...` |
++| testnet4 | `tblake` | `lntblake...` |
++| signet | `tbsblake` | `lntbsblake...` |
++| regtest | `blakert` | `lnblakert...` |
 +
 +An invoice with Bitcoin's prefix (`lnbc`, `lntb`, `lntbs`, `lnbcrt`) is
 +refused, and a Bitcoin wallet refuses these, which is intended: an invoice
@@ -173,7 +173,7 @@ index 000000000..363e92ad2
 +
 +## 7. What is deliberately unchanged
 +
-+- Address formats (`bc1…`, `1…`, `3…`) and the derivation paths, so a
++- Address formats (`bc1...`, `1...`, `3...`) and the derivation paths, so a
 +  seed restores the same wallet.
 +- The genesis hash as the wallet backend's notion of "which network is this
 +  node on": the chain-identity check (reading the header at the activation

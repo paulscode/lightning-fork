@@ -1,7 +1,8 @@
 # PR proposal for privkeyio/lightning: a chain identity for the BLAKE2b chain
 
-Target: `privkeyio/lightning`, on top of `v26.06.7-blake2b.3` (`a030d213c`).
-Patch series: `0001`–`0005` in this directory (`git am *.patch`); the
+Target: `privkeyio/lightning`, branch `v26.06.7-blake2b` (head `893f767e8`, two
+repro-build commits past the `v26.06.7-blake2b.3` tag).
+Patch series: `0001`-`0005` in this directory (`git am *.patch`); the
 lightning-fork-lab repository builds and tests it (`make cln`,
 `make cln-interop`).
 
@@ -28,7 +29,9 @@ has mainnet channels.
 ## Why the node needs this
 
 With the values as released, tested in a regtest lab against Lightning Fork
-(`v0.21.3-beta-blake2b.8`) on the same BLAKE2b chain:
+on the same BLAKE2b chain (`v0.21.3-beta-blake2b.8` when the released build
+was tried, `.9` for the series; the `init` check did not change between
+them):
 
 | What | Released `v26.06.7-blake2b.3` | With this series |
 | --- | --- | --- |
@@ -37,7 +40,7 @@ With the values as released, tested in a regtest lab against Lightning Fork
 | Channel from Core Lightning to Lightning Fork | never reached | opened, announced, active |
 | Channel from Lightning Fork to Core Lightning | never reached | opened, announced, active |
 | Gossip | never reached | each node in the other's graph; a third node learned through the first |
-| BOLT 11 | `lnbcrt…` invoices, which a Bitcoin wallet would pay; Lightning Fork refuses them | `lnblakert…` both ways, paid both ways, and routed through a Lightning Fork node |
+| BOLT 11 | `lnbcrt...` invoices, which a Bitcoin wallet accepts as its own; Lightning Fork refuses them | `lnblakert...` both ways, paid both ways, and routed through a Lightning Fork node |
 | BOLT 12 | offers without `offer_chains` read as Bitcoin offers (mainnet) | offers name the chain; paid both ways |
 
 Nothing in the protocol changes: only the constants, and one rule for a
@@ -53,7 +56,7 @@ peer that sends no `networks` list.
    block. The true genesis stays available as `block0_hash`
    (`chainparams_block0()`), since the wallet stamp and BOLT 12 need it.
    `lightning_hrp` becomes `blake`, `blakert`, `tbsblake`, `tblake`; the BOLT 11
-   decoder therefore refuses `lnbc…` ("Prefix bc is not for bitcoin
+   decoder therefore refuses `lnbc...` ("Prefix bc is not for bitcoin
    (expected blake)"), and a Bitcoin wallet refuses ours. `decode` still
    recognises a Bitcoin invoice as one, so the refusal is the message the
    user sees rather than "rune". The prefix a network had before is kept as
@@ -73,9 +76,9 @@ peer that sends no `networks` list.
 3. **connectd: drop peers that name no networks on a chain that shares its
    genesis.** A peer that names a network we do not share is dropped
    already. A peer that names none is kept, which is right on Bitcoin and
-   wrong here: LND never sent the field, so a silent peer is almost
-   certainly a Bitcoin LND node that shares our genesis, and nothing before
-   `open_channel` tells it apart. `--allow-peers-without-networks` keeps
+   wrong here: lnd has never sent the field (through 0.21), so a silent peer
+   is almost certainly a Bitcoin lnd node that shares our genesis, and
+   nothing before `open_channel` tells it apart. `--allow-peers-without-networks` keeps
    them, for testing. On Bitcoin (`block0_hash` equal to `chain_hash`)
    nothing changes.
 4. **wallet: restamp a wallet created before the chain_hash changed.** A
@@ -87,9 +90,11 @@ peer that sends no `networks` list.
    already require for a database upgrade: without it the node logs what
    it found and refuses to start. With it, the stamp is rewritten and the
    announcement signatures peers gave for existing channels are cleared,
-   since they were over the old `chain_hash`; on the next reestablish each
-   channel asks for fresh ones and announces itself again under the new
-   identity, without being closed.
+   since they were over the old `chain_hash`, and the gossip store is
+   removed, since it holds the old announcement and gossipd keeps the first
+   announcement it has for a channel; on the next reestablish each channel
+   exchanges fresh signatures and announces itself again under the new
+   identity, without being closed, and the store is rebuilt from peers.
 5. **doc: the BLAKE2b chain identity.** The definition, identical to
    Lightning Fork's `docs/blake2b-chain-identity.md`, plus the CHANGELOG.
 
@@ -114,19 +119,23 @@ peer that sends no `networks` list.
   and stops, so nobody upgrades a wallet by accident, least of all a Bitcoin
   one that was pointed at this build by mistake.
 - Channels opened before this build announced themselves with Bitcoin's
-  `chain_hash`. Their remote announcement signatures are cleared by the
-  restamp, so after both peers upgrade and reconnect each channel is
-  announced again under the new identity by itself; nothing needs closing.
-  Delete `gossip_store` to drop the stale messages; it is rebuilt from peers.
+  `chain_hash`. The restamp clears their remote announcement signatures and
+  removes the gossip store, so after both peers upgrade and reconnect each
+  channel exchanges fresh signatures and is announced again under the new
+  identity by itself; nothing needs closing, and the store is rebuilt from
+  peers. This was tested (below). Channels funded before the activation
+  block stay unannounced, since gossipd ignores channels older than
+  `when_lightning_became_cool` and such a channel exists on Bitcoin too.
 - Peers on the old identity, or on Bitcoin, are dropped at `init` from now
-  on. That is the point.
+  on, which is what the change is for.
 - Invoices issued before the upgrade carry `lnbcrt`/`lnbc`; they are not
   payable afterwards. Reissue.
 
 ## Testing
 
-- `make` passes with `--disable-rust`; the generated Rust, protobuf and
-  Python gRPC stubs for the new option are regenerated in the series. Unit
+- `make` passes with `--disable-rust`; the Rust, protobuf and Python gRPC
+  stubs for the new option are regenerated by msggen in the series, though
+  not compiled here (no Rust toolchain in the lab build). Unit
   tests run: `bitcoin/test/run-chainparams-blake2b` (new),
   `common/test/run-bolt11`, `plugins/test/run-decode_guess_type`,
   `common/test/run-bolt12-encode-test`, `wallet/test/run-wallet`. The pytest
@@ -138,15 +147,17 @@ peer that sends no `networks` list.
   third node learned through the first), a BOLT 11 payment each way, a
   payment routed through Lightning Fork to a third node, a BOLT 12 offer
   paid each way, a cooperative close from Core Lightning and a force close
-  from Lightning Fork, with both sides settling on chain.
+  from Lightning Fork, with both sides settling on chain. (lf1 keeps the
+  closes of earlier runs in its list, hence more than two close types.)
   Result on 2026-09-14 (Lightning Fork `v0.21.3-beta-blake2b.9`, this series on
-  `v26.06.7-blake2b.3` built by the lab's Dockerfile from these patches):
+  `v26.06.7-blake2b` at `893f767e8`, built by the lab's Dockerfile from these
+  patches):
 
   ```
-  PASS: lf1 03f8f2c7d8309dbc241eb3707061c9da769e2f4a896350394eaeff934a168b4237, cln 02bb6c805628485e517e4d94d7cf2406cfef2005b0ad1657200a0de4325409b3f8 (v26.06.7-blake2b.3-5-gf8f3674, chain identity applied)
-  PASS: connected from each side (cln's connection is inbound)
+  PASS: lf1 03f8f2c7d8309dbc241eb3707061c9da769e2f4a896350394eaeff934a168b4237, cln 02bb6c805628485e517e4d94d7cf2406cfef2005b0ad1657200a0de4325409b3f8 (v26.06.7-blake2b.3-5-g639e8bb, chain identity applied)
+  PASS: connected from each side (cln's connection is outbound)
   PASS: lnd-sha dropped at init
-  PASS: both wallets funded (lf1 from 91d7ed7d2ed9fbdbd789ed65142a5281a532cedf5019d041ce4da00d6a4766a4:1)
+  PASS: both wallets funded (lf1 from 750e46a6f63bdc6ac43d6b7be524cab0c3f743d3dd5aa6853bb996a74bf5955f:0)
   PASS: channel from cln active
   PASS: channel from lf1 active
   PASS: cln alias on lf1: cln; lf1 alias on cln: lf1
@@ -155,19 +166,40 @@ peer that sends no `networks` list.
   PASS: routed payment complete, 51000 msat sent
   PASS: lf1 paid cln's offer, fee 0 msat
   PASS: cln paid lf1's offer
-  PASS: both channels closed: cln states ["ONCHAIN","ONCHAIN","ONCHAIN"], lf1 close types ["COOPERATIVE_CLOSE","COOPERATIVE_CLOSE","LOCAL_FORCE_CLOSE"], cln funds 100295414000 msat
+  PASS: both channels closed: cln states ["ONCHAIN","ONCHAIN"], lf1 close types ["COOPERATIVE_CLOSE","COOPERATIVE_CLOSE","LOCAL_FORCE_CLOSE","COOPERATIVE_CLOSE","LOCAL_FORCE_CLOSE"], cln funds 100594896000 msat
   CLN INTEROP PASSED
   ```
 - The released build in the same lab: dropped at `init` by Lightning Fork
   and dropping it, both directions (above).
+- The upgrade path, in the same lab: two nodes on the released build opened
+  an announced channel under Bitcoin's identity; the patched build on the
+  same data refused to start without `--database-upgrade=true` and said
+  why; with the flag both restamped, removed their gossip stores, exchanged
+  announcement signatures again on reestablish and announced the channel
+  anew; a fresh node on the patched build learned it from them, which it
+  could only do under the new `chain_hash`, and so did Lightning Fork.
+  Without the store removal the fresh node learned nothing: the old
+  announcement stayed in the store and was the one peers were offered,
+  which is why the restamp removes it. Result:
+
+  ```
+  PASS: released build up: v26.06.7-blake2b.3, invoices lnbcrt
+  PASS: channel 780x1x0 announced under the old identity
+  PASS: refused with the message, and stopped
+  PASS: both restamped, gossip stores removed, invoices lnblakert
+  PASS: fresh patched node sees 780x1x0 under the new identity
+  PASS: lf1 sees channel 780x1x0 between mig1 and mig2 after the migration
+  MIGRATION PASSED
+  ```
 - Cooperative closes need the two nodes' fee estimates to overlap. lnd
   sends `closing_signed` without a fee range, and Core Lightning then only
   accepts an offer inside its own range; on the regtest lab lnd's fallback
   of 25 sat/vB against Core Lightning's 1 sat/vB ended every cooperative
   close unilateral after the `close` timeout, until lnd was given a fee
-  estimate (`fee.url`). Nodes with a working estimate, from their bitcoind
-  or a fee source, converge; the transcript above records the close as
-  mutual on Core Lightning's side and cooperative on Lightning Fork's.
+  estimate (`fee.url`); with one, the transcript above records the close as
+  mutual on Core Lightning's side and cooperative on Lightning Fork's. On
+  mainnet both nodes estimate from a live mempool, so the ranges should
+  overlap; that is not something the lab can show.
 - Two things the lab found on the Lightning Fork side, fixed there and not
   part of this series: lnd drops onion messages from peers with no open
   channel (its channel-presence gate), and Core Lightning hands an onion

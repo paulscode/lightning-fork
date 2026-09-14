@@ -1,4 +1,4 @@
-From 0f56a7ae4b9a3a243e2feaacd1505b233bd5415a Mon Sep 17 00:00:00 2001
+From edfc0540c7d70abd0cd780587c0046a9dd0cdbfe Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 1/5] bitcoin: give the BLAKE2b chain its own chain_hash and
@@ -28,6 +28,14 @@ mistake in the little-endian arrays shows here rather than on the wire.
 These are the values Lightning Fork (github.com/paulscode/lightning-fork,
 an LND port) runs with on mainnet; doc/blake2b-chain-identity.md, added
 in a later commit, is the shared definition.
+
+The prefix a network had before is kept as legacy_lightning_hrp: decode
+still recognises a Bitcoin invoice as one, so the user gets "Prefix bc
+is not for bitcoin (expected blake)" rather than a guess at a rune, and
+the bookkeeper's migration of a database from before the currency-less
+accounting keeps events written with the old prefix. The BOLT 11 unit
+test decodes the spec's lnbc vectors against a copy of the entry that
+keeps bc, and round-trips an lnblake invoice.
 ---
  bitcoin/chainparams.c                         |  78 +++++++++++--
  bitcoin/chainparams.h                         |  22 ++++

@@ -1,4 +1,4 @@
-From 12a837b73ddabca8f9e22be773689d2d1ce781b6 Mon Sep 17 00:00:00 2001
+From ac80b3625141f415cba39562801f4421e21f38e8 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 3/5] connectd: drop peers that name no networks on a chain

@@ -1,4 +1,4 @@
-From 451943f245574bd672f8ee04d9793237db7f388f Mon Sep 17 00:00:00 2001
+From 648384c4e6039075f787fd8c1fc7de78aae182f1 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 4/5] wallet: restamp a wallet created before the chain_hash
@@ -7,18 +7,52 @@ Subject: [PATCH 4/5] wallet: restamp a wallet created before the chain_hash
 A wallet is stamped with the chain's chain_hash at creation and refused
 under another. A wallet created by an earlier build of this fork, or by
 official Core Lightning following the chain across activation, carries
-Bitcoin's genesis: the same wallet on the same chain. When the stamp is
-this chain's block 0 and its chain_hash is not, the stamp is rewritten
-to the chain_hash, with a log line, and the node starts.
+Bitcoin's genesis: the same wallet on the same chain. So does a Bitcoin
+wallet pointed at this build by mistake, and the two cannot be told
+apart, so the restamp is a one-way door behind --database-upgrade=true,
+the flag a database upgrade already needs in this fork's non-final
+versions: without it the node logs what it found and refuses to start,
+with it the stamp is rewritten to the chain_hash.
+
+The announcement signatures peers gave for existing channels were over
+the old chain_hash, so they are cleared at the same time. On the next
+reestablish each channel exchanges fresh ones and is announced again
+under the new identity, without being closed. The gossip store is
+removed at the same time: it holds the old announcement, gossipd keeps
+the first announcement it has for a channel, and peers asking for
+gossip would keep being handed the old one; the store is rebuilt from
+peers. Channels funded before the activation block stay unannounced:
+gossipd ignores channels older than when_lightning_became_cool, and
+such a channel exists on Bitcoin too.
 ---
- wallet/wallet.c | 51 +++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 51 insertions(+)
+ wallet/wallet.c | 69 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 69 insertions(+)
 
 diff --git a/wallet/wallet.c b/wallet/wallet.c
-index e39a1b0a1..6086e3748 100644
+index e39a1b0a1..da6f8fdbc 100644
 --- a/wallet/wallet.c
 +++ b/wallet/wallet.c
-@@ -4785,6 +4785,57 @@ bool wallet_sanity_check(struct wallet *w)
+@@ -4,9 +4,11 @@
+ #include <ccan/asort/asort.h>
+ #include <ccan/cast/cast.h>
+ #include <ccan/mem/mem.h>
++#include <ccan/tal/path/path.h>
+ #include <ccan/tal/str/str.h>
+ #include <channeld/channeld_wiregen.h>
+ #include <common/clock_time.h>
++#include <common/gossip_constants.h>
+ #include <common/memleak.h>
+ #include <common/mkdatastorekey.h>
+ #include <common/onionreply.h>
+@@ -25,6 +27,7 @@
+ #include <lightningd/peer_htlcs.h>
+ #include <lightningd/runes.h>
+ #include <onchaind/onchaind_wiregen.h>
++#include <unistd.h>
+ #include <wallet/datastore.h>
+ #include <wallet/invoices.h>
+ #include <wallet/migrations.h>
+@@ -4785,6 +4788,72 @@ bool wallet_sanity_check(struct wallet *w)
  	if (db_step(stmt)) {
  		db_col_sha256d(stmt, "blobval", &chainhash.shad);
  		tal_free(stmt);
@@ -71,6 +105,21 @@ index e39a1b0a1..6086e3748 100644
 +			db_bind_null(stmt);
 +			db_bind_null(stmt);
 +			db_exec_prepared_v2(take(stmt));
++			/* The gossip store holds that old announcement too,
++			 * and gossipd keeps the first announcement it has for
++			 * a channel, so the new one would never replace it and
++			 * peers would keep being offered the old. Start the
++			 * store afresh; it is rebuilt from peers. */
++			for (size_t i = 0; i < 2; i++) {
++				const char *store = path_join(
++					tmpctx, w->ld->config_netdir,
++					i == 0 ? GOSSIP_STORE_FILENAME
++					       : GOSSIP_STORE_FILENAME ".corrupt");
++				if (unlink(store) == 0)
++					log_broken(w->log, "Removed %s: its "
++						   "announcements carry the "
++						   "old chain_hash", store);
++			}
 +			chainhash = chainparams->genesis_blockhash;
 +		}
  		if (!bitcoin_blkid_eq(&chainhash,
