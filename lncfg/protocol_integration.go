@@ -100,15 +100,19 @@ type ProtocolOptions struct {
 	// with a zero rate, disables the global limiter.
 	OnionMsgGlobalBurstBytes uint64 `long:"onion-msg-global-burst-bytes" description:"token bucket burst for the global onion message limiter, in bytes; set both this and onion-msg-global-kbps to 0 to disable the global limiter"`
 
-	// OnionMsgRelayAll disables the channel-presence gate on the onion
-	// message ingress path. When false (the default), incoming onion
-	// messages from peers that do not have at least one fully open
-	// channel with us are dropped before the rate limiters are
-	// consulted: without a funded channel, a new peer identity is free
-	// and the global rate limiter alone is easy to saturate. Setting
-	// this to true admits onion messages from any peer into the
-	// limiter pipeline, at the cost of that Sybil-resistance property.
-	OnionMsgRelayAll bool `long:"onion-msg-relay-all" description:"accept incoming onion messages from peers with no fully open channel; by default only peers with at least one active channel are admitted to the onion message ingress path"`
+	// OnionMsgRelayAll is upstream's switch that disables the
+	// channel-presence gate on the onion message ingress path. Here the
+	// gate is off unless OnionMsgChannelGate is set, so this changes
+	// nothing by default; when both are set, this wins.
+	OnionMsgRelayAll bool `long:"onion-msg-relay-all" description:"accept incoming onion messages from peers with no fully open channel (the default here; kept for configurations that set it)"`
+
+	// OnionMsgChannelGate turns the channel-presence gate on. Upstream lnd
+	// has it on by default; here it is off, because the onion messages
+	// this node exists to receive, a pool's invoice requests for its
+	// offers, come from a node that has no channel with it and that
+	// connects directly when it can. The rate limiters still bound what
+	// a channel-less peer can send. OnionMsgRelayAll overrides this.
+	OnionMsgChannelGate bool `long:"onion-msg-channel-gate" description:"drop incoming onion messages from peers with no fully open channel, as upstream lnd does; off by default here, since a pool's invoice requests for your offers arrive from a node with no channel to you"`
 
 	// NoExperimentalAccountabilityOption disables experimental accountability.
 	NoExperimentalAccountabilityOption bool `long:"no-experimental-accountability" description:"do not forward experimental accountability signals"`

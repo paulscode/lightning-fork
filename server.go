@@ -4740,7 +4740,10 @@ func (s *server) peerConnected(conn net.Conn, connReq *connmgr.ConnReq,
 		SphinxPayment:           s.sphinxPayment,
 		SpawnOnionActor:         s.onionActorFactory,
 		OnionLimiter:            s.onionLimiter,
-		OnionRelayAll:           s.cfg.ProtocolOptions.OnionMsgRelayAll,
+		// The channel-presence gate is off unless asked for: see
+		// lncfg.ProtocolOptions.OnionMsgChannelGate.
+		OnionRelayAll: !s.cfg.ProtocolOptions.OnionMsgChannelGate ||
+			s.cfg.ProtocolOptions.OnionMsgRelayAll,
 		OnionActorOpts: func(_ [33]byte) []actor.ActorOption[
 			*onionmessage.Request, *onionmessage.Response,
 		] {

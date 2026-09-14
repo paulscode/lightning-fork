@@ -42,6 +42,13 @@ type testServer struct {
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 
+	return newTestServerOn(t, testChain)
+}
+
+// newTestServerOn is a server whose node is on the given chain.
+func newTestServerOn(t *testing.T, chain [32]byte) *testServer {
+	t.Helper()
+
 	backend, cleanup, err := kvdb.GetTestBackend(t.TempDir(), "offers")
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
@@ -54,7 +61,7 @@ func newTestServer(t *testing.T) *testServer {
 	require.NoError(t, err)
 	testClock := clock.NewTestClock(time.Unix(1_800_000_000, 0))
 	manager, err := offers.NewManager(offers.Config{
-		ChainHash: testChain,
+		ChainHash: chain,
 		Secret:    [32]byte{0x5e, 0xc7},
 		IssuerKey: keychain.KeyDescriptor{
 			PubKey: issuer.PubKey(),
@@ -502,10 +509,17 @@ func (a *answeringMessenger) BuildReplyPath(_ context.Context,
 func (a *answeringMessenger) OnInvoice(h onionmsg.Handler)      { a.invoice = h }
 func (a *answeringMessenger) OnInvoiceError(h onionmsg.Handler) { a.errs = h }
 
-func (a *answeringMessenger) Send(_ context.Context, _ onionmsg.Destination,
+func (a *answeringMessenger) Send(ctx context.Context, _ onionmsg.Destination,
 	payload []*lnwire.FinalHopTLV, _ *lnwire.BlindedPath,
-	_ ...onionmsg.SendOption) error {
+	opts ...onionmsg.SendOption) error {
 
+	// The client passes its reply path's id as an option and lets the
+	// messenger build the path, as the real one does.
+	if id := onionmsg.ReplyPathIDFromOptions(opts); id != nil {
+		if _, err := a.BuildReplyPath(ctx, id); err != nil {
+			return err
+		}
+	}
 	a.sent++
 	require.Len(a.t, payload, 1)
 	ir, err := bolt12.DecodeInvoiceRequest(payload[0].Value)
@@ -581,13 +595,27 @@ func (a *answeringMessenger) Send(_ context.Context, _ onionmsg.Destination,
 func TestFetchPayAndList(t *testing.T) {
 	t.Parallel()
 
-	s := newTestServer(t)
+	fetchPayAndList(t, testChain)
+}
+
+// TestFetchPayAndListOnBitcoinMainnet is the same on mainnet, where the offer,
+// the request and the invoice all name no chain, as the spec has them do for
+// Bitcoin mainnet. Fetching an invoice and then paying it by its string must
+// not be refused as "not for this chain".
+func TestFetchPayAndListOnBitcoinMainnet(t *testing.T) {
+	t.Parallel()
+
+	fetchPayAndList(t, bolt12.BitcoinMainnetChain())
+}
+
+func fetchPayAndList(t *testing.T, chain [32]byte) {
+	s := newTestServerOn(t, chain)
 	ctx := context.Background()
 	node, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 	msgr := &answeringMessenger{t: t, issuer: s.issuer, node: node}
 	client, err := offerpay.New(offerpay.Config{
-		Messenger: msgr, ChainHash: testChain, Timeout: 5 * time.Second,
+		Messenger: msgr, ChainHash: chain, Timeout: 5 * time.Second,
 	})
 	require.NoError(t, err)
 	s.cfg.Deps.Client = client

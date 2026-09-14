@@ -1,10 +1,9 @@
 # BOLT 12 offers
 
-Lightning Fork can mint BOLT 12 offers, answer invoice requests for them
-over onion messages, and fetch and pay other nodes' offers. The first of
-these is what a miner needs to be paid over Lightning by a pool that pays to
-offers, the way OCEAN does on the SHA256d chain and CONVOY is expected to on
-this one.
+This build can mint BOLT 12 offers, answer invoice requests for them over
+onion messages, and fetch and pay other nodes' offers. The first of these is
+what a miner needs in order to be paid over Lightning by a pool that pays to
+offers, the way OCEAN does.
 
 Everything here is native to the node. There is no side-car and nothing to
 run besides `lnd`.
@@ -103,7 +102,7 @@ lncli offer decode lno1...
 decodes an offer, an invoice request (`lnr1...`) or an invoice (`lni1...`)
 and reports whether it names this chain, whether it passes the checks a
 payer makes, and whether this node minted it. An offer that names no chain
-is a Bitcoin mainnet offer and is reported as not for this chain.
+BOLT 12 lets an offer name no chain at all, which means Bitcoin mainnet.
 
 ## What the node does with a request
 
@@ -137,9 +136,18 @@ builds carry. Its RPCs are under `offersrpc.Offers`, and over REST under
 `/v2/offers`. The macaroon entities are `invoices` for minting, listing and
 decoding, `offchain` read for fetching and `offchain` write for paying.
 
+## Reaching the node
+
+A pool's invoice request arrives as an onion message from a node that has
+no channel with this one. lnd drops onion messages from such peers by
+default (its channel-presence gate); here that gate is off, and the onion
+message rate limiters bound what any peer can send. `protocol.onion-msg-channel-gate=true`
+turns the gate back on. Requests this node sends carry a reply path that
+starts at this node whenever the request goes straight to the node it is
+for, so the reply meets no other node's gate.
+
 ## Compatibility
 
 The offer, request and invoice formats follow BOLT 12 as implemented in
-LND, Core Lightning and LDK, with this chain's hash in `offer_chains` and
-`invreq_chain`. The onion messages follow BOLT 4. Which pools pay to offers
-on this chain, and what description they ask for, is the pool's to say.
+LND, Core Lightning and LDK. The onion messages follow BOLT 4. Which pools
+pay to offers, and what description they ask for, is the pool's to say.
