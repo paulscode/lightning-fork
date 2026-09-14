@@ -1,8 +1,9 @@
 # PR proposal for privkeyio/lightning: a chain identity for the BLAKE2b chain
 
 Target: `privkeyio/lightning`, on top of `v26.06.7-blake2b.3` (`a030d213c`).
-Patch series: `0001`–`0005` in this directory (`git am *.patch`).
-Branch in the local clone: `blake2b-chain-identity`.
+Patch series: `0001`–`0005` in this directory (`git am *.patch`); the
+lightning-fork-lab repository builds and tests it (`make cln`,
+`make cln-interop`).
 
 ## Title
 
@@ -52,9 +53,16 @@ peer that sends no `networks` list.
    block. The true genesis stays available as `block0_hash`
    (`chainparams_block0()`), since the wallet stamp and BOLT 12 need it.
    `lightning_hrp` becomes `blake`, `blakert`, `tbsblake`, `tblake`; the BOLT 11
-   decoder therefore refuses `lnbc…`, and a Bitcoin wallet refuses ours.
-   `when_lightning_became_cool` on mainnet is the activation height. A unit
-   test pins every value in the byte order `getblockhash` prints.
+   decoder therefore refuses `lnbc…` ("Prefix bc is not for bitcoin
+   (expected blake)"), and a Bitcoin wallet refuses ours. `decode` still
+   recognises a Bitcoin invoice as one, so the refusal is the message the
+   user sees rather than "rune". The prefix a network had before is kept as
+   `legacy_lightning_hrp`, so a bookkeeper database from before the
+   currency-less accounting migration keeps its history. `when_lightning_became_cool`
+   on mainnet is the activation height. A unit test pins every value in the
+   byte order `getblockhash` prints; the BOLT 11 unit test decodes the spec's
+   `lnbc` vectors against a copy of the entry that keeps `bc`, and round-trips
+   an `lnblake` invoice; the pytest fixture's regtest `chain_hash` is updated.
 2. **offers: name the chain in offers and requests; the implicit chain stays
    Bitcoin.** BOLT 12's "no `offer_chains` means Bitcoin" must keep meaning
    Bitcoin's genesis, not "whatever the network called bitcoin carries", or
@@ -73,8 +81,15 @@ peer that sends no `networks` list.
 4. **wallet: restamp a wallet created before the chain_hash changed.** A
    wallet stamped with this chain's block 0 (by an earlier build of this
    fork, or by official Core Lightning that followed the chain across
-   activation) is the same wallet on the same chain: the stamp is rewritten
-   to the `chain_hash` with a log line, instead of refusing to start.
+   activation) is the same wallet on the same chain. Since the same stamp
+   is what a Bitcoin wallet carries, the restamp is a one-way door behind
+   `--database-upgrade=true`, the flag this fork's non-final versions
+   already require for a database upgrade: without it the node logs what
+   it found and refuses to start. With it, the stamp is rewritten and the
+   announcement signatures peers gave for existing channels are cleared,
+   since they were over the old `chain_hash`; on the next reestablish each
+   channel asks for fresh ones and announces itself again under the new
+   identity, without being closed.
 5. **doc: the BLAKE2b chain identity.** The definition, identical to
    Lightning Fork's `docs/blake2b-chain-identity.md`, plus the CHANGELOG.
 
@@ -94,12 +109,15 @@ peer that sends no `networks` list.
 
 ## Migration for existing users of the fork
 
-- The wallet restamps itself; no flag needed.
+- Start once with `--database-upgrade=true`: the wallet is restamped with the
+  chain's `chain_hash`, one way. Without the flag the node logs what it found
+  and stops, so nobody upgrades a wallet by accident, least of all a Bitcoin
+  one that was pointed at this build by mistake.
 - Channels opened before this build announced themselves with Bitcoin's
-  `chain_hash`. That gossip is ignored by nodes on the new identity, so such
-  channels stay usable between their two peers but are not announced
-  again; close and reopen them to have them announced. `gossip_store` can be
-  deleted to drop the stale messages; it is rebuilt from peers.
+  `chain_hash`. Their remote announcement signatures are cleared by the
+  restamp, so after both peers upgrade and reconnect each channel is
+  announced again under the new identity by itself; nothing needs closing.
+  Delete `gossip_store` to drop the stale messages; it is rebuilt from peers.
 - Peers on the old identity, or on Bitcoin, are dropped at `init` from now
   on. That is the point.
 - Invoices issued before the upgrade carry `lnbcrt`/`lnbc`; they are not
@@ -107,9 +125,12 @@ peer that sends no `networks` list.
 
 ## Testing
 
-- `make bitcoin/test/run-chainparams-blake2b && ./bitcoin/test/run-chainparams-blake2b`
-  passes; `make` passes with `--disable-rust` (Rust plugins were not built in
-  the lab image; nothing in the series touches them).
+- `make` passes with `--disable-rust`; the generated Rust, protobuf and
+  Python gRPC stubs for the new option are regenerated in the series. Unit
+  tests run: `bitcoin/test/run-chainparams-blake2b` (new),
+  `common/test/run-bolt11`, `plugins/test/run-decode_guess_type`,
+  `common/test/run-bolt12-encode-test`, `wallet/test/run-wallet`. The pytest
+  suite was not run and still asserts `lnbcrt` in ten files.
 - Lab: two Lightning Fork nodes and this build on a BLAKE2b regtest (Knots
   with activation at height 20). The scenario `scripts/scenario-cln-interop.sh`
   in the lightning-fork-lab repository does: peering both ways, funding,
@@ -157,3 +178,13 @@ peer that sends no `networks` list.
 - The regtest/signet/testnet4 derivation: a tagged hash of genesis was
   chosen so the value is stable across regtest restarts; any other rule is
   fine as long as both implementations use it.
+- Testnet3: Lightning Fork gives it a tagged-hash `chain_hash` and the
+  `tblake` prefix too; this series leaves Core Lightning's `testnet` entry
+  as Bitcoin's, since Knots no longer serves that network. Either both
+  should carry it or neither.
+- The bookkeeper's CSV exports name the asset `btc` for the `bc` prefix
+  (`plugins/bkpr/incomestmt.c`); what to call this chain's coin there
+  (`btcb2`?) is the maintainer's choice and is not changed here.
+- Replay protection (`SIGHASH_UNIFIED` for transactions this node signs
+  alone) is the larger follow-up; see "What it deliberately does not
+  change".

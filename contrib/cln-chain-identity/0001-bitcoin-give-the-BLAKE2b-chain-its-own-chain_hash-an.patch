@@ -1,4 +1,4 @@
-From b6564c888aabc9b8de392bc13f39ab5c3d7c1e93 Mon Sep 17 00:00:00 2001
+From 0f56a7ae4b9a3a243e2feaacd1505b233bd5415a Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 1/5] bitcoin: give the BLAKE2b chain its own chain_hash and
@@ -29,17 +29,23 @@ These are the values Lightning Fork (github.com/paulscode/lightning-fork,
 an LND port) runs with on mainnet; doc/blake2b-chain-identity.md, added
 in a later commit, is the shared definition.
 ---
- bitcoin/chainparams.c                  | 74 ++++++++++++++++---
- bitcoin/chainparams.h                  | 18 +++++
- bitcoin/test/run-chainparams-blake2b.c | 99 ++++++++++++++++++++++++++
- 3 files changed, 181 insertions(+), 10 deletions(-)
+ bitcoin/chainparams.c                         |  78 +++++++++++--
+ bitcoin/chainparams.h                         |  22 ++++
+ bitcoin/test/run-chainparams-blake2b.c        |  99 ++++++++++++++++
+ common/bolt11.c                               |   6 +-
+ common/test/run-bolt11.c                      | 106 +++++++++++++-----
+ contrib/pyln-testing/pyln/testing/fixtures.py |   2 +-
+ plugins/offers.c                              |  27 ++++-
+ plugins/test/run-decode_guess_type.c          |   5 +
+ wallet/account_migration.c                    |  10 +-
+ 9 files changed, 305 insertions(+), 50 deletions(-)
  create mode 100644 bitcoin/test/run-chainparams-blake2b.c
 
 diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
-index 9ce3b0520..b0e71b1af 100644
+index 9ce3b0520..78aeb1b37 100644
 --- a/bitcoin/chainparams.c
 +++ b/bitcoin/chainparams.c
-@@ -26,11 +26,21 @@ static u8 liquid_regtest_fee_asset[] = {
+@@ -26,11 +26,22 @@ static u8 liquid_regtest_fee_asset[] = {
  };
  
  const struct chainparams networks[] = {
@@ -50,6 +56,7 @@ index 9ce3b0520..b0e71b1af 100644
       .onchain_hrp = "bc",
 -     .lightning_hrp = "bc",
 +     .lightning_hrp = "blake",
++     .legacy_lightning_hrp = "bc",
       .bip70_name = "main",
 -     .genesis_blockhash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
 +     /* 0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb */
@@ -63,7 +70,7 @@ index 9ce3b0520..b0e71b1af 100644
  				      0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63,
  				      0xf7, 0x4f, 0x93, 0x1e, 0x83, 0x65, 0xe1,
  				      0x5a, 0x08, 0x9c, 0x68, 0xd6, 0x19, 0x00,
-@@ -50,8 +60,8 @@ const struct chainparams networks[] = {
+@@ -50,8 +61,8 @@ const struct chainparams networks[] = {
       .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
       .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
       .max_supply = AMOUNT_SAT_INIT(2100000000000000),
@@ -74,12 +81,13 @@ index 9ce3b0520..b0e71b1af 100644
       .p2pkh_version = 0,
       .p2sh_version = 5,
       .testnet = false,
-@@ -61,9 +71,17 @@ const struct chainparams networks[] = {
+@@ -61,9 +72,18 @@ const struct chainparams networks[] = {
       .is_elements = false},
      {.network_name = "regtest",
       .onchain_hrp = "bcrt",
 -     .lightning_hrp = "bcrt",
 +     .lightning_hrp = "blakert",
++     .legacy_lightning_hrp = "bcrt",
       .bip70_name = "regtest",
 -     .genesis_blockhash = {{{.u.u8 = {0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b,
 +     /* TaggedHash("Lightning Fork chain_hash", genesis):
@@ -94,12 +102,13 @@ index 9ce3b0520..b0e71b1af 100644
  				      0x59, 0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb,
  				      0x5b, 0xbf, 0x28, 0xc3, 0x4f, 0x3a, 0x5e,
  				      0x33, 0x2a, 0x1f, 0xc7, 0xb2, 0xb7, 0x3c,
-@@ -87,10 +105,17 @@ const struct chainparams networks[] = {
+@@ -87,10 +107,18 @@ const struct chainparams networks[] = {
       .is_elements = false},
      {.network_name = "signet",
       .onchain_hrp = "tb",
 -     .lightning_hrp = "tbs",
 +     .lightning_hrp = "tbsblake",
++     .legacy_lightning_hrp = "tbs",
       .bip70_name = "signet",
       // 00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6
 -     .genesis_blockhash = {{{.u.u8 = {0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80,
@@ -114,12 +123,13 @@ index 9ce3b0520..b0e71b1af 100644
  				      0xa4, 0x77, 0xa0, 0x63, 0xaf, 0x32, 0xb2,
  				      0xbb, 0xc9, 0x7c, 0x9f, 0xf9, 0xf0, 0x1f,
  				      0x2c, 0x42, 0x25, 0xe9, 0x73, 0x98, 0x81,
-@@ -138,10 +163,17 @@ const struct chainparams networks[] = {
+@@ -138,10 +166,18 @@ const struct chainparams networks[] = {
       .is_elements = false},
      {.network_name = "testnet4",
       .onchain_hrp = "tb",
 -     .lightning_hrp = "tb",
 +     .lightning_hrp = "tblake",
++     .legacy_lightning_hrp = "tb",
       .bip70_name = "testnet4",
       // 00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043
 -     .genesis_blockhash = {{{.u.u8 = {0x43, 0xf0, 0x8b, 0xda, 0xb0, 0x50, 0xe3,
@@ -134,7 +144,7 @@ index 9ce3b0520..b0e71b1af 100644
  				      0x5b, 0x56, 0x7c, 0x86, 0x4b, 0x91, 0xf4,
  				      0x7f, 0x50, 0xae, 0x72, 0x5a, 0xe2, 0xde,
  				      0x53, 0xbc, 0xfb, 0xba, 0xf2, 0x84, 0xda,
-@@ -244,6 +276,28 @@ const struct chainparams *chainparams_by_lightning_hrp(const char *lightning_hrp
+@@ -244,6 +280,28 @@ const struct chainparams *chainparams_by_lightning_hrp(const char *lightning_hrp
  	return NULL;
  }
  
@@ -164,10 +174,17 @@ index 9ce3b0520..b0e71b1af 100644
  {
      char *networks_string = tal_strdup(ctx, networks[0].network_name);
 diff --git a/bitcoin/chainparams.h b/bitcoin/chainparams.h
-index 05794f5c1..3d7f874bb 100644
+index 05794f5c1..087f7cbe9 100644
 --- a/bitcoin/chainparams.h
 +++ b/bitcoin/chainparams.h
-@@ -20,7 +20,14 @@ struct chainparams {
+@@ -17,10 +17,21 @@ struct chainparams {
+ 	 */
+ 	const char *onchain_hrp;
+ 	const char *lightning_hrp;
++	/* The invoice prefix this network had before the chain identity
++	 * (doc/blake2b-chain-identity.md), or NULL: legacy bookkeeper
++	 * events were written with it. */
++	const char *legacy_lightning_hrp;
  	/*'bip70_name' is corresponding to the 'chain' field of
  	 * the API 'getblockchaininfo' */
  	const char *bip70_name;
@@ -182,7 +199,7 @@ index 05794f5c1..3d7f874bb 100644
  	const int rpc_port;
  	/**
  	 * BOLT 1:
-@@ -66,6 +73,17 @@ const struct chainparams *chainparams_for_network(const char *network_name);
+@@ -66,6 +77,17 @@ const struct chainparams *chainparams_for_network(const char *network_name);
   */
  const struct chainparams *chainparams_by_lightning_hrp(const char *lightning_hrp);
  
@@ -305,6 +322,405 @@ index 000000000..f6a078567
 +	common_shutdown();
 +	return 0;
 +}
+diff --git a/common/bolt11.c b/common/bolt11.c
+index bc851ed49..280696403 100644
+--- a/common/bolt11.c
++++ b/common/bolt11.c
+@@ -798,9 +798,11 @@ struct bolt11 *bolt11_decode_nosig(const tal_t *ctx, const char *str,
+ 		if (streq(prefix + 2, must_be_chain->lightning_hrp))
+ 			b11->chain = must_be_chain;
+ 		else
+-			return decode_fail(b11, fail, "Prefix %s is not for %s",
++			return decode_fail(b11, fail,
++					   "Prefix %s is not for %s (expected %s)",
+ 					   prefix + 2,
+-					   must_be_chain->network_name);
++					   must_be_chain->network_name,
++					   must_be_chain->lightning_hrp);
+ 	} else {
+ 		b11->chain = chainparams_by_lightning_hrp(prefix + 2);
+ 		if (!b11->chain)
+diff --git a/common/test/run-bolt11.c b/common/test/run-bolt11.c
+index a3c4c3a27..4ab665517 100644
+--- a/common/test/run-bolt11.c
++++ b/common/test/run-bolt11.c
+@@ -281,6 +281,24 @@ static const u8 **fallbacks(const tal_t *ctx,
+ 	return addrs;
+ }
+ 
++/* The BOLT 11 spec vectors carry Bitcoin's prefixes. This build's "bitcoin"
++ * network uses "blake" (doc/blake2b-chain-identity.md), so the vectors are
++ * decoded against a copy of the entry that keeps Bitcoin's "bc"; decoding
++ * compares by lightning_hrp and this file compares chain pointers, so the
++ * copy stands in for the real entry throughout. */
++static struct chainparams bitcoin_bc_params;
++
++static const struct chainparams *bitcoin_with_bc_hrp(void)
++{
++	if (!bitcoin_bc_params.network_name) {
++		/* Some members are const, so no struct assignment. */
++		memcpy(&bitcoin_bc_params, chainparams_for_network("bitcoin"),
++		       sizeof(bitcoin_bc_params));
++		bitcoin_bc_params.lightning_hrp = "bc";
++	}
++	return &bitcoin_bc_params;
++}
++
+ int main(int argc, char *argv[])
+ {
+ 	struct bolt11 *b11;
+@@ -334,7 +352,7 @@ int main(int argc, char *argv[])
+ 	 * * `357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp`: signature
+ 	 */
+ 	b11 = new_bolt11(tmpctx, NULL);
+-	b11->chain = chainparams_for_network("bitcoin");
++	b11->chain = bitcoin_with_bc_hrp();
+ 	b11->timestamp = 1496314658;
+ 	if (!hex_decode("0001020304050607080900010203040506070809000102030405060708090102",
+ 			strlen("0001020304050607080900010203040506070809000102030405060708090102"),
+@@ -378,7 +396,7 @@ int main(int argc, char *argv[])
+ 	 */
+ 	msatoshi = AMOUNT_MSAT(2500 * (1000ULL * 100000000) / 1000000);
+ 	b11 = new_bolt11(tmpctx, &msatoshi);
+-	b11->chain = chainparams_for_network("bitcoin");
++	b11->chain = bitcoin_with_bc_hrp();
+ 	b11->timestamp = 1496314658;
+ 	b11->payment_secret = tal(b11, struct secret);
+ 	memset(b11->payment_secret, 0x11, sizeof(*b11->payment_secret));
+@@ -420,7 +438,7 @@ int main(int argc, char *argv[])
+ 	 */
+ 	msatoshi = AMOUNT_MSAT(20 * (1000ULL * 100000000) / 1000);
+ 	b11 = new_bolt11(tmpctx, &msatoshi);
+-	b11->chain = chainparams_for_network("bitcoin");
++	b11->chain = bitcoin_with_bc_hrp();
+ 	b11->timestamp = 1496314658;
+ 	b11->payment_secret = tal(b11, struct secret);
+ 	memset(b11->payment_secret, 0x11, sizeof(*b11->payment_secret));
+@@ -468,7 +486,7 @@ int main(int argc, char *argv[])
+ 	 *   */
+ 	msatoshi = AMOUNT_MSAT(20 * (1000ULL * 100000000) / 1000);
+ 	b11 = new_bolt11(tmpctx, &msatoshi);
+-	b11->chain = chainparams_for_network("bitcoin");
++	b11->chain = bitcoin_with_bc_hrp();
+ 	b11->timestamp = 1496314658;
+ 	b11->payment_secret = tal(b11, struct secret);
+ 	memset(b11->payment_secret, 0x11, sizeof(*b11->payment_secret));
+@@ -504,7 +522,7 @@ int main(int argc, char *argv[])
+ 	/* ALL UPPERCASE is allowed (useful for QR codes) */
+ 	msatoshi = AMOUNT_MSAT(2500 * (1000ULL * 100000000) / 1000000);
+ 	b11 = new_bolt11(tmpctx, &msatoshi);
+-	b11->chain = chainparams_for_network("bitcoin");
++	b11->chain = bitcoin_with_bc_hrp();
+ 	b11->timestamp = 1496314658;
+ 	b11->payment_secret = tal(b11, struct secret);
+ 	memset(b11->payment_secret, 0x11, sizeof(*b11->payment_secret));
+@@ -570,7 +588,7 @@ int main(int argc, char *argv[])
+ 	 */
+ 	msatoshi = AMOUNT_MSAT(25 * (1000ULL * 100000000) / 1000);
+ 	b11 = new_bolt11(tmpctx, &msatoshi);
+-	b11->chain = chainparams_for_network("bitcoin");
++	b11->chain = bitcoin_with_bc_hrp();
+ 	b11->timestamp = 1496314658;
+ 	if (!hex_decode("0001020304050607080900010203040506070809000102030405060708090102",
+ 			strlen("0001020304050607080900010203040506070809000102030405060708090102"),
+@@ -702,6 +720,32 @@ int main(int argc, char *argv[])
+ 	/* Needs developer option to munge this into BOLT example order! */
+ 	dev_bolt11_old_order = true;
+ 	dev_bolt11_omit_c_value = true;
++	/* An invoice made here carries this chain's prefix, decodes back
++	 * against the real entry, and is refused against Bitcoin's. */
++	{
++		const struct chainparams *blake = chainparams_for_network("bitcoin");
++		struct bolt11 *here = new_bolt11(tmpctx, NULL);
++		char *enc;
++		const char *why;
++
++		assert(streq(blake->lightning_hrp, "blake"));
++		here->chain = blake;
++		here->timestamp = 1496314658;
++		here->receiver_id = node;
++		here->description = "on the BLAKE2b chain";
++		memset(&here->payment_hash, 1, sizeof(here->payment_hash));
++		here->payment_secret = tal(here, struct secret);
++		memset(here->payment_secret, 2, sizeof(*here->payment_secret));
++		enc = bolt11_encode(tmpctx, here, false, test_sign, NULL);
++		assert(strstarts(enc, "lnblake1"));
++		assert(bolt11_decode(tmpctx, enc, NULL, NULL, blake, &why));
++		assert(!bolt11_decode(tmpctx, enc, NULL, NULL,
++				      bitcoin_with_bc_hrp(), &why));
++		assert(strstr(why, "not for"));
++		assert(!bolt11_decode(tmpctx, "lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql",
++				      NULL, NULL, blake, &why));
++	}
++
+ 	badstr = bolt11_encode(tmpctx, b11, false, test_sign, NULL);
+ 	assert(streq(badstr, "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q4psqqqqqqqqqqqqqqqqsgqtqyx5vggfcsll4wu246hz02kp85x4katwsk9639we5n5yngc3yhqkm35jnjw4len8vrnqnf5ejh0mzj9n3vz2px97evektfm2l6wqccp3y7372"));
+ 	dev_bolt11_old_order = false;
+@@ -716,19 +760,19 @@ int main(int argc, char *argv[])
+ 	fset->bits[BOLT11_FEATURE] = tal_arr(fset, u8, 0);
+ 	set_feature_bit(&fset->bits[BOLT11_FEATURE], 8);
+ 	set_feature_bit(&fset->bits[BOLT11_FEATURE], 14);
+-	assert(!bolt11_decode(tmpctx, badstr, fset, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, badstr, fset, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "9: unknown feature bit 100"));
+ 
+ 	/* We'd actually allow this if we either (1) don't check, or (2) accept that feature in
+ 	 * either compulsory or optional forms. */
+-	assert(bolt11_decode(tmpctx, badstr, NULL, NULL, NULL, &fail));
++	assert(bolt11_decode(tmpctx, badstr, NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 
+ 	set_feature_bit(&fset->bits[BOLT11_FEATURE], 100);
+-	assert(bolt11_decode(tmpctx, badstr, fset, NULL, NULL, &fail));
++	assert(bolt11_decode(tmpctx, badstr, fset, NULL, bitcoin_with_bc_hrp(), &fail));
+ 
+ 	clear_feature_bit(fset->bits[BOLT11_FEATURE], 100);
+ 	set_feature_bit(&fset->bits[BOLT11_FEATURE], 101);
+-	assert(bolt11_decode(tmpctx, badstr, fset, NULL, NULL, &fail));
++	assert(bolt11_decode(tmpctx, badstr, fset, NULL, bitcoin_with_bc_hrp(), &fail));
+ 
+ 	/* FIXME: quoting description in here causes a spurious mismatch! */
+ 	/* BOLT #11:
+@@ -769,7 +813,7 @@ int main(int argc, char *argv[])
+ 	 */
+ 	msatoshi = AMOUNT_MSAT(967878534);
+ 	b11 = new_bolt11(tmpctx, &msatoshi);
+-	b11->chain = chainparams_for_network("bitcoin");
++	b11->chain = bitcoin_with_bc_hrp();
+ 	b11->timestamp = 1572468703;
+ 	b11->expiry = 604800;
+ 	b11->min_final_cltv_expiry = 10;
+@@ -827,7 +871,7 @@ int main(int argc, char *argv[])
+ 	 */
+ 	msatoshi = AMOUNT_MSAT(1000000000);
+ 	b11 = new_bolt11(tmpctx, &msatoshi);
+-	b11->chain = chainparams_for_network("bitcoin");
++	b11->chain = bitcoin_with_bc_hrp();
+ 	b11->timestamp = 1496314658;
+ 	if (!hex_decode("0001020304050607080900010203040506070809000102030405060708090102",
+ 			strlen("0001020304050607080900010203040506070809000102030405060708090102"),
+@@ -852,101 +896,101 @@ int main(int argc, char *argv[])
+ 	 * > ### Bech32 checksum is invalid.
+ 	 * > lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt
+ 	 */
+-	assert(!bolt11_decode(tmpctx, "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "Bad bech32 string"));
+ 
+ 	/* BOLT #11:
+ 	 * > ### Malformed bech32 string (no 1)
+ 	 * > pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny
+ 	 */
+-	assert(!bolt11_decode(tmpctx, "pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "Bad bech32 string"));
+ 
+ 	/* BOLT #11:
+ 	 * > ### Malformed bech32 string (mixed case)
+ 	 * > LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny
+ 	 */
+-	assert(!bolt11_decode(tmpctx, "LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "Bad bech32 string"));
+ 
+ 	/* BOLT #11:
+ 	 * > ### Signature is not recoverable.
+ 	 * > lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2
+ 	 */
+-	assert(!bolt11_decode(tmpctx, "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "signature recovery failed"));
+ 
+ 	/* BOLT #11:
+ 	 * > ### String is too short.
+ 	 * > lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6na6hlh
+ 	 */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6na6hlh", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6na6hlh", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 
+ 	/* BOLT #11:
+ 	 * > ### Invalid multiplier
+ 	 * > lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j
+ 	 */
+-	assert(!bolt11_decode(tmpctx, "lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc2500x1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqrrzc4cvfue4zp3hggxp47ag7xnrlr8vgcmkjxk3j5jqethnumgkpqp23z9jclu3v0a7e0aruz366e9wqdykw6dxhdzcjjhldxq0w6wgqcnu43j", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "Invalid amount postfix 'x'"));
+ 
+ 	/* BOLT #11:
+ 	 * > ### Invalid sub-millisatoshi precision.
+ 	 * > lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x
+ 	 */
+-	assert(!bolt11_decode(tmpctx, "lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "Invalid sub-millisatoshi amount '2500000001p'"));
+ 
+ 	/* BOLT #11:
+ 	 * > ### Missing required `s` field.
+ 	 * > lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp49qdkj
+ 	 */
+-	assert(!bolt11_decode(tmpctx, "lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp49qdkj", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp49qdkj", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "Missing required payment secret (s field)"));
+ 
+ 	/* Invalid UTF-8 tests. */
+ 	/* Description: Bad UTF-8: 0xC0" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrqqcqpjkkrsmq07c4ht7qgjdmf2a8savsafcy8lqn4av4gs80gz88ff2y780tdcve7sxp80kd4vk7hajt5mskcsegz2qfll4jywfwhap2q2n6cqyz5tv4", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrqqcqpjkkrsmq07c4ht7qgjdmf2a8savsafcy8lqn4av4gs80gz88ff2y780tdcve7sxp80kd4vk7hajt5mskcsegz2qfll4jywfwhap2q2n6cqyz5tv4", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xC020" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrqzqcqpj30cjfyveywx7wk4gl45ua4g3hcsd9hp0qqtudua0529gfd5cp7kytnttu6dw0yp24v9aefvxamsdvrks9rsqr53ukrexf0vqp8fffusql6q3x4", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrqzqcqpj30cjfyveywx7wk4gl45ua4g3hcsd9hp0qqtudua0529gfd5cp7kytnttu6dw0yp24v9aefvxamsdvrks9rsqr53ukrexf0vqp8fffusql6q3x4", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xE0" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrsqcqpjw6tys4p5m7nxw8ykl6pfqvms4pcnjky9san7rvxvyg9vf9symke49rqfrqdcrtn33qnxpt738crh3arm2dqwqkk00324me6dzcqfrdcpj2echr", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrsqcqpjw6tys4p5m7nxw8ykl6pfqvms4pcnjky9san7rvxvyg9vf9symke49rqfrqdcrtn33qnxpt738crh3arm2dqwqkk00324me6dzcqfrdcpj2echr", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xE0A0" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrs2qcqpjmhm55ful0ms5m77rvv2mkld2s9cx2d9syyva5gwc5y7xdtsjwxl8f9nwdftdc64fqwgczxmn00zftry9wj9gsw5tqm9m4nwr75sw9dsq85re9l", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrs2qcqpjmhm55ful0ms5m77rvv2mkld2s9cx2d9syyva5gwc5y7xdtsjwxl8f9nwdftdc64fqwgczxmn00zftry9wj9gsw5tqm9m4nwr75sw9dsq85re9l", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xE0A020" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrs2qgqcqpjwm32zdhpftqqp03lsmj27uf5y5pj9e9e8wc2n6nywe5ckwm95wq5z5k2drytjrn4wdwym73qr877u7uajvs88t78xnu2tltt9nsftlqpetnz7k", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrs2qgqcqpjwm32zdhpftqqp03lsmj27uf5y5pj9e9e8wc2n6nywe5ckwm95wq5z5k2drytjrn4wdwym73qr877u7uajvs88t78xnu2tltt9nsftlqpetnz7k", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xF0" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrcqcqpjg8ca44f2u2vw4df6zvata2p23v9dyzfjyyremz2f9t0xuzrzznrqcqm4pkmh36vj96qg0v93y0jvrp0u2607lgmc6gdes5lvpr42x9qptekthk", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5gfskggz423rz6wp6yrcqcqpjg8ca44f2u2vw4df6zvata2p23v9dyzfjyyremz2f9t0xuzrzznrqcqm4pkmh36vj96qg0v93y0jvrp0u2607lgmc6gdes5lvpr42x9qptekthk", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xF0A0" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrc2qcqpj5pj85e6uazujup7pv8n7kwg36lll3uhfguxlwydzznll4nm8ntsy72shgrq042d7md02whd3yzx72t7sf83cah5lfk3xf84ucvt2f8gqc7u33r", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq4gfskggz423rz6wp6yrc2qcqpj5pj85e6uazujup7pv8n7kwg36lll3uhfguxlwydzznll4nm8ntsy72shgrq042d7md02whd3yzx72t7sf83cah5lfk3xf84ucvt2f8gqc7u33r", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xF0A020" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrc2pgqcqpjt284ywasepdes2akvekh7anra3txezksmdmxav84a5nhzdkx84jrmwydasl6ynydse66pnl9mh0wd6t9fk5j8vftuf0hwt2pt6rrqccp4qamj4", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrc2pgqcqpjt284ywasepdes2akvekh7anra3txezksmdmxav84a5nhzdkx84jrmwydasl6ynydse66pnl9mh0wd6t9fk5j8vftuf0hwt2pt6rrqccp4qamj4", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xF0A0A0" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrc2pgqcqpjt284ywasepdes2akvekh7anra3txezksmdmxav84a5nhzdkx84jrmwydasl6ynydse66pnl9mh0wd6t9fk5j8vftuf0hwt2pt6rrqccp4qamj4", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqhgfskggz423rz6wp6yrc2pgqcqpjt284ywasepdes2akvekh7anra3txezksmdmxav84a5nhzdkx84jrmwydasl6ynydse66pnl9mh0wd6t9fk5j8vftuf0hwt2pt6rrqccp4qamj4", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Description: Bad UTF-8: 0xF0A0A020" */
+-	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqcgfskggz423rz6wp6yrc2pgpqcqpjmyveg8ccprmlssyae9l33an2m0qz3qcfcavt7wdzrdqyx5q7hqmp7ne08uvwlwaaqwt4lxgmjh5gce3hv0m8tzwkzfshpdv9d5p9pcsp5v86r0", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqcgfskggz423rz6wp6yrc2pgpqcqpjmyveg8ccprmlssyae9l33an2m0qz3qcfcavt7wdzrdqyx5q7hqmp7ne08uvwlwaaqwt4lxgmjh5gce3hv0m8tzwkzfshpdv9d5p9pcsp5v86r0", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "d: invalid utf8"));
+ 
+ 	/* Invalid private routes. */
+ 	/* Invalid route pubkey. */
+-	assert(!bolt11_decode(tmpctx, "lnbc1qqygh9qpp50qzxqqqqqpqqrzjcqqqqqqqqqqqqqqqqqqqqqqqqqqcqpjqqqqqqrzjcqqqqqcqpjqqqqqqqqqqqqqqqqqqqqqqqqqcq9qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqdqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqlqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqlqqqqqqqqqqqqqqqqqqqqqqq4murj7", NULL, NULL, NULL, &fail));
++	assert(!bolt11_decode(tmpctx, "lnbc1qqygh9qpp50qzxqqqqqpqqrzjcqqqqqqqqqqqqqqqqqqqqqqqqqqcqpjqqqqqqrzjcqqqqqcqpjqqqqqqqqqqqqqqqqqqqqqqqqqcq9qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqdqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqlqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqlqqqqqqqqqqqqqqqqqqqqqqq4murj7", NULL, NULL, bitcoin_with_bc_hrp(), &fail));
+ 	assert(streq(fail, "r: hop 0 pubkey invalid"));
+ 
+ 	/* FIXME: Test the others! */
+diff --git a/contrib/pyln-testing/pyln/testing/fixtures.py b/contrib/pyln-testing/pyln/testing/fixtures.py
+index 335667cfe..6d6103509 100644
+--- a/contrib/pyln-testing/pyln/testing/fixtures.py
++++ b/contrib/pyln-testing/pyln/testing/fixtures.py
+@@ -859,7 +859,7 @@ def chainparams():
+             "p2sh_prefix": "2",
+             "example_addr": "bcrt1qeyyk6sl5pr49ycpqyckvmttus5ttj25pd0zpvg",
+             "feeoutput": False,
+-            "chain_hash": "06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f",
++            "chain_hash": "1aab09d928da45793d6f6f937b969e3b86f0403862d0de56289a16437bd59425",
+         },
+         "liquid-regtest": {
+             "bip173_prefix": "ert",
+diff --git a/plugins/offers.c b/plugins/offers.c
+index e6f192b76..9ca614034 100644
+--- a/plugins/offers.c
++++ b/plugins/offers.c
+@@ -577,6 +577,28 @@ static bool tok_pull(const char *buffer, jsmntok_t *tok, const char *lowerstr)
+ 	return true;
+ }
+ 
++/* Pull "ln" + the prefix of any network this build knows, and the prefix a
++ * network had before the chain identity, so that a Bitcoin invoice is still
++ * read as one and refused with the reason. Longest first, so that a prefix
++ * that extends another (blakert over blake, bcrt over bc) is tried first. */
++static bool tok_pull_bolt11_prefix(const char *buffer, jsmntok_t *tok)
++{
++	static const char *names[] = {
++		"regtest", "signet", "testnet4", "testnet", "bitcoin",
++	};
++	for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
++		const struct chainparams *p = chainparams_for_network(names[i]);
++		if (tok_pull(buffer, tok,
++			     tal_fmt(tmpctx, "ln%s", p->lightning_hrp)))
++			return true;
++		if (p->legacy_lightning_hrp
++		    && tok_pull(buffer, tok,
++				tal_fmt(tmpctx, "ln%s", p->legacy_lightning_hrp)))
++			return true;
++	}
++	return false;
++}
++
+ static enum likely_type guess_type(const char *buffer, const jsmntok_t *tok)
+ {
+ 	jsmntok_t tok_copy = *tok;
+@@ -605,10 +627,7 @@ static enum likely_type guess_type(const char *buffer, const jsmntok_t *tok)
+ 	 *    is the 'social' convention of a payment unit -- in the
+ 	 *    case of Bitcoin the unit is 'bitcoin' NOT satoshis.
+ 	 */
+-	if (tok_pull(buffer, &tok_copy, "lnbcrt")
+-	    || tok_pull(buffer, &tok_copy, "lnbc")
+-	    || tok_pull(buffer, &tok_copy, "lntbs")
+-	    || tok_pull(buffer, &tok_copy, "lntb")) {
++	if (tok_pull_bolt11_prefix(buffer, &tok_copy)) {
+ 		/* Now find last '1', which separates hrp from data */
+ 		const char *delim = memrchr(buffer + tok_copy.start, '1',
+ 					    tok_copy.end - tok_copy.start);
+diff --git a/plugins/test/run-decode_guess_type.c b/plugins/test/run-decode_guess_type.c
+index 038f3124f..b66dac2d0 100644
+--- a/plugins/test/run-decode_guess_type.c
++++ b/plugins/test/run-decode_guess_type.c
+@@ -262,6 +262,11 @@ int main(int argc, char *argv[])
+ 		{ "CLNEMERG1FOO",      LIKELY_EMERGENCY_RECOVER },
+ 
+ 		/* BOLT-11 (lower + upper, amount + no amount) */
++		{ "lnblake1qqqqqq",    LIKELY_BOLT11 },
++		{ "lnblake10u1qqqqqq", LIKELY_BOLT11 },
++		{ "lnblakert1deadbeef", LIKELY_BOLT11 },
++		{ "lntbsblake1qqqqqq", LIKELY_BOLT11 },
++		{ "lnblakex1qqqq",     LIKELY_OTHER }, /* bad amount */
+ 		{ "lnbc1qqqqqq",       LIKELY_BOLT11 },
+ 		{ "LNBC1QQQQQQ",       LIKELY_BOLT11 },
+ 		{ "lnbc10u1qqqqqq",    LIKELY_BOLT11 },
+diff --git a/wallet/account_migration.c b/wallet/account_migration.c
+index f913c14ab..552a8625d 100644
+--- a/wallet/account_migration.c
++++ b/wallet/account_migration.c
+@@ -423,7 +423,10 @@ void migrate_from_account_db(struct lightningd *ld, struct db *db)
+ 		 * use it was to inject your own events, and nobody did that
+ 		 * and it would be a nightmare to support */
+ 		if (ev->currency
+-		    && !streq(ev->currency, chainparams->lightning_hrp)) {
++		    && !streq(ev->currency, chainparams->lightning_hrp)
++		    && !(chainparams->legacy_lightning_hrp
++			 && streq(ev->currency,
++				  chainparams->legacy_lightning_hrp))) {
+ 			log_broken(ld->log, "IGNORING foreign currency chain event (%s, currency %s)",
+ 				   ev->tag, ev->currency);
+ 			continue;
+@@ -519,7 +522,10 @@ void migrate_from_account_db(struct lightningd *ld, struct db *db)
+ 		 * use it was to inject your own events, and nobody did that
+ 		 * and it would be a nightmare to support */
+ 		if (ev->currency
+-		    && !streq(ev->currency, chainparams->lightning_hrp)) {
++		    && !streq(ev->currency, chainparams->lightning_hrp)
++		    && !(chainparams->legacy_lightning_hrp
++			 && streq(ev->currency,
++				  chainparams->legacy_lightning_hrp))) {
+ 			log_broken(ld->log, "IGNORING foreign currency channel event (%s, currency %s)",
+ 				   ev->tag, ev->currency);
+ 			continue;
 -- 
 2.43.0
 
