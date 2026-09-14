@@ -5849,10 +5849,23 @@ func (s *server) addOfferInvoice(ctx context.Context, amountMsat uint64,
 		QueryBlindedRoutes: func(amt lnwire.MilliSatoshi) (
 			[]*route.Route, error) {
 
-			return s.chanRouter.FindBlindedPaths(
-				selfNode, amt, s.defaultMC.GetProbability,
-				restrictions,
+			routes, fellBack, err := offerserve.FindPathsWithFallback(
+				func(r *routing.BlindedPathRestrictions) (
+					[]*route.Route, error) {
+
+					return s.chanRouter.FindBlindedPaths(
+						selfNode, amt,
+						s.defaultMC.GetProbability, r,
+					)
+				}, restrictions,
 			)
+			if fellBack {
+				srvrLog.Infof("No peer can start a blinded " +
+					"path for an offer invoice; using one " +
+					"that starts at this node")
+			}
+
+			return routes, err
 		},
 	}
 	hash, invoice, err := invoicesrpc.AddInvoice(
