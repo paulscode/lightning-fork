@@ -44,6 +44,11 @@ type SessionSource struct {
 	// PathFindingConfig defines global parameters that control the
 	// trade-off in path finding between fees and probability.
 	PathFindingConfig PathFindingConfig
+
+	// SelfHop lets a payment through a blinded path that starts at this
+	// node be made, by processing our own hop of it. Optional: without
+	// it such a payment is refused.
+	SelfHop SelfHopProcessor
 }
 
 // NewPaymentSession creates a new payment session backed by the latest prune
@@ -60,6 +65,13 @@ func (m *SessionSource) NewPaymentSession(p *LightningPayment,
 			graph, m.SourceNode.PubKeyBytes, m.GetLink,
 			firstHopBlob, trafficShaper,
 		)
+	}
+
+	// A path set with this node as an introduction node is paid through
+	// the hop after ours; the payment's own copy stays as it was.
+	p, err := PeelPaymentForSelf(p, m.SourceNode.PubKeyBytes, m.SelfHop)
+	if err != nil {
+		return nil, err
 	}
 
 	session, err := newPaymentSession(
