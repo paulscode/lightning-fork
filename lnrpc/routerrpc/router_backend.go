@@ -74,6 +74,11 @@ type RouterBackend struct {
 	// routes.
 	FindRoute func(*routing.RouteRequest) (*route.Route, float64, error)
 
+	// SelfHop processes this node's own hop of a blinded path that starts
+	// here, so that a route can be queried through it. Nil refuses such
+	// paths.
+	SelfHop routing.SelfHopProcessor
+
 	MissionControl MissionControl
 
 	// ActiveNetParams are the network parameters of the primary network
@@ -354,6 +359,16 @@ func (r *RouterBackend) parseQueryRoutesRequest(in *lnrpc.QueryRoutesRequest) (
 	// on whether it is using a blinded path or not.
 	if len(in.BlindedPaymentPaths) > 0 {
 		blindedPathSet, err = parseBlindedPaymentPaths(in)
+		if err != nil {
+			return nil, err
+		}
+
+		// A path that starts at this node is processed here, the way
+		// a payment through it would be, so the route found is the
+		// one a payment takes.
+		blindedPathSet, err = routing.PeelSelfIntro(
+			blindedPathSet, r.SelfNode, r.SelfHop,
+		)
 		if err != nil {
 			return nil, err
 		}

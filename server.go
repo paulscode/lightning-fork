@@ -1236,6 +1236,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 		MissionControl:      s.defaultMC,
 		GetLink:             s.htlcSwitch.GetLinkByShortID,
 		PathFindingConfig:   pathFindingConfig,
+		SelfHop:             &selfHopProcessor{s: s},
 	}
 
 	s.controlTower = routing.NewControlTower(dbs.PaymentsDB)
@@ -5694,6 +5695,57 @@ func (s *server) SendOnionMessage(ctx context.Context, peerPub [33]byte,
 	return peer.SendMessageLazy(true, msg)
 }
 
+// selfHopProcessor lets the router pay through a blinded path that starts
+// at this node, by processing our own hop with the node key.
+type selfHopProcessor struct {
+	s *server
+}
+
+// DecryptBlindedData decrypts our hop's data with the node key.
+func (p *selfHopProcessor) DecryptBlindedData(blindingPoint *btcec.PublicKey,
+	data []byte) ([]byte, error) {
+
+	return p.s.sphinxOnionMsg.DecryptBlindedHopData(blindingPoint, data)
+}
+
+// NextBlindingPoint derives the blinding point for the hop after ours.
+func (p *selfHopProcessor) NextBlindingPoint(
+	blindingPoint *btcec.PublicKey) (*btcec.PublicKey, error) {
+
+	return p.s.sphinxOnionMsg.NextEphemeral(blindingPoint)
+}
+
+// PeerOverChannel returns the peer at the other end of one of our channels,
+// which may be named by an alias, ours or the peer's. The switch knows
+// every open channel under every name it goes by; the graph is the fallback
+// for a channel the switch has no link for.
+func (p *selfHopProcessor) PeerOverChannel(
+	scid lnwire.ShortChannelID) (*btcec.PublicKey, error) {
+
+	if link, err := p.s.htlcSwitch.GetLinkByShortID(scid); err == nil {
+		peer := link.PeerPubKey()
+
+		return btcec.ParsePubKey(peer[:])
+	}
+	if base, err := p.s.aliasMgr.FindBaseSCID(scid); err == nil {
+		scid = base
+	}
+	info, _, _, err := p.s.graphDB.FetchChannelEdgesByID(
+		context.Background(), scid.ToUint64(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	other, err := info.OtherNodeKeyBytes(
+		p.s.identityECDH.PubKey().SerializeCompressed(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return btcec.ParsePubKey(other[:])
+}
+
 // offersDeps is what the offers sub-server gets from the node. Without
 // onion messages there is no client: fetching and paying are refused up
 // front rather than waiting for replies that cannot come.
@@ -5740,31 +5792,6 @@ func (s *server) offersDeps() *offersrpc.Deps {
 			return [32]byte{}, false, !payment.Terminated(), nil
 		},
 		ResolveIntro: s.onionMessenger.ResolveIntro,
-		NodeKey:      s.identityECDH.PubKey(),
-		PeerOverChannel: func(ctx context.Context,
-			scid lnwire.ShortChannelID) (*btcec.PublicKey, error) {
-
-			// The channel may be named by an alias.
-			if base, err := s.aliasMgr.FindBaseSCID(scid); err == nil {
-				scid = base
-			}
-			info, _, _, err := s.graphDB.FetchChannelEdgesByID(
-				ctx, scid.ToUint64(),
-			)
-			if err != nil {
-				return nil, err
-			}
-			other, err := info.OtherNodeKeyBytes(
-				s.identityECDH.PubKey().SerializeCompressed(),
-			)
-			if err != nil {
-				return nil, err
-			}
-
-			return btcec.ParsePubKey(other[:])
-		},
-		DecryptBlindedData: s.sphinxOnionMsg.DecryptBlindedHopData,
-		NextPathKey:        s.sphinxOnionMsg.NextEphemeral,
 	}
 }
 

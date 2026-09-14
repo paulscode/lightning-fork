@@ -82,9 +82,10 @@ which it finds through the graph or, for a fetch it makes itself, by
 connecting to the node at its announced address.
 
 When one of the invoice's payment paths starts at this node, because this
-node is the issuer's channel peer, the node processes its own hop of the
-path itself and pays on through that channel. Such a payment is sent as a
-single part.
+node is the issuer's channel peer, the router processes its own hop of the
+path and pays on through that channel, splitting the payment into parts
+when it has to. The same holds for a BOLT 11 invoice with blinded paths,
+whichever way it is paid.
 
 ## Decoding
 
