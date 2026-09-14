@@ -22,6 +22,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/devrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/neutrinorpc"
+	"github.com/lightningnetwork/lnd/lnrpc/offersrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/peersrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
@@ -31,6 +32,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/offers"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/watchtower"
@@ -67,6 +69,10 @@ type subRPCServerConfigs struct {
 	// InvoicesRPC is a sub-RPC server that exposes invoice related methods
 	// as a gRPC service.
 	InvoicesRPC *invoicesrpc.Config `group:"invoicesrpc" namespace:"invoicesrpc"`
+
+	// OffersRPC is a sub-RPC server that mints, lists and decodes BOLT 12
+	// offers.
+	OffersRPC *offersrpc.Config `group:"offersrpc" namespace:"offersrpc"`
 
 	// PeersRPC is a sub-RPC server that exposes peer related methods
 	// as a gRPC service.
@@ -129,7 +135,8 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 	parseAddr func(addr string) (net.Addr, error),
 	rpcLogger btclog.Logger, aliasMgr *aliasmgr.Manager,
 	auxDataParser fn.Option[AuxDataParser],
-	invoiceHtlcModifier *invoices.HtlcModificationInterceptor) error {
+	invoiceHtlcModifier *invoices.HtlcModificationInterceptor,
+	offersManager *offers.Manager) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
 	// that allows us to programmatically inspect its fields.
@@ -356,6 +363,13 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 
 			subCfgValue.FieldByName("Switch").Set(
 				reflect.ValueOf(htlcSwitch),
+			)
+
+		case *offersrpc.Config:
+			subCfgValue := extractReflectValue(subCfg)
+
+			subCfgValue.FieldByName("Manager").Set(
+				reflect.ValueOf(offersManager),
 			)
 
 		case *peersrpc.Config:
