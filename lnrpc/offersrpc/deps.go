@@ -45,17 +45,4 @@ type Deps struct {
 	// direction, for paying an invoice whose paths use that form.
 	ResolveIntro func(ctx context.Context,
 		node lnwire.IntroductionNode) (*btcec.PublicKey, error)
-
-	// NodeKey is this node's id.
-	NodeKey *btcec.PublicKey
-
-	// PeerOverChannel, DecryptBlindedData and NextPathKey let a payment
-	// path that starts at this node be processed here, since the router
-	// cannot pay through a path it is the introduction node of.
-	PeerOverChannel func(ctx context.Context,
-		scid lnwire.ShortChannelID) (*btcec.PublicKey, error)
-	DecryptBlindedData func(blindingPoint *btcec.PublicKey,
-		data []byte) ([]byte, error)
-	NextPathKey func(blindingPoint *btcec.PublicKey) (*btcec.PublicKey,
-		error)
 }

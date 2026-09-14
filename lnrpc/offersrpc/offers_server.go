@@ -666,13 +666,7 @@ func (s *Server) PayOffer(ctx context.Context,
 		FeeLimitMsat: feeLimit,
 		Timeout:      timeout,
 		MaxParts:     maxParts,
-	}, offerpay.IntentHooks{
-		NodeKey:            s.cfg.Deps.NodeKey,
-		ResolveIntro:       s.cfg.Deps.ResolveIntro,
-		PeerOverChannel:    s.cfg.Deps.PeerOverChannel,
-		DecryptBlindedData: s.cfg.Deps.DecryptBlindedData,
-		NextPathKey:        s.cfg.Deps.NextPathKey,
-	})
+	}, offerpay.IntentHooks{ResolveIntro: s.cfg.Deps.ResolveIntro})
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}

@@ -694,6 +694,7 @@ func (r *rpcServer) addDeps(ctx context.Context, s *server,
 
 	routerBackend := &routerrpc.RouterBackend{
 		SelfNode: selfNode.PubKeyBytes,
+		SelfHop:  &selfHopProcessor{s: s},
 		Clock:    clock.NewDefaultClock(),
 		FetchChannelCapacity: func(chanID uint64) (btcutil.Amount,
 			error) {
