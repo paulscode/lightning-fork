@@ -19,7 +19,7 @@ BOLT 1's `networks` record, BOLT 2's `open_channel`, BOLT 7's channel
 announcements and updates, and channel backups all carry a 32-byte
 `chain_hash`. On this chain it is **not** the genesis hash.
 
-| Network | `chain_hash` (hex, byte order as it appears on the wire and in `getblockhash`) | Derivation |
+| Network | `chain_hash` (hex, in the order `getblockhash` prints) | Derivation |
 | --- | --- | --- |
 | mainnet | `0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb` | the block id of block 961,640, the first BLAKE2b block |
 | testnet4 | `572c94664c77fb4ce6a9c4ee50ed8f0eb1bd363061342194ac66fca694aa63a6` | `TaggedHash("Lightning Fork chain_hash", genesis)` |
@@ -27,8 +27,15 @@ announcements and updates, and channel backups all carry a 32-byte
 | regtest | `2594d57b43169a2856ded0623840f0863b9e967b936f6f3d7945da28d909ab1a` | same |
 
 `TaggedHash` is BIP 340's: `SHA256(SHA256(tag) || SHA256(tag) || msg)`,
-with the tag as ASCII and `genesis` the 32-byte genesis block id in the
-same byte order as the table. Mainnet uses the activation block's id
+with the tag as ASCII. Byte order matters: `genesis` is the 32-byte genesis
+block id in its internal (wire) order, which is the reverse of what
+`getblockhash` prints, and the 32-byte digest is taken as a block id in
+that same internal order, so the table above shows it reversed. On the
+wire (`init`, `open_channel`, gossip, BOLT 12) every `chain_hash` is sent
+in internal order, exactly like Bitcoin's genesis hash is. For regtest:
+`TaggedHash("Lightning Fork chain_hash", reverse(0f9188f1…2206))` gives the
+digest `1aab09d9…9425`, which is the wire value, printed as `2594d57b…ab1a`.
+Mainnet uses the activation block's id
 rather than a tagged hash so that the value is a fact about the chain
 itself, checkable against any node with `getblockhash 961640`; the test
 networks have no fixed activation block (regtest chooses its height per
@@ -120,6 +127,11 @@ Knots definition; Lightning Fork's is in the btcd fork's `wire` package.
 ## Status
 
 Implemented in Lightning Fork (`github.com/paulscode/lightning-fork`) and
-running on mainnet. Open to change until a second implementation has
-mainnet channels; changes after that would strand channels. Discussion:
-open an issue on the repository above.
+running on mainnet. A patch series implementing the same values in
+Core Lightning, on top of `privkeyio/lightning` `v26.06.7-blake2b.3`, is
+kept under `contrib/cln-chain-identity/` in this repository with
+its proposal; with it applied, the two implementations peer, open channels
+from either side, pay each other's invoices and offers, and close, in the
+regtest lab. Open to change until a second implementation has mainnet
+channels; changes after that would strand channels. Discussion: open an
+issue on the repository above.

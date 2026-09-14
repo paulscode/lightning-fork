@@ -1,0 +1,310 @@
+From b6564c888aabc9b8de392bc13f39ab5c3d7c1e93 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Mon, 14 Sep 2026 12:11:03 -0500
+Subject: [PATCH 1/5] bitcoin: give the BLAKE2b chain its own chain_hash and
+ invoice prefix
+
+The BLAKE2b hard fork shares Bitcoin's genesis block, and BOLT 1, 2, 7
+and 12 identify a chain by its genesis hash or a prefix derived from it.
+A node on this chain that keeps Bitcoin's values connects to Bitcoin
+nodes, merges its gossip with theirs, accepts their channel opens, and
+pays or is paid with invoices that a Bitcoin wallet accepts too: the
+release notes of v26.06.7-blake2b.3 name exactly this as the open
+question header parsing does not settle.
+
+The chain_hash of the network called "bitcoin" is now the id of block
+961,640, the first BLAKE2b block, a fact about the chain that any node
+can check with getblockhash. regtest, signet and testnet4, which have no
+fixed activation block, use TaggedHash("Lightning Fork chain_hash",
+genesis). The invoice prefixes are blake, blakert, tbsblake and tblake,
+so an invoice is not payable on the other chain by a wallet that follows
+the prefix, and a Bitcoin invoice (lnbc...) is refused here.
+
+The genesis block id stays available as block0_hash, since the wallet
+backend still reports it and the wallet stamp and BOLT 12 need it. A
+unit test pins the values in the byte order getblockhash prints, so a
+mistake in the little-endian arrays shows here rather than on the wire.
+
+These are the values Lightning Fork (github.com/paulscode/lightning-fork,
+an LND port) runs with on mainnet; doc/blake2b-chain-identity.md, added
+in a later commit, is the shared definition.
+---
+ bitcoin/chainparams.c                  | 74 ++++++++++++++++---
+ bitcoin/chainparams.h                  | 18 +++++
+ bitcoin/test/run-chainparams-blake2b.c | 99 ++++++++++++++++++++++++++
+ 3 files changed, 181 insertions(+), 10 deletions(-)
+ create mode 100644 bitcoin/test/run-chainparams-blake2b.c
+
+diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
+index 9ce3b0520..b0e71b1af 100644
+--- a/bitcoin/chainparams.c
++++ b/bitcoin/chainparams.c
+@@ -26,11 +26,21 @@ static u8 liquid_regtest_fee_asset[] = {
+ };
+ 
+ const struct chainparams networks[] = {
++    /* Bitcoin Knots' BLAKE2b hard fork shares Bitcoin's genesis, so its
++     * chain_hash is the id of block 961,640, the first BLAKE2b block, and
++     * its invoice prefix is `blake`: doc/blake2b-chain-identity.md. */
+     {.network_name = "bitcoin",
+      .onchain_hrp = "bc",
+-     .lightning_hrp = "bc",
++     .lightning_hrp = "blake",
+      .bip70_name = "main",
+-     .genesis_blockhash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
++     /* 0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb */
++     .genesis_blockhash = {{{.u.u8 = {0xeb, 0x8e, 0xf1, 0x96, 0x13, 0x54, 0xc8,
++				      0xa8, 0xe7, 0x94, 0xa4, 0xe5, 0x46, 0x4f,
++				      0xe1, 0x3b, 0x29, 0x59, 0xf4, 0x72, 0x96,
++				      0xf6, 0xe5, 0xc1, 0x50, 0x00, 0x00, 0x00,
++				      0x00, 0x00, 0x00, 0x00}}}},
++     /* 000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f */
++     .block0_hash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
+ 				      0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63,
+ 				      0xf7, 0x4f, 0x93, 0x1e, 0x83, 0x65, 0xe1,
+ 				      0x5a, 0x08, 0x9c, 0x68, 0xd6, 0x19, 0x00,
+@@ -50,8 +60,8 @@ const struct chainparams networks[] = {
+      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
+      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
+-     /* "Lightning Charge Powers Developers & Blockstream Store" */
+-     .when_lightning_became_cool = 504500,
++     /* The first BLAKE2b block: no channel on this chain is older. */
++     .when_lightning_became_cool = 961640,
+      .p2pkh_version = 0,
+      .p2sh_version = 5,
+      .testnet = false,
+@@ -61,9 +71,17 @@ const struct chainparams networks[] = {
+      .is_elements = false},
+     {.network_name = "regtest",
+      .onchain_hrp = "bcrt",
+-     .lightning_hrp = "bcrt",
++     .lightning_hrp = "blakert",
+      .bip70_name = "regtest",
+-     .genesis_blockhash = {{{.u.u8 = {0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b,
++     /* TaggedHash("Lightning Fork chain_hash", genesis):
++      * 2594d57b43169a2856ded0623840f0863b9e967b936f6f3d7945da28d909ab1a */
++     .genesis_blockhash = {{{.u.u8 = {0x1a, 0xab, 0x09, 0xd9, 0x28, 0xda, 0x45,
++				      0x79, 0x3d, 0x6f, 0x6f, 0x93, 0x7b, 0x96,
++				      0x9e, 0x3b, 0x86, 0xf0, 0x40, 0x38, 0x62,
++				      0xd0, 0xde, 0x56, 0x28, 0x9a, 0x16, 0x43,
++				      0x7b, 0xd5, 0x94, 0x25}}}},
++     /* 0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206 */
++     .block0_hash = {{{.u.u8 = {0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b,
+ 				      0x59, 0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb,
+ 				      0x5b, 0xbf, 0x28, 0xc3, 0x4f, 0x3a, 0x5e,
+ 				      0x33, 0x2a, 0x1f, 0xc7, 0xb2, 0xb7, 0x3c,
+@@ -87,10 +105,17 @@ const struct chainparams networks[] = {
+      .is_elements = false},
+     {.network_name = "signet",
+      .onchain_hrp = "tb",
+-     .lightning_hrp = "tbs",
++     .lightning_hrp = "tbsblake",
+      .bip70_name = "signet",
+      // 00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6
+-     .genesis_blockhash = {{{.u.u8 = {0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80,
++     /* TaggedHash("Lightning Fork chain_hash", genesis):
++      * c283e28a744edd1bf7a47946620de35ae2e8ac84dc0a2b21e29f1ebf36ec6589 */
++     .genesis_blockhash = {{{.u.u8 = {0x89, 0x65, 0xec, 0x36, 0xbf, 0x1e, 0x9f,
++				      0xe2, 0x21, 0x2b, 0x0a, 0xdc, 0x84, 0xac,
++				      0xe8, 0xe2, 0x5a, 0xe3, 0x0d, 0x62, 0x46,
++				      0x79, 0xa4, 0xf7, 0x1b, 0xdd, 0x4e, 0x74,
++				      0x8a, 0xe2, 0x83, 0xc2}}}},
++     .block0_hash = {{{.u.u8 = {0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80,
+ 				      0xa4, 0x77, 0xa0, 0x63, 0xaf, 0x32, 0xb2,
+ 				      0xbb, 0xc9, 0x7c, 0x9f, 0xf9, 0xf0, 0x1f,
+ 				      0x2c, 0x42, 0x25, 0xe9, 0x73, 0x98, 0x81,
+@@ -138,10 +163,17 @@ const struct chainparams networks[] = {
+      .is_elements = false},
+     {.network_name = "testnet4",
+      .onchain_hrp = "tb",
+-     .lightning_hrp = "tb",
++     .lightning_hrp = "tblake",
+      .bip70_name = "testnet4",
+      // 00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043
+-     .genesis_blockhash = {{{.u.u8 = {0x43, 0xf0, 0x8b, 0xda, 0xb0, 0x50, 0xe3,
++     /* TaggedHash("Lightning Fork chain_hash", genesis):
++      * 572c94664c77fb4ce6a9c4ee50ed8f0eb1bd363061342194ac66fca694aa63a6 */
++     .genesis_blockhash = {{{.u.u8 = {0xa6, 0x63, 0xaa, 0x94, 0xa6, 0xfc, 0x66,
++				      0xac, 0x94, 0x21, 0x34, 0x61, 0x30, 0x36,
++				      0xbd, 0xb1, 0x0e, 0x8f, 0xed, 0x50, 0xee,
++				      0xc4, 0xa9, 0xe6, 0x4c, 0xfb, 0x77, 0x4c,
++				      0x66, 0x94, 0x2c, 0x57}}}},
++     .block0_hash = {{{.u.u8 = {0x43, 0xf0, 0x8b, 0xda, 0xb0, 0x50, 0xe3,
+ 				      0x5b, 0x56, 0x7c, 0x86, 0x4b, 0x91, 0xf4,
+ 				      0x7f, 0x50, 0xae, 0x72, 0x5a, 0xe2, 0xde,
+ 				      0x53, 0xbc, 0xfb, 0xba, 0xf2, 0x84, 0xda,
+@@ -244,6 +276,28 @@ const struct chainparams *chainparams_by_lightning_hrp(const char *lightning_hrp
+ 	return NULL;
+ }
+ 
++const struct bitcoin_blkid *chainparams_block0(const struct chainparams *params)
++{
++	static const struct bitcoin_blkid zero;
++
++	if (bitcoin_blkid_eq(&params->block0_hash, &zero))
++		return &params->genesis_blockhash;
++	return &params->block0_hash;
++}
++
++const struct bitcoin_blkid *chainparams_bolt12_implicit_chain(void)
++{
++	/* Bitcoin mainnet's genesis, whatever chain_hash this build carries
++	 * for the network called "bitcoin". */
++	return chainparams_block0(chainparams_for_network("bitcoin"));
++}
++
++bool chainparams_bolt12_implicit(const struct chainparams *params)
++{
++	return bitcoin_blkid_eq(&params->genesis_blockhash,
++				chainparams_bolt12_implicit_chain());
++}
++
+ const char *chainparams_get_network_names(const tal_t *ctx)
+ {
+     char *networks_string = tal_strdup(ctx, networks[0].network_name);
+diff --git a/bitcoin/chainparams.h b/bitcoin/chainparams.h
+index 05794f5c1..3d7f874bb 100644
+--- a/bitcoin/chainparams.h
++++ b/bitcoin/chainparams.h
+@@ -20,7 +20,14 @@ struct chainparams {
+ 	/*'bip70_name' is corresponding to the 'chain' field of
+ 	 * the API 'getblockchaininfo' */
+ 	const char *bip70_name;
++	/* The chain_hash BOLT 1, 2, 7 and 12 carry on the wire, and what the
++	 * wallet is stamped with.  For Bitcoin this is the genesis block id;
++	 * on the BLAKE2b chain it is not (see doc/blake2b-chain-identity.md),
++	 * since that chain shares Bitcoin's genesis. */
+ 	const struct bitcoin_blkid genesis_blockhash;
++	/* The id of block 0 as the backend reports it, when it differs from
++	 * genesis_blockhash (all zeros otherwise: see chainparams_block0). */
++	const struct bitcoin_blkid block0_hash;
+ 	const int rpc_port;
+ 	/**
+ 	 * BOLT 1:
+@@ -66,6 +73,17 @@ const struct chainparams *chainparams_for_network(const char *network_name);
+  */
+ const struct chainparams *chainparams_by_lightning_hrp(const char *lightning_hrp);
+ 
++/* The id of block 0 on this network, as the backend reports it. */
++const struct bitcoin_blkid *chainparams_block0(const struct chainparams *params);
++
++/* Is this the chain BOLT 12 means when an offer names no chain: Bitcoin
++ * mainnet, identified by its genesis?  A chain that shares that genesis but
++ * carries another chain_hash is not, and must name itself. */
++bool chainparams_bolt12_implicit(const struct chainparams *params);
++
++/* The chain_hash BOLT 12 implies when none is named: Bitcoin's genesis. */
++const struct bitcoin_blkid *chainparams_bolt12_implicit_chain(void);
++
+ /**
+  * chainparams_by_chainhash - Helper to get a network by its genesis blockhash
+  */
+diff --git a/bitcoin/test/run-chainparams-blake2b.c b/bitcoin/test/run-chainparams-blake2b.c
+new file mode 100644
+index 000000000..f6a078567
+--- /dev/null
++++ b/bitcoin/test/run-chainparams-blake2b.c
+@@ -0,0 +1,99 @@
++#include "config.h"
++#include <assert.h>
++#include <bitcoin/chainparams.h>
++#include <ccan/array_size/array_size.h>
++#include <ccan/err/err.h>
++#include <ccan/str/hex/hex.h>
++#include <common/setup.h>
++#include <stdio.h>
++
++/* AUTOGENERATED MOCKS START */
++/* AUTOGENERATED MOCKS END */
++
++/* The identity constants of doc/blake2b-chain-identity.md, in the byte
++ * order getblockhash prints, so that a mistake in the little-endian arrays
++ * of chainparams.c shows up here rather than on the wire. */
++static const struct {
++	const char *network;
++	const char *chain_hash;
++	const char *block0;
++	const char *lightning_hrp;
++} expected[] = {
++	{"bitcoin",
++	 "0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb",
++	 "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
++	 "blake"},
++	{"regtest",
++	 "2594d57b43169a2856ded0623840f0863b9e967b936f6f3d7945da28d909ab1a",
++	 "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
++	 "blakert"},
++	{"signet",
++	 "c283e28a744edd1bf7a47946620de35ae2e8ac84dc0a2b21e29f1ebf36ec6589",
++	 "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6",
++	 "tbsblake"},
++	{"testnet4",
++	 "572c94664c77fb4ce6a9c4ee50ed8f0eb1bd363061342194ac66fca694aa63a6",
++	 "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043",
++	 "tblake"},
++};
++
++/* A block id as getblockhash prints it: the bytes reversed, in hex. */
++static void check_hex(const char *what, const struct bitcoin_blkid *id,
++		      const char *hex)
++{
++	u8 reversed[sizeof(id->shad.sha.u.u8)];
++	char got[hex_str_size(sizeof(reversed))];
++
++	for (size_t i = 0; i < sizeof(reversed); i++)
++		reversed[i] = id->shad.sha.u.u8[sizeof(reversed) - 1 - i];
++	hex_encode(reversed, sizeof(reversed), got, sizeof(got));
++	if (!streq(got, hex))
++		errx(1, "%s: %s, expected %s", what, got, hex);
++}
++
++int main(int argc, char *argv[])
++{
++	common_setup(argv[0]);
++
++	for (size_t i = 0; i < ARRAY_SIZE(expected); i++) {
++		const struct chainparams *p
++			= chainparams_for_network(expected[i].network);
++
++		assert(p);
++		check_hex(expected[i].network, &p->genesis_blockhash,
++			  expected[i].chain_hash);
++		check_hex(expected[i].network, chainparams_block0(p),
++			  expected[i].block0);
++		assert(streq(p->lightning_hrp, expected[i].lightning_hrp));
++		/* The chain_hash is looked up, block 0 is not. */
++		assert(chainparams_by_chainhash(&p->genesis_blockhash) == p);
++		assert(!chainparams_by_chainhash(chainparams_block0(p)));
++		/* This chain names itself in offers. */
++		assert(!chainparams_bolt12_implicit(p));
++	}
++
++	/* Bitcoin's prefixes belong to no network here: a Bitcoin invoice
++	 * cannot be paid, and an invoice from here cannot be paid there. */
++	assert(!chainparams_by_lightning_hrp("bc"));
++	assert(!chainparams_by_lightning_hrp("bcrt"));
++	assert(!chainparams_by_lightning_hrp("tbs"));
++	assert(chainparams_by_lightning_hrp("blake")
++	       == chainparams_for_network("bitcoin"));
++	assert(chainparams_by_lightning_hrp("blakert")
++	       == chainparams_for_network("regtest"));
++
++	/* BOLT 12's implicit chain is Bitcoin's genesis, not this chain. */
++	check_hex("bolt12 implicit", chainparams_bolt12_implicit_chain(),
++		  "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
++
++	/* A network that keeps its genesis as chain_hash reports it as
++	 * block 0 too. */
++	{
++		const struct chainparams *t = chainparams_for_network("testnet");
++		assert(bitcoin_blkid_eq(chainparams_block0(t),
++					&t->genesis_blockhash));
++	}
++
++	common_shutdown();
++	return 0;
++}
+-- 
+2.43.0
+

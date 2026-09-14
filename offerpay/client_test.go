@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -40,9 +41,18 @@ type fakeMessenger struct {
 	nodeKey   *btcec.PrivateKey
 }
 
-func (f *fakeMessenger) Send(_ context.Context, dest onionmsg.Destination,
+func (f *fakeMessenger) Send(ctx context.Context, dest onionmsg.Destination,
 	payload []*lnwire.FinalHopTLV, reply *lnwire.BlindedPath,
-	_ ...onionmsg.SendOption) error {
+	opts ...onionmsg.SendOption) error {
+
+	// The real messenger builds the reply path itself when asked to.
+	if id := onionmsg.ReplyPathIDFromOptions(opts); id != nil {
+		built, err := f.BuildReplyPath(ctx, id)
+		if err != nil {
+			return fmt.Errorf("reply path: %w", err)
+		}
+		reply = built
+	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

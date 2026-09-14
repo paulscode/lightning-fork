@@ -1,0 +1,263 @@
+From 8155419a4a1af695d30166752da00fcd8d6a479f Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Mon, 14 Sep 2026 12:11:03 -0500
+Subject: [PATCH 3/5] connectd: drop peers that name no networks on a chain
+ that shares its genesis
+
+A peer whose init names a network we do not share is dropped already.
+A peer that names none is kept, which is right on Bitcoin, where such a
+peer can only be a Bitcoin node, and wrong here: LND never sent the
+networks field, so a silent peer is almost certainly a Bitcoin LND node
+that shares our genesis, and nothing before open_channel tells it
+apart. Its gossip queries and ours would cross until then.
+
+On a chain whose chain_hash is not its genesis, a peer that names no
+networks is now dropped with a warning that says so. On Bitcoin nothing
+changes. --allow-peers-without-networks keeps such peers, for testing
+against an implementation that does not send the field.
+---
+ connectd/connectd.c               |  1 +
+ connectd/connectd.h               |  6 ++++++
+ connectd/connectd_wire.csv        |  1 +
+ connectd/peer_exchange_initmsg.c  | 15 +++++++++++++++
+ contrib/msggen/msggen/schema.json | 26 ++++++++++++++++++++++++++
+ doc/lightningd-config.5.md        |  8 ++++++++
+ doc/schemas/listconfigs.json      | 26 ++++++++++++++++++++++++++
+ lightningd/connect_control.c      |  1 +
+ lightningd/lightningd.h           |  3 +++
+ lightningd/options.c              |  5 +++++
+ 10 files changed, 92 insertions(+)
+
+diff --git a/connectd/connectd.c b/connectd/connectd.c
+index 54ac08918..64bb032bf 100644
+--- a/connectd/connectd.c
++++ b/connectd/connectd.c
+@@ -1684,6 +1684,7 @@ static void connect_init(struct daemon *daemon, const u8 *msg)
+ 				    &daemon->always_use_proxy,
+ 				    &daemon->dev_allow_localhost,
+ 				    &daemon->use_dns,
++				    &daemon->allow_peers_without_networks,
+ 				    &tor_password,
+ 				    &daemon->timeout_secs,
+ 				    &daemon->websocket_helper,
+diff --git a/connectd/connectd.h b/connectd/connectd.h
+index 11665cc24..a2e34411d 100644
+--- a/connectd/connectd.h
++++ b/connectd/connectd.h
+@@ -320,6 +320,12 @@ struct daemon {
+ 	/* Allow localhost to be considered "public", only with --developer */
+ 	bool dev_allow_localhost;
+ 
++	/* Keep a peer whose init names no networks at all.  Off by default
++	 * on a chain that shares its genesis with another: such a peer is
++	 * almost certainly a node of the other chain (LND never sent the
++	 * field), and nothing else identifies it before open_channel. */
++	bool allow_peers_without_networks;
++
+ 	/* How much to gossip allow a peer every second (bytes) */
+ 	size_t gossip_stream_limit;
+ 
+diff --git a/connectd/connectd_wire.csv b/connectd/connectd_wire.csv
+index c1361a597..15edf557b 100644
+--- a/connectd/connectd_wire.csv
++++ b/connectd/connectd_wire.csv
+@@ -15,6 +15,7 @@ msgdata,connectd_init,tor_proxyaddr,?wireaddr,
+ msgdata,connectd_init,use_tor_proxy_always,bool,
+ msgdata,connectd_init,dev_allow_localhost,bool,
+ msgdata,connectd_init,use_dns,bool,
++msgdata,connectd_init,allow_peers_without_networks,bool,
+ msgdata,connectd_init,tor_password,wirestring,
+ msgdata,connectd_init,timeout_secs,u32,
+ msgdata,connectd_init,websocket_helper,wirestring,
+diff --git a/connectd/peer_exchange_initmsg.c b/connectd/peer_exchange_initmsg.c
+index eb7bec648..b0c24c63d 100644
+--- a/connectd/peer_exchange_initmsg.c
++++ b/connectd/peer_exchange_initmsg.c
+@@ -102,6 +102,21 @@ static struct io_plan *peer_init_received(struct io_conn *conn,
+ 			msg = cryptomsg_encrypt_msg(NULL, &peer->cs, take(msg));
+ 			return io_write(conn, msg, tal_count(msg), io_close_cb, NULL);
+ 		}
++	} else if (!peer->daemon->allow_peers_without_networks
++		   && !bitcoin_blkid_eq(chainparams_block0(chainparams),
++					&chainparams->genesis_blockhash)) {
++		/* This chain shares its genesis with another, so a peer
++		 * that names no chain cannot be told apart from a node of
++		 * the other one, and LND never named any.  See
++		 * doc/blake2b-chain-identity.md. */
++		status_peer_debug(&peer->id,
++				  "Peer names no networks and this chain "
++				  "shares its genesis, closing");
++		msg = towire_warningfmt(NULL, NULL,
++					"No networks named: this chain needs "
++					"one (see allow-peers-without-networks)");
++		msg = cryptomsg_encrypt_msg(NULL, &peer->cs, take(msg));
++		return io_write(conn, msg, tal_count(msg), io_close_cb, NULL);
+ 	}
+ 
+ 	/* fetch optional tlv `remote_addr` */
+diff --git a/contrib/msggen/msggen/schema.json b/contrib/msggen/msggen/schema.json
+index 198ef0a59..8668f2b9d 100644
+--- a/contrib/msggen/msggen/schema.json
++++ b/contrib/msggen/msggen/schema.json
+@@ -20904,6 +20904,28 @@
+                   }
+                 }
+               },
++              "allow-peers-without-networks": {
++                "type": "object",
++                "additionalProperties": false,
++                "required": [
++                  "set",
++                  "source"
++                ],
++                "properties": {
++                  "set": {
++                    "type": "boolean",
++                    "description": [
++                      "`true` if set in config or cmdline."
++                    ]
++                  },
++                  "source": {
++                    "type": "string",
++                    "description": [
++                      "Source of configuration setting."
++                    ]
++                  }
++                }
++              },
+               "announce-addr-discovered": {
+                 "added": "v23.02",
+                 "type": "object",
+@@ -21628,6 +21650,10 @@
+                 "set": true,
+                 "source": "cmdline"
+               },
++              "allow-peers-without-networks": {
++                "set": false,
++                "source": "default"
++              },
+               "disable-mpp": {
+                 "set": false,
+                 "source": "default",
+diff --git a/doc/lightningd-config.5.md b/doc/lightningd-config.5.md
+index ae97c8ec4..830e27b2a 100644
+--- a/doc/lightningd-config.5.md
++++ b/doc/lightningd-config.5.md
+@@ -721,6 +721,14 @@ all DNS lookups, to avoid leaking information.
+ 
+   Disable the DNS bootstrapping mechanism to find a node by its node ID.
+ 
++* **allow-peers-without-networks**
++
++  Keep a peer whose `init` message names no `networks`. On a chain that
++shares its genesis block with another (the Bitcoin BLAKE2b chain shares
++Bitcoin's), such a peer is dropped by default, since nothing before
++`open_channel` says which chain it follows and LND never sent the field.
++Has no effect on a chain whose `chain_hash` is its genesis.
++
+ * **message-padding**=*BOOL*
+ 
+   If set to `true`, `connectd` will send extra bytes to peers to make messages
+diff --git a/doc/schemas/listconfigs.json b/doc/schemas/listconfigs.json
+index 2fa9ba4b9..f75befd8d 100644
+--- a/doc/schemas/listconfigs.json
++++ b/doc/schemas/listconfigs.json
+@@ -1202,6 +1202,28 @@
+               }
+             }
+           },
++          "allow-peers-without-networks": {
++            "type": "object",
++            "additionalProperties": false,
++            "required": [
++              "set",
++              "source"
++            ],
++            "properties": {
++              "set": {
++                "type": "boolean",
++                "description": [
++                  "`true` if set in config or cmdline."
++                ]
++              },
++              "source": {
++                "type": "string",
++                "description": [
++                  "Source of configuration setting."
++                ]
++              }
++            }
++          },
+           "announce-addr-discovered": {
+             "added": "v23.02",
+             "type": "object",
+@@ -1926,6 +1948,10 @@
+             "set": true,
+             "source": "cmdline"
+           },
++          "allow-peers-without-networks": {
++            "set": false,
++            "source": "default"
++          },
+           "disable-mpp": {
+             "set": false,
+             "source": "default",
+diff --git a/lightningd/connect_control.c b/lightningd/connect_control.c
+index 9c8afa967..99bca508a 100644
+--- a/lightningd/connect_control.c
++++ b/lightningd/connect_control.c
+@@ -716,6 +716,7 @@ int connectd_init(struct lightningd *ld)
+ 				   ld->always_use_proxy || ld->pure_tor_setup,
+ 				   ld->dev_allow_localhost,
+ 				   ld->config.use_dns,
++				   ld->config.allow_peers_without_networks,
+ 				   ld->tor_service_password ? ld->tor_service_password : "",
+ 				   ld->config.connection_timeout_secs,
+ 				   websocket_helper_path,
+diff --git a/lightningd/lightningd.h b/lightningd/lightningd.h
+index 81a03d412..a87631e65 100644
+--- a/lightningd/lightningd.h
++++ b/lightningd/lightningd.h
+@@ -60,6 +60,9 @@ struct config {
+ 	/* Are we allowed to use DNS lookup for peers. */
+ 	bool use_dns;
+ 
++	/* Keep peers whose init names no networks (see connectd). */
++	bool allow_peers_without_networks;
++
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	enum opt_autobool ip_discovery;
+ 
+diff --git a/lightningd/options.c b/lightningd/options.c
+index c611bdd85..bf15d81d2 100644
+--- a/lightningd/options.c
++++ b/lightningd/options.c
+@@ -1004,6 +1004,7 @@ static const struct config testnet_config = {
+ 	.rescan = 30,
+ 
+ 	.use_dns = true,
++	.allow_peers_without_networks = false,
+ 
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	.ip_discovery = OPT_AUTOBOOL_AUTO,
+@@ -1082,6 +1083,7 @@ static const struct config mainnet_config = {
+ 	.rescan = 15,
+ 
+ 	.use_dns = true,
++	.allow_peers_without_networks = false,
+ 
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	.ip_discovery = OPT_AUTOBOOL_AUTO,
+@@ -1600,6 +1602,9 @@ static void register_opts(struct lightningd *ld)
+ 		       &ld->accept_extra_tlv_types,
+ 		       "HTLC TLV type to accept (can be used multiple times)");
+ 
++	opt_register_early_noarg("--allow-peers-without-networks", opt_set_bool,
++				 &ld->config.allow_peers_without_networks,
++				 "Keep peers whose init names no networks; on a chain that shares its genesis with another they are dropped by default");
+ 	opt_register_early_noarg("--disable-dns", opt_set_invbool, &ld->config.use_dns,
+ 				 "Disable DNS lookups of peers");
+ 
+-- 
+2.43.0
+

@@ -228,14 +228,12 @@ func (c *Client) FetchInvoice(ctx context.Context,
 	}
 
 	// A reply path of ours with a fresh secret, so the reply is matched
-	// to this fetch and nothing else can pose as it.
+	// to this fetch and nothing else can pose as it. The messenger builds
+	// the path once it knows how the request leaves (see
+	// onionmsg.ReplyPathID).
 	var pathID [32]byte
 	if _, err := rand.Read(pathID[:]); err != nil {
 		return nil, err
-	}
-	replyPath, err := c.cfg.Messenger.BuildReplyPath(ctx, pathID[:])
-	if err != nil {
-		return nil, fmt.Errorf("reply path: %w", err)
 	}
 	p := &pending{reply: make(chan *onionmsg.Inbound, 1)}
 	c.mu.Lock()
@@ -247,7 +245,7 @@ func (c *Client) FetchInvoice(ctx context.Context,
 		c.mu.Unlock()
 	}()
 
-	usedPath, err := c.send(ctx, params.Offer, encoded, replyPath)
+	usedPath, err := c.send(ctx, params.Offer, encoded, pathID[:])
 	if err != nil {
 		return nil, err
 	}
@@ -403,8 +401,7 @@ func (c *Client) buildRequest(params FetchParams) (*bolt12.InvoiceRequest,
 // an issuer ignores a request for such an offer that comes any other way.
 // The path used is returned, or nil for the node id.
 func (c *Client) send(ctx context.Context, offer *bolt12.Offer,
-	encoded []byte, replyPath *lnwire.BlindedPath) (*lnwire.BlindedPath,
-	error) {
+	encoded []byte, replyPathID []byte) (*lnwire.BlindedPath, error) {
 
 	payload := []*lnwire.FinalHopTLV{{
 		TLVType: onionmsg.TypeInvoiceRequest, Value: encoded,
@@ -421,7 +418,8 @@ func (c *Client) send(ctx context.Context, offer *bolt12.Offer,
 		for i := range paths {
 			err := c.cfg.Messenger.Send(ctx, onionmsg.Destination{
 				Path: &paths[i],
-			}, payload, replyPath, onionmsg.AllowConnect())
+			}, payload, nil, onionmsg.AllowConnect(),
+				onionmsg.ReplyPathID(replyPathID))
 			if err == nil {
 				return &paths[i], nil
 			}
@@ -444,7 +442,8 @@ func (c *Client) send(ctx context.Context, offer *bolt12.Offer,
 	}
 	err := c.cfg.Messenger.Send(ctx, onionmsg.Destination{
 		NodeID: issuer,
-	}, payload, replyPath, onionmsg.AllowConnect())
+	}, payload, nil, onionmsg.AllowConnect(),
+		onionmsg.ReplyPathID(replyPathID))
 	if err != nil {
 		return nil, fmt.Errorf("sending the request: %w", err)
 	}

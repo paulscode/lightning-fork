@@ -151,9 +151,28 @@ builds carry. Its RPCs are under `offersrpc.Offers`, and over REST under
 `/v2/offers`. The macaroon entities are `invoices` for minting, listing and
 decoding, `offchain` read for fetching and `offchain` write for paying.
 
+## Reaching the node
+
+A pool's invoice request arrives as an onion message from a node that has
+no channel with this one. lnd drops onion messages from such peers by
+default (its channel-presence gate); here that gate is off, and the onion
+message rate limiters bound what any peer can send. `protocol.onion-msg-channel-gate=true`
+turns the gate back on. Requests this node sends carry a reply path that
+starts at this node whenever the request goes straight to the node it is
+for, so the reply meets no other node's gate.
+
 ## Compatibility
 
 The offer, request and invoice formats follow BOLT 12 as implemented in
 LND, Core Lightning and LDK, with this chain's hash in `offer_chains` and
 `invreq_chain`. The onion messages follow BOLT 4. Which pools pay to offers
 on this chain, and what description they ask for, is the pool's to say.
+
+Core Lightning on this chain (`privkeyio/lightning`, from `v26.06.7-blake2b.3`)
+parses the chain's block headers but, as released, keeps Bitcoin's chain
+hash and invoice prefixes, so the two nodes refuse each other at the
+first message. With the chain-identity patch series kept under
+`contrib/cln-chain-identity/` applied to it, the regtest lab has
+the two peer both ways, open a channel from each side, pay each other's
+BOLT 11 invoices and BOLT 12 offers, route a payment through a Lightning
+Fork node, and close cooperatively and by force.

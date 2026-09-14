@@ -158,6 +158,33 @@ type SendOption func(*sendOptions)
 
 type sendOptions struct {
 	allowConnect bool
+	replyPathID  []byte
+}
+
+// ReplyPathID has the send build the reply path itself, carrying pathID,
+// once it knows how the message leaves. Handed straight to the node that
+// reads it (a peer, or a one-hop blinded path whose introduction node is a
+// peer), the path starts at this node: that node sees the connection the
+// message arrives on anyway, and a path through a peer of ours would only
+// add a hop whose owner may drop messages from strangers (lnd's
+// channel-presence gate). Sent any other way, the path starts at a peer,
+// so the recipient learns a peer of ours and not us. The replyPath
+// argument of Send is ignored when this is set.
+func ReplyPathID(pathID []byte) SendOption {
+	return func(o *sendOptions) {
+		o.replyPathID = pathID
+	}
+}
+
+// ReplyPathIDFromOptions returns the path id ReplyPathID set, or nil. For
+// fakes of the Messenger in tests.
+func ReplyPathIDFromOptions(opts []SendOption) []byte {
+	var options sendOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	return options.replyPathID
 }
 
 // AllowConnect lets the send open a connection to the first hop or the
@@ -508,6 +535,35 @@ func offerPathSessionKey(pathSecret [32]byte,
 	return key
 }
 
+// isDirect reports whether a message handed to first goes straight to
+// whoever reads it: a node reached as a peer, or a one-hop blinded path
+// whose introduction node is that peer, which is then the recipient
+// itself. Either way that node sees where the message came from.
+func isDirect(dest Destination, first *btcec.PublicKey) bool {
+	if dest.NodeID != nil {
+		return first.IsEqual(dest.NodeID)
+	}
+	if dest.Path == nil || len(dest.Path.Hops) != 1 {
+		return false
+	}
+	intro, ok := dest.Path.IntroductionNode.(lnwire.PubkeyIntro)
+
+	return ok && intro.Pubkey != nil && first.IsEqual(intro.Pubkey)
+}
+
+// replyPathFor builds the reply path for a send: starting at this node when
+// the message goes straight to its destination, at a peer otherwise. See
+// ReplyPathID.
+func (m *Messenger) replyPathFor(ctx context.Context, pathID []byte,
+	direct bool) (*lnwire.BlindedPath, error) {
+
+	if direct {
+		return m.buildPathToSelf(nil, pathID, nil)
+	}
+
+	return m.BuildReplyPath(ctx, pathID)
+}
+
 // BuildReplyPath builds one blinded path to this node for a reply_path,
 // carrying pathID. It goes through an introduction peer when one is
 // available, a channel peer first, and is otherwise a single-hop path
@@ -744,6 +800,15 @@ func (m *Messenger) Send(ctx context.Context, dest Destination,
 	}
 	if err != nil {
 		return err
+	}
+
+	if options.replyPathID != nil {
+		replyPath, err = m.replyPathFor(
+			ctx, options.replyPathID, isDirect(dest, first),
+		)
+		if err != nil {
+			return fmt.Errorf("reply path: %w", err)
+		}
 	}
 
 	sphinxPath, err := route.OnionMessageBlindedPathToSphinxPath(

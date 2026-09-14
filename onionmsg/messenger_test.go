@@ -676,6 +676,64 @@ func TestSendToNode(t *testing.T) {
 	require.NotErrorIs(t, err, ErrUnreachable)
 }
 
+// TestReplyPathForSend checks where a reply path starts when the send
+// builds it: at the sender when the message goes straight to its
+// destination, at a peer otherwise.
+func TestReplyPathForSend(t *testing.T) {
+	t.Parallel()
+
+	nw := newNetwork(t)
+	sender, peer, far := nw.newNode(), nw.newNode(), nw.newNode()
+	nw.peer(sender, peer, true)
+	nw.peer(peer, far, true)
+	s, _ := nw.messenger(sender)
+	ctx := context.Background()
+
+	// Straight to a peer: the peer sees us anyway, so the reply path
+	// starts here and no other node has to relay the reply.
+	err := s.Send(ctx, Destination{NodeID: peer.pub()},
+		payload(TypeInvoiceRequest, []byte{1}), nil,
+		ReplyPathID([]byte{7}))
+	require.NoError(t, err)
+	d := nw.route()
+	require.Equal(t, peer.id(), d.at)
+	require.NotNil(t, d.payload.ReplyPath)
+	intro, ok := d.payload.ReplyPath.IntroductionNode.(lnwire.PubkeyIntro)
+	require.True(t, ok)
+	require.True(t, sender.pub().IsEqual(intro.Pubkey),
+		"a direct send's reply path starts at the sender")
+	require.Len(t, d.payload.ReplyPath.Hops, 1)
+
+	// The reply reaches the sender with the path id.
+	p, _ := nw.messenger(peer)
+	err = p.Send(ctx, Destination{Path: d.payload.ReplyPath},
+		payload(TypeInvoice, []byte{2}), nil)
+	require.NoError(t, err)
+	d = nw.route()
+	require.Equal(t, sender.id(), d.at)
+	require.Equal(t, []byte{7}, d.pathID(t, sender))
+
+	// Through a peer to a node further away: the path starts at a peer,
+	// so the recipient learns a peer of ours and not us.
+	err = s.Send(ctx, Destination{NodeID: far.pub()},
+		payload(TypeInvoiceRequest, []byte{3}), nil,
+		ReplyPathID([]byte{8}))
+	require.NoError(t, err)
+	d = nw.route()
+	require.Equal(t, far.id(), d.at)
+	intro, ok = d.payload.ReplyPath.IntroductionNode.(lnwire.PubkeyIntro)
+	require.True(t, ok)
+	require.True(t, peer.pub().IsEqual(intro.Pubkey),
+		"a relayed send's reply path starts at a peer")
+	require.Len(t, d.payload.ReplyPath.Hops, 2)
+
+	// The explicit path is ignored when the send builds its own.
+	require.Nil(t, ReplyPathIDFromOptions(nil))
+	require.Equal(t, []byte{9}, ReplyPathIDFromOptions(
+		[]SendOption{AllowConnect(), ReplyPathID([]byte{9})},
+	))
+}
+
 // TestRouteThroughConnectedPeer takes a longer route through a connected
 // peer when the shortest route's first hop is not connected.
 func TestRouteThroughConnectedPeer(t *testing.T) {

@@ -1,0 +1,54 @@
+From 50df08a20ec3124ee87655b5a3267d920d3882d0 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Mon, 14 Sep 2026 12:11:03 -0500
+Subject: [PATCH 4/5] wallet: restamp a wallet created before the chain_hash
+ changed
+
+A wallet is stamped with the chain's chain_hash at creation and refused
+under another. A wallet created by an earlier build of this fork, or by
+official Core Lightning following the chain across activation, carries
+Bitcoin's genesis: the same wallet on the same chain. When the stamp is
+this chain's block 0 and its chain_hash is not, the stamp is rewritten
+to the chain_hash, with a log line, and the node starts.
+---
+ wallet/wallet.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/wallet/wallet.c b/wallet/wallet.c
+index e39a1b0a1..f2e4c5415 100644
+--- a/wallet/wallet.c
++++ b/wallet/wallet.c
+@@ -4785,6 +4785,30 @@ bool wallet_sanity_check(struct wallet *w)
+ 	if (db_step(stmt)) {
+ 		db_col_sha256d(stmt, "blobval", &chainhash.shad);
+ 		tal_free(stmt);
++		/* A wallet stamped with the genesis of a chain whose
++		 * chain_hash is no longer its genesis (the BLAKE2b chain,
++		 * created before this build carried its own chain_hash)
++		 * is the same wallet on the same chain: restamp it. */
++		if (!bitcoin_blkid_eq(&chainhash,
++				      &chainparams->genesis_blockhash)
++		    && !bitcoin_blkid_eq(chainparams_block0(chainparams),
++					 &chainparams->genesis_blockhash)
++		    && bitcoin_blkid_eq(&chainhash,
++					chainparams_block0(chainparams))) {
++			log_unusual(w->log, "Wallet was stamped with block 0 "
++					    "(%s); adopting this chain's "
++					    "chain_hash %s",
++				    fmt_bitcoin_blkid(tmpctx, &chainhash),
++				    fmt_bitcoin_blkid(tmpctx,
++						      &chainparams->genesis_blockhash));
++			stmt = db_prepare_v2(w->db,
++					     SQL("UPDATE vars SET blobval = ? "
++						 "WHERE name = 'genesis_hash';"));
++			db_bind_sha256d(stmt,
++					&chainparams->genesis_blockhash.shad);
++			db_exec_prepared_v2(take(stmt));
++			chainhash = chainparams->genesis_blockhash;
++		}
+ 		if (!bitcoin_blkid_eq(&chainhash,
+ 				      &chainparams->genesis_blockhash)) {
+ 			log_broken(w->log, "Wallet blockchain hash does not "
+-- 
+2.43.0
+

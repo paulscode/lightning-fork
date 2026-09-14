@@ -1,0 +1,83 @@
+From 080b9813dd7884cfe5ddb9c36a273d50c99f34e9 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Mon, 14 Sep 2026 12:11:03 -0500
+Subject: [PATCH 2/5] offers: name the chain in offers and requests; the
+ implicit chain stays Bitcoin
+
+BOLT 12 lets an offer omit offer_chains to mean Bitcoin mainnet, and
+this code took "the network called bitcoin" as that chain. With the
+BLAKE2b chain_hash on that network, an offer minted here without chains
+would read as a Bitcoin offer to everyone else, and a Bitcoin offer
+without chains would read as ours.
+
+The implicit chain is now Bitcoin's genesis, whatever chain_hash the
+"bitcoin" network carries: offers, invoice requests and invoices made
+here always name this chain, and an offer or request that names none is
+a Bitcoin one and is not answered. chainparams_bolt12_implicit() decides
+both.
+---
+ common/bolt12.c        | 2 +-
+ plugins/fetchinvoice.c | 4 ++--
+ plugins/offers_offer.c | 4 ++--
+ 3 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/common/bolt12.c b/common/bolt12.c
+index ace3ff853..881533294 100644
+--- a/common/bolt12.c
++++ b/common/bolt12.c
+@@ -33,7 +33,7 @@ bool bolt12_chains_match(const struct bitcoin_blkid *chains,
+ 	 */
+ 	if (!chains) {
+ 		max_num_chains = 1;
+-		chains = &chainparams_for_network("bitcoin")->genesis_blockhash;
++		chains = chainparams_bolt12_implicit_chain();
+ 	}
+ 
+ 	for (size_t i = 0; i < max_num_chains; i++) {
+diff --git a/plugins/fetchinvoice.c b/plugins/fetchinvoice.c
+index 8ff374d57..d0221aa49 100644
+--- a/plugins/fetchinvoice.c
++++ b/plugins/fetchinvoice.c
+@@ -1129,7 +1129,7 @@ struct command_result *json_fetchinvoice(struct command *cmd,
+ 	 *   - if it sets `invreq_chain` it MUST set it to bitcoin.
+ 	 */
+ 	/* We already checked that we're compatible chain, in param_offer */
+-	if (!streq(chainparams->network_name, "bitcoin")) {
++	if (!chainparams_bolt12_implicit(chainparams)) {
+ 		invreq->invreq_chain = tal_dup(invreq, struct bitcoin_blkid,
+ 					       &chainparams->genesis_blockhash);
+ 	}
+@@ -1284,7 +1284,7 @@ struct command_result *json_cancelrecurringinvoice(struct command *cmd,
+ 	 *   - if it sets `invreq_chain` it MUST set it to bitcoin.
+ 	 */
+ 	/* We already checked that we're compatible chain, in param_offer */
+-	if (!streq(chainparams->network_name, "bitcoin")) {
++	if (!chainparams_bolt12_implicit(chainparams)) {
+ 		invreq->invreq_chain = tal_dup(invreq, struct bitcoin_blkid,
+ 					       &chainparams->genesis_blockhash);
+ 	}
+diff --git a/plugins/offers_offer.c b/plugins/offers_offer.c
+index 59570e260..4b9e0dfb6 100644
+--- a/plugins/offers_offer.c
++++ b/plugins/offers_offer.c
+@@ -533,7 +533,7 @@ struct command_result *json_offer(struct command *cmd,
+ 	 * - otherwise:
+ 	 *   - SHOULD omit `offer_chains`, implying that bitcoin is only chain.
+ 	 */
+-	if (!streq(chainparams->network_name, "bitcoin")) {
++	if (!chainparams_bolt12_implicit(chainparams)) {
+ 		offer->offer_chains = tal_arr(offer, struct bitcoin_blkid, 1);
+ 		offer->offer_chains[0] = chainparams->genesis_blockhash;
+ 	}
+@@ -780,7 +780,7 @@ struct command_result *json_invoicerequest(struct command *cmd,
+ 			= tal_dup_arr(invreq, char, issuer, strlen(issuer), 0);
+ 	}
+ 
+-	if (!streq(chainparams->network_name, "bitcoin")) {
++	if (!chainparams_bolt12_implicit(chainparams)) {
+ 		invreq->invreq_chain
+ 			= tal_dup(invreq, struct bitcoin_blkid,
+ 				  &chainparams->genesis_blockhash);
+-- 
+2.43.0
+

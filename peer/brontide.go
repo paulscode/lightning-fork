@@ -353,10 +353,11 @@ type Config struct {
 	// OnionRelayAll, when true, disables the channel-presence gate on
 	// incoming onion messages: messages from peers with no fully open
 	// channel are admitted to the rate-limiter pipeline instead of
-	// being dropped at ingress. The default (false) keeps the gate in
-	// place so that a no-cost Sybil identity cannot burn a full
-	// per-peer byte budget on each of many connections and saturate
-	// the global limiter through sheer identity count.
+	// being dropped at ingress. On this chain it is true unless
+	// protocol.onion-msg-channel-gate is set: the requests a node here
+	// exists to receive come from nodes with no channel to it. The
+	// per-peer registry is bounded and newcomers past the bound share
+	// one bucket, which is what keeps a flood of identities in check.
 	OnionRelayAll bool
 
 	// OnionActorOpts returns ActorOptions for the onion peer actor
