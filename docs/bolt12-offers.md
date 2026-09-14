@@ -94,6 +94,20 @@ path and pays on through that channel, splitting the payment into parts
 when it has to. The same holds for a BOLT 11 invoice with blinded paths,
 whichever way it is paid.
 
+## From the dashboard
+
+The StartOS and Umbrel packages ship a dashboard that does the same without
+the command line. Its Lightning wallet card's Receive screen has an Invoice
+/ Reusable offer switch: the offer form takes the description a pool
+mandates, the amount (optional) and an expiry, and shows the minted offer as
+a QR code and a string to copy. The Send field takes an offer next to an
+invoice; the dashboard fetches an invoice for it, shows what the issuer
+will be paid, asks for an amount when the offer leaves it open, and pays on
+confirmation. A failed payment keeps the fetched invoice, so a retry pays
+that invoice rather than fetching another. The Lightning offers page off the
+wallet menu lists every offer the node minted with its QR code and
+payments, and disables or enables it.
+
 ## Decoding
 
 ```
