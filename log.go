@@ -49,6 +49,7 @@ import (
 	"github.com/lightningnetwork/lnd/netann"
 	"github.com/lightningnetwork/lnd/offers"
 	"github.com/lightningnetwork/lnd/onionmessage"
+	"github.com/lightningnetwork/lnd/onionmsg"
 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
 	"github.com/lightningnetwork/lnd/peer"
 	"github.com/lightningnetwork/lnd/peernotifier"
@@ -203,6 +204,7 @@ func SetupLoggers(root *build.SubLoggerManager, interceptor signal.Interceptor) 
 	AddSubLogger(root, rpcwallet.Subsystem, interceptor, rpcwallet.UseLogger)
 	AddSubLogger(root, peersrpc.Subsystem, interceptor, peersrpc.UseLogger)
 	AddSubLogger(root, offers.Subsystem, interceptor, offers.UseLogger)
+	AddSubLogger(root, onionmsg.Subsystem, interceptor, onionmsg.UseLogger)
 	AddSubLogger(root, offersrpc.Subsystem, interceptor, offersrpc.UseLogger)
 	AddSubLogger(root, graph.Subsystem, interceptor, graph.UseLogger)
 	AddSubLogger(root, lncfg.Subsystem, interceptor, lncfg.UseLogger)
