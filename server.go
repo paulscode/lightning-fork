@@ -70,6 +70,7 @@ import (
 	"github.com/lightningnetwork/lnd/netann"
 	"github.com/lightningnetwork/lnd/offers"
 	"github.com/lightningnetwork/lnd/onionmessage"
+	"github.com/lightningnetwork/lnd/onionmsg"
 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
 	"github.com/lightningnetwork/lnd/peer"
 	"github.com/lightningnetwork/lnd/peernotifier"
@@ -344,6 +345,9 @@ type server struct {
 
 	// offersManager mints and serves BOLT 12 offers.
 	offersManager *offers.Manager
+
+	// onionMessenger carries BOLT 12 messages over onion messages.
+	onionMessenger *onionmsg.Messenger
 
 	htlcSwitch *htlcswitch.Switch
 
@@ -893,12 +897,62 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 	if err != nil {
 		return nil, err
 	}
+	s.onionMessenger, err = onionmsg.New(onionmsg.Config{
+		NodeKey: nodeKeyDesc.PubKey,
+		Graph:   s.graphDB,
+		FetchChannelEdge: func(ctx context.Context,
+			scid uint64) (*models.ChannelEdgeInfo, error) {
+
+			info, _, _, err := s.graphDB.FetchChannelEdgesByID(
+				ctx, scid,
+			)
+
+			return info, err
+		},
+		FetchNodeAddrs: func(ctx context.Context,
+			node route.Vertex) ([]net.Addr, error) {
+
+			n, err := graphdb.NewVersionedGraph(
+				s.graphDB, lnwire.GossipVersion1,
+			).FetchNode(ctx, node)
+			if err != nil {
+				return nil, err
+			}
+
+			return n.Addresses, nil
+		},
+		Peers: func() []onionmsg.Peer {
+			var out []onionmsg.Peer
+			for _, p := range s.Peers() {
+				features := p.RemoteFeatures()
+				out = append(out, onionmsg.Peer{
+					Pub: p.IdentityKey(),
+					OnionMessages: features != nil &&
+						features.HasFeature(
+							lnwire.OnionMessagesOptional,
+						),
+					HasChannel: len(p.ChannelSnapshots()) > 0,
+				})
+			}
+
+			return out
+		},
+		ConnectPeer:        s.connectForOnionMessage,
+		SendToPeer:         s.SendOnionMessage,
+		Subscribe:          s.SubscribeOnionMessages,
+		DecryptBlindedData: sphinxOnionMsg.DecryptBlindedHopData,
+		NextPathKey:        sphinxOnionMsg.NextEphemeral,
+	})
+	if err != nil {
+		return nil, err
+	}
 	s.offersManager, err = offers.NewManager(offers.Config{
-		ChainHash: [32]byte(cfg.ActiveNetParams.ChainHash),
-		IssuerKey: *nodeKeyDesc,
-		Secret:    offersSecret,
-		Store:     offersStore,
-		Clock:     clock.NewDefaultClock(),
+		ChainHash:   [32]byte(cfg.ActiveNetParams.ChainHash),
+		IssuerKey:   *nodeKeyDesc,
+		Secret:      offersSecret,
+		Store:       offersStore,
+		Clock:       clock.NewDefaultClock(),
+		PathBuilder: s.onionMessenger,
 		NodeReachable: func() bool {
 			return len(s.getNodeAnnouncement().Addresses) > 0
 		},
@@ -2314,6 +2368,19 @@ func (s *server) Start(ctx context.Context) error {
 			return
 		}
 
+		// BOLT 12 messages ride on onion messages; without them the
+		// node can still mint offers but cannot serve or pay them.
+		if !s.cfg.ProtocolOptions.NoOnionMessages() {
+			cleanup = cleanup.add(s.onionMessenger.Stop)
+			if err := s.onionMessenger.Start(); err != nil {
+				startErr = err
+				return
+			}
+		} else {
+			srvrLog.Warnf("Onion messages are disabled: BOLT 12 " +
+				"offers cannot be served or paid")
+		}
+
 		if s.hostAnn != nil {
 			cleanup = cleanup.add(s.hostAnn.Stop)
 			if err := s.hostAnn.Start(); err != nil {
@@ -2797,6 +2864,11 @@ func (s *server) Start(ctx context.Context) error {
 func (s *server) Stop() error {
 	s.stop.Do(func() {
 		atomic.StoreInt32(&s.stopping, 1)
+
+		// Stop taking BOLT 12 messages before the peers go away.
+		if err := s.onionMessenger.Stop(); err != nil {
+			srvrLog.Warnf("failed to stop onion messenger: %v", err)
+		}
 
 		ctx := context.Background()
 
@@ -5571,6 +5643,60 @@ func (s *server) SendOnionMessage(ctx context.Context, peerPub [33]byte,
 	// Send the message as low-priority. For now we assume that all
 	// application-defined message are low priority.
 	return peer.SendMessageLazy(true, msg)
+}
+
+// connectForOnionMessage connects to a node at one of its addresses so an
+// onion message can be handed to it, and returns once the peer is active
+// with its features known, or when ctx ends. A node that is already a peer
+// is waited for the same way. The dial itself runs on its own goroutine,
+// so a slow dial does not hold the caller past its context.
+func (s *server) connectForOnionMessage(ctx context.Context,
+	pub *btcec.PublicKey, addrs []net.Addr) error {
+
+	var peerKey [33]byte
+	copy(peerKey[:], pub.SerializeCompressed())
+
+	dialErr := make(chan error, 1)
+	go func() {
+		var lastErr error
+		for _, addr := range addrs {
+			err := s.ConnectToPeer(&lnwire.NetAddress{
+				IdentityKey: pub,
+				Address:     addr,
+				ChainNet:    s.cfg.ActiveNetParams.Net,
+			}, false, onionmsg.ConnectTimeout)
+			var already *errPeerAlreadyConnected
+			if err == nil || errors.As(err, &already) {
+				dialErr <- nil
+				return
+			}
+			lastErr = err
+		}
+		dialErr <- lastErr
+	}()
+	select {
+	case err := <-dialErr:
+		if err != nil {
+			return err
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.quit:
+		return ErrServerShuttingDown
+	}
+
+	// Connected: wait for the handshake to finish, which is when the
+	// peer's features are known and it is listed by Peers.
+	online := make(chan lnpeer.Peer, 1)
+	s.NotifyWhenOnline(peerKey, online)
+	select {
+	case <-online:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.quit:
+		return ErrServerShuttingDown
+	}
 }
 
 // SendToPeer sends an onion message to the peer identified by the given
