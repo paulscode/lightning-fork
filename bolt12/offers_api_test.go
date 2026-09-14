@@ -1,6 +1,7 @@
 package bolt12
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"testing"
 
@@ -249,4 +250,27 @@ func TestWriteOnChain(t *testing.T) {
 	inv.InvreqChain = tlv.OptionalRecordT[tlv.TlvType80, [32]byte]{}
 	require.ErrorIs(t, ValidateInvoiceWriteOnChain(inv, ours),
 		ErrChainNotNamed)
+}
+
+// TestOfferIDMatchesCoreLightning pins the offer id to Core Lightning's: an
+// offer minted by this node, decoded by an unmodified lightningd (v25.02)
+// on 2026-09-14, whose decode reported this offer_id.
+func TestOfferIDMatchesCoreLightning(t *testing.T) {
+	t.Parallel()
+
+	const (
+		lno   = "lno1qgsp42cfmy5d53te84hklymmj60rhphsgqux95x72c5f59jr002egfgyzqvgkdva63tzw0scz6n2wzs0pe3s5rnsv96xsmr9wdejqurjda3x293pqw0dqrx3xcv2dy2fdlpp9k3cduvkgcdtmt4lfsmym5l0apks6hkax"
+		clnID = "7dad0c9d067b4dcc867ab926ce43daf2454397d8057d110b2ed5be06d79940d8"
+	)
+	_, data, err := Decode(lno)
+	require.NoError(t, err)
+	o, err := DecodeOffer(data)
+	require.NoError(t, err)
+	id, err := OfferID(o)
+	require.NoError(t, err)
+	require.Equal(t, clnID, hex.EncodeToString(id[:]))
+
+	// The raw bytes give the same, so the records re-encode faithfully.
+	raw := sha256.Sum256(data)
+	require.Equal(t, raw, id)
 }

@@ -8,6 +8,12 @@
 
 <img src="logo.png">
 
+## BOLT 12 offers
+
+This build mints BOLT 12 offers and serves and pays them over onion messages,
+which is how a mining pool that pays to offers pays its miners. Read
+[docs/bolt12-offers.md](docs/bolt12-offers.md).
+
 The Lightning Network Daemon (`lnd`) - is a complete implementation of a
 [Lightning Network](https://lightning.network) node.  `lnd` has several pluggable back-end
 chain services including [`btcd`](https://github.com/btcsuite/btcd) (a

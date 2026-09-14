@@ -747,6 +747,24 @@ func (m *Manager) DecodeBolt12(s string) (*Decoded, error) {
 	return out, nil
 }
 
+// tlv14 is the record type of offer_absolute_expiry.
+type tlv14 = tlv.RecordT[tlv.TlvType14, bolt12.TUint64]
+
+// unixTime turns spec seconds into a time.
+func unixTime(secs uint64) time.Time {
+	return time.Unix(int64(secs), 0).UTC()
+}
+
+// optBlob returns a blob record's bytes, or nil.
+func optBlob[T tlv.TlvType](r tlv.OptionalRecordT[T, tlv.Blob]) []byte {
+	var out []byte
+	r.WhenSome(func(rec tlv.RecordT[T, tlv.Blob]) {
+		out = []byte(rec.Val)
+	})
+
+	return out
+}
+
 // namesChain reports whether a chain list names the given chain. An empty
 // list names Bitcoin mainnet by the spec's default, which is never ours.
 func namesChain(chains [][32]byte, chain [32]byte) bool {

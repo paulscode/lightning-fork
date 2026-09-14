@@ -47,7 +47,9 @@ import (
 	"github.com/lightningnetwork/lnd/monitoring"
 	"github.com/lightningnetwork/lnd/msgmux"
 	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/offerpay"
 	"github.com/lightningnetwork/lnd/offers"
+	"github.com/lightningnetwork/lnd/offerserve"
 	"github.com/lightningnetwork/lnd/onionmessage"
 	"github.com/lightningnetwork/lnd/onionmsg"
 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
@@ -205,6 +207,10 @@ func SetupLoggers(root *build.SubLoggerManager, interceptor signal.Interceptor) 
 	AddSubLogger(root, peersrpc.Subsystem, interceptor, peersrpc.UseLogger)
 	AddSubLogger(root, offers.Subsystem, interceptor, offers.UseLogger)
 	AddSubLogger(root, onionmsg.Subsystem, interceptor, onionmsg.UseLogger)
+	AddSubLogger(
+		root, offerserve.Subsystem, interceptor, offerserve.UseLogger,
+	)
+	AddSubLogger(root, offerpay.Subsystem, interceptor, offerpay.UseLogger)
 	AddSubLogger(root, offersrpc.Subsystem, interceptor, offersrpc.UseLogger)
 	AddSubLogger(root, graph.Subsystem, interceptor, graph.UseLogger)
 	AddSubLogger(root, lncfg.Subsystem, interceptor, lncfg.UseLogger)
