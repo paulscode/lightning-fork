@@ -289,6 +289,25 @@ const (
 	// being finalized.
 	SimpleTaprootChannelsOptionalStaging = 181
 
+	// Blake2bRequired is a required feature bit that indicates the node
+	// follows the Bitcoin BLAKE2b chain. Core Lightning's port of this
+	// chain (privkeyio/lightning) sets it in its init message, and BOLT 9
+	// obliges a peer that does not know an even bit to close the
+	// connection, so a node that does not name it here refuses every such
+	// peer before chain_hash is ever compared.
+	//
+	// Knowing the bit is not the same as relying on it: what keeps this
+	// node off another chain is chain_hash, in the init networks list, in
+	// open_channel and in every channel announcement. This bit only says
+	// the node understands what the peer is declaring.
+	Blake2bRequired FeatureBit = 68
+
+	// Blake2bOptional is the optional form of Blake2bRequired. This node
+	// sets this one rather than the even bit: a peer that does not know it
+	// should ignore it and fall back to chain_hash, which is the check
+	// that actually separates the chains.
+	Blake2bOptional FeatureBit = 69
+
 	// ExperimentalAccountabilityRequired is a required feature bit that
 	// indicates that the node will relay experimental accountability
 	// signals.
@@ -395,6 +414,8 @@ var Features = map[FeatureBit]string{
 	SimpleTaprootChannelsOptionalStaging: "simple-taproot-chans-x",
 	SimpleTaprootOverlayChansOptional:    "taproot-overlay-chans",
 	SimpleTaprootOverlayChansRequired:    "taproot-overlay-chans",
+	Blake2bRequired:                      "blake2b",
+	Blake2bOptional:                      "blake2b",
 	ExperimentalAccountabilityRequired:   "accountable-x",
 	ExperimentalAccountabilityOptional:   "accountable-x",
 	Bolt11BlindedPathsOptional:           "bolt-11-blinded-paths",
