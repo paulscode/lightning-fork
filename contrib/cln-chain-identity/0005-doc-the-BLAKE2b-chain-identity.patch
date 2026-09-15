@@ -1,7 +1,7 @@
 From dc1d6118b36cfdbb185037df25d0dbb92d217c96 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
-Subject: [PATCH 05/10] doc: the BLAKE2b chain identity
+Subject: [PATCH 05/13] doc: the BLAKE2b chain identity
 
 The constants and rules the previous commits implement, in the form
 Lightning Fork publishes them, so that the two implementations agree

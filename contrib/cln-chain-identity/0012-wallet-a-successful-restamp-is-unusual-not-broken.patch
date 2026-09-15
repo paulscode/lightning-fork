@@ -1,0 +1,42 @@
+From fa42c13311655f91d62e3a76b0f0ecf8b3f439ea Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 15 Sep 2026 14:34:09 -0500
+Subject: [PATCH 12/13] wallet: a successful restamp is unusual, not broken
+
+log_broken prints **BROKEN** in the log. An operator reading that after
+doing exactly what they were told to do has every reason to think
+something went wrong, and Core Lightning's own test framework treats any
+**BROKEN** in a node's log as a failed run, which is how this surfaced:
+the two canned-database tests started passing their migration and then
+errored in teardown.
+
+The message is worth keeping and worth being loud about, since the change
+is one way. log_unusual is the level for that. The two refusals above it
+keep log_broken, because each precedes a deliberate exit.
+---
+ wallet/wallet.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/wallet/wallet.c b/wallet/wallet.c
+index 2fa796100..0e721527b 100644
+--- a/wallet/wallet.c
++++ b/wallet/wallet.c
+@@ -4885,7 +4885,14 @@ bool wallet_sanity_check(struct wallet *w)
+ 							     &chainparams->genesis_blockhash));
+ 				return false;
+ 			}
+-			log_broken(w->log, "Wallet was stamped with block 0 "
++			/* Noteworthy, not broken: the operator asked for
++			 * this and it worked.  log_broken would print
++			 * **BROKEN**, which alarms anyone reading the log
++			 * and which Core Lightning's own test framework
++			 * treats as a failed run. The two refusals above
++			 * keep log_broken, because they precede a
++			 * deliberate exit. */
++			log_unusual(w->log, "Wallet was stamped with block 0 "
+ 					   "(%s); adopting this chain's "
+ 					   "chain_hash %s",
+ 				   fmt_bitcoin_blkid(tmpctx, &chainhash),
+-- 
+2.43.0
+
