@@ -1,7 +1,10 @@
 # PR proposal for privkeyio/lightning: a chain identity for the BLAKE2b chain
 
-Target: `privkeyio/lightning`, branch `v26.06.7-blake2b` (head `893f767e8`, two
-repro-build commits past the `v26.06.7-blake2b.3` tag).
+Target: `privkeyio/lightning`, branch `blake2b-unified` (head `24d027310`),
+which is where `v26.06.7-blake2b.4` and the unified-sigs work live. Retargeted
+from `v26.06.7-blake2b`, which is still at `893f767e8` and is not where the
+next release will come from. The series rebases onto `blake2b-unified` with no
+conflicts.
 Patch series: `0001`-`0005` in this directory (`git am *.patch`); the
 lightning-fork-lab repository builds and tests it (`make cln`,
 `make cln-interop`).
@@ -57,9 +60,11 @@ peer that sends no `networks` list.
    (`chainparams_block0()`), since the wallet stamp and BOLT 12 need it.
    `lightning_hrp` becomes `blake`, `blakert`, `tbsblake`, `tblake`; the BOLT 11
    decoder therefore refuses `lnbc...` ("Prefix bc is not for bitcoin
-   (expected blake)"), and a Bitcoin wallet refuses ours. `decode` still
-   recognises a Bitcoin invoice as one, so the refusal is the message the
-   user sees rather than "rune". The prefix a network had before is kept as
+   (expected blake)"), and a Bitcoin wallet refuses ours. `decode` surfaces the
+   decoder's reason, wrapped in the standard `command_fail_badparam`
+   envelope (`string: <reason>: invalid token '<invoice>'`), so the user is
+   told which chain the prefix belongs to rather than getting a generic
+   parse failure. The prefix a network had before is kept as
    `legacy_lightning_hrp`, so a bookkeeper database from before the
    currency-less accounting migration keeps its history. `when_lightning_became_cool`
    on mainnet is the activation height. A unit test pins every value in the
@@ -98,6 +103,60 @@ peer that sends no `networks` list.
 5. **doc: the BLAKE2b chain identity.** The definition, identical to
    Lightning Fork's `docs/blake2b-chain-identity.md`, plus the CHANGELOG.
 
+## Added in response to review
+
+6. **wallet: gate the restamp on the wallet's own history, not on a flag.**
+   `--database-upgrade=true` cannot carry this decision, because at least one
+   distribution passes it unconditionally. On mainnet the `chain_hash` came
+   from the activation block, so a wallet that followed the fork has that
+   block at that height and one from the SHA256d chain has a different one.
+   Matched, restamp; different, refuse and no flag overrides; absent, fall
+   back to a flag.
+
+7. **connectd: keep peers that name no networks by default.** Dropping them
+   dropped every `cln-application` dashboard. The `init` drop was defence in
+   depth rather than the isolation, since `open_channel` and
+   `channel_announcement` both carry `chain_hash`, so it is now opt-in and
+   renamed `--drop-peers-without-networks` for the action it takes.
+
+8. **doc: reserve an odd, high feature bit.** 32769 odd in `init` and
+   `node_announcement`, 32768 even in invoices and offers, adopting Chris
+   Guida's asymmetry and range and conceding the 2100/2101 this document
+   reserved before.
+
+9. **wallet: a dedicated flag for the case the wallet cannot answer.**
+   `--restamp-wallet-for-this-chain`, because a wallet created after the fork
+   has no record of the activation block and the generic upgrade flag is set
+   unconditionally by some builds.
+
+10. **tests: skip the five that carry foreign-chain BOLT 11 fixtures.** Their
+    fixtures are signed invoices for other chains, either the spec's mainnet
+    vectors or regtest invoices hand-made for cases a node cannot generate on
+    request. Changing a prefix invalidates the signature and the signing keys
+    are not available. The reason is attached to each skip, and the spec
+    vectors keep their coverage in `common/test/run-bolt11`, which checks them
+    against a chainparams entry that keeps `bc`.
+
+11. **tests: name the chain in canned dbs, fix invoice-prefix assertions.** The
+    fixture's `bip173_prefix` is the address prefix, not the invoice prefix,
+    and on this chain they differ: addresses stay `bcrt1...` and invoices are
+    `lnblakert`. About a dozen tests were using one for the other. The fixture
+    gains `lightning_hrp`, and the tests that genuinely check an address keep
+    `bip173_prefix`.
+
+12. **wallet: a successful restamp is unusual, not broken.** `log_broken`
+    prints `**BROKEN**`, which alarms an operator who did as instructed and
+    which this project's own test framework treats as a failed run.
+
+13. **tests: canned dbs set at runtime need the flag too.** The two remaining
+    call sites that build their options later rather than from the fixture.
+
+14. **bolt11: say which chain a foreign prefix belongs to, and keep the
+    reason.** `Unknown chain bc` is true and unhelpful; the old prefix is
+    already recorded as `legacy_lightning_hrp`, so it is named. And
+    `listinvoices` was discarding the decoder's reason while `pay.c` had
+    always kept it.
+
 ## What it deliberately does not change
 
 - Address formats, derivation paths, `bip70_name` (`main`, so `bitcoin-cli`
@@ -134,12 +193,20 @@ peer that sends no `networks` list.
 ## Testing
 
 - `make` passes with `--disable-rust`; the Rust, protobuf and Python gRPC
-  stubs for the new option are regenerated by msggen in the series, though
+  stubs for the new options are regenerated by msggen in the series, though
   not compiled here (no Rust toolchain in the lab build). Unit
   tests run: `bitcoin/test/run-chainparams-blake2b` (new),
   `common/test/run-bolt11`, `plugins/test/run-decode_guess_type`,
-  `common/test/run-bolt12-encode-test`, `wallet/test/run-wallet`. The pytest
-  suite was not run and still asserts `lnbcrt` in ten files.
+  `common/test/run-bolt12-encode-test`, `wallet/test/run-wallet`.
+- **The python suite is now run**, which it was not when this was first
+  opened, and running it is what produced commits 10 to 14. On
+  `blake2b-unified`, `tests/test_db.py` and `tests/test_invoices.py` give
+  **21 failures with this series applied and the same 21 without it**,
+  identical by name. I built the branch unpatched to be able to say that
+  rather than assert it; the list is in the lab repository. Those 21 are
+  pre-existing on that branch. Five tests are skipped with the reason
+  attached, since their fixtures are signed BOLT 11 invoices for other chains
+  and cannot be re-signed.
 - Lab: two Lightning Fork nodes and this build on a BLAKE2b regtest (Knots
   with activation at height 20). The scenario `scripts/scenario-cln-interop.sh`
   in the lightning-fork-lab repository does: peering both ways, funding,

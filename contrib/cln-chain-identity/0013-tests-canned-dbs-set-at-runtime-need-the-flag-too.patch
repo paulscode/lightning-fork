@@ -1,4 +1,4 @@
-From 4919b71353c42c55ad1c6addd179ffb87ccdb654 Mon Sep 17 00:00:00 2001
+From ccfe0cd59582d809701cc267e73de83ddf45b26c Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:46:09 -0500
 Subject: [PATCH 13/14] tests: canned dbs set at runtime need the flag too
@@ -12,7 +12,7 @@ test_scid_upgrade still failed its wallet sanity check.
  2 files changed, 2 insertions(+)
 
 diff --git a/tests/test_db.py b/tests/test_db.py
-index 472132462..9da2d8209 100644
+index a36095efc..3815ec181 100644
 --- a/tests/test_db.py
 +++ b/tests/test_db.py
 @@ -160,6 +160,7 @@ def test_scid_upgrade(node_factory, bitcoind):
@@ -24,10 +24,10 @@ index 472132462..9da2d8209 100644
      assert l1.db_query('SELECT scid FROM channels;') == [{'scid': scid_to_int('103x1x1')}]
      assert l1.db_query('SELECT failscid FROM payments;') == [{'failscid': scid_to_int('103x1x1')}]
 diff --git a/tests/test_downgrade.py b/tests/test_downgrade.py
-index f48686be3..065113476 100644
+index c63726ac1..aaebeda2d 100644
 --- a/tests/test_downgrade.py
 +++ b/tests/test_downgrade.py
-@@ -84,6 +84,7 @@ def test_downgrade(node_factory, executor):
+@@ -92,6 +92,7 @@ def test_downgrade(node_factory, executor):
  
      # Should be able to upgrade without any trouble
      l1.daemon.opts['database-upgrade'] = True

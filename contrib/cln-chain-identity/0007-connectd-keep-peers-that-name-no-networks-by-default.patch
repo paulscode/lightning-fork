@@ -1,4 +1,4 @@
-From d8d69effc3a2ffba72ce933d3d944bd86f11f044 Mon Sep 17 00:00:00 2001
+From 9843a7b902381ba97798b4d49f6ebfea7940b49a Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:08:11 -0500
 Subject: [PATCH 07/14] connectd: keep peers that name no networks by default
@@ -310,10 +310,10 @@ index b0c24c63d..204185378 100644
  		return io_write(conn, msg, tal_count(msg), io_close_cb, NULL);
  	}
 diff --git a/contrib/msggen/msggen/schema.json b/contrib/msggen/msggen/schema.json
-index 8668f2b9d..cb6773ae0 100644
+index d21b842f0..e9e94e1f8 100644
 --- a/contrib/msggen/msggen/schema.json
 +++ b/contrib/msggen/msggen/schema.json
-@@ -20904,7 +20904,7 @@
+@@ -20907,7 +20907,7 @@
                    }
                  }
                },
@@ -322,7 +322,7 @@ index 8668f2b9d..cb6773ae0 100644
                  "type": "object",
                  "additionalProperties": false,
                  "required": [
-@@ -21650,7 +21650,7 @@
+@@ -21653,7 +21653,7 @@
                  "set": true,
                  "source": "cmdline"
                },
@@ -445,7 +445,7 @@ index a87631e65..6ad749237 100644
  	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
  	enum opt_autobool ip_discovery;
 diff --git a/lightningd/options.c b/lightningd/options.c
-index bf15d81d2..868dbeedf 100644
+index be7890895..50dad5da0 100644
 --- a/lightningd/options.c
 +++ b/lightningd/options.c
 @@ -1004,7 +1004,7 @@ static const struct config testnet_config = {

@@ -1,4 +1,4 @@
-From fa42c13311655f91d62e3a76b0f0ecf8b3f439ea Mon Sep 17 00:00:00 2001
+From 55b1edd9d3fc96c1dd33cd545bc2dea3538d80fe Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:34:09 -0500
 Subject: [PATCH 12/14] wallet: a successful restamp is unusual, not broken
@@ -18,10 +18,10 @@ keep log_broken, because each precedes a deliberate exit.
  1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/wallet/wallet.c b/wallet/wallet.c
-index 2fa796100..0e721527b 100644
+index 41e22b8ba..74a26e6ac 100644
 --- a/wallet/wallet.c
 +++ b/wallet/wallet.c
-@@ -4885,7 +4885,14 @@ bool wallet_sanity_check(struct wallet *w)
+@@ -4892,7 +4892,14 @@ bool wallet_sanity_check(struct wallet *w)
  							     &chainparams->genesis_blockhash));
  				return false;
  			}

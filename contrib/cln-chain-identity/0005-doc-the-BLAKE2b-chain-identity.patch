@@ -1,4 +1,4 @@
-From dc1d6118b36cfdbb185037df25d0dbb92d217c96 Mon Sep 17 00:00:00 2001
+From 5434478afc50067b3625c91e42dc390ab640ff72 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 05/14] doc: the BLAKE2b chain identity

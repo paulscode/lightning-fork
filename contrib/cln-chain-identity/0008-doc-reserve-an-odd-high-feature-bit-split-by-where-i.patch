@@ -1,4 +1,4 @@
-From 0b4e279e2d951e4e68b45535edd35f42bc97f8b8 Mon Sep 17 00:00:00 2001
+From 709f0a4fc940fa20ef1dd7546f7d6d4d78848911 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:08:36 -0500
 Subject: [PATCH 08/14] doc: reserve an odd, high feature bit, split by where

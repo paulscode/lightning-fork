@@ -1,4 +1,4 @@
-From ac80b3625141f415cba39562801f4421e21f38e8 Mon Sep 17 00:00:00 2001
+From 3d4d7eeb4b02a87ef3345611add28768edf0d9e7 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 03/14] connectd: drop peers that name no networks on a chain
@@ -179,10 +179,10 @@ index eb7bec648..b0c24c63d 100644
  
  	/* fetch optional tlv `remote_addr` */
 diff --git a/contrib/msggen/msggen/schema.json b/contrib/msggen/msggen/schema.json
-index 198ef0a59..8668f2b9d 100644
+index 16a23743e..d21b842f0 100644
 --- a/contrib/msggen/msggen/schema.json
 +++ b/contrib/msggen/msggen/schema.json
-@@ -20904,6 +20904,28 @@
+@@ -20907,6 +20907,28 @@
                    }
                  }
                },
@@ -211,7 +211,7 @@ index 198ef0a59..8668f2b9d 100644
                "announce-addr-discovered": {
                  "added": "v23.02",
                  "type": "object",
-@@ -21628,6 +21650,10 @@
+@@ -21631,6 +21653,10 @@
                  "set": true,
                  "source": "cmdline"
                },
@@ -495,7 +495,7 @@ index ab8bd868c..61c58fc16 100644
  
      @staticmethod
 diff --git a/contrib/pyln-grpc-proto/pyln/grpc/primitives_pb2.py b/contrib/pyln-grpc-proto/pyln/grpc/primitives_pb2.py
-index 354172e09..3660081d1 100644
+index 54e6a58c0..ceb537eb9 100644
 --- a/contrib/pyln-grpc-proto/pyln/grpc/primitives_pb2.py
 +++ b/contrib/pyln-grpc-proto/pyln/grpc/primitives_pb2.py
 @@ -2,7 +2,7 @@
@@ -626,7 +626,7 @@ index 81a03d412..a87631e65 100644
  	enum opt_autobool ip_discovery;
  
 diff --git a/lightningd/options.c b/lightningd/options.c
-index c611bdd85..bf15d81d2 100644
+index b0ded673f..be7890895 100644
 --- a/lightningd/options.c
 +++ b/lightningd/options.c
 @@ -1004,6 +1004,7 @@ static const struct config testnet_config = {

@@ -1,4 +1,4 @@
-From 9c3886ad5b03fd58ae8f6c1b50e004f8ca5c345e Mon Sep 17 00:00:00 2001
+From ed41917dc8e82d137666f2181d45b0bb81b59db9 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 15:17:50 -0500
 Subject: [PATCH 14/14] bolt11: say which chain a foreign prefix belongs to,

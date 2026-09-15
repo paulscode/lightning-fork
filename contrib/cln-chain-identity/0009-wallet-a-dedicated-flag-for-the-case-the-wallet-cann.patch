@@ -1,4 +1,4 @@
-From e47fcdc039f34b97e50cb4899b07e18c7b293404 Mon Sep 17 00:00:00 2001
+From 1d1429536adccc48aaf092092e5a18eeff0c431c Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:47:25 -0500
 Subject: [PATCH 09/14] wallet: a dedicated flag for the case the wallet cannot
@@ -28,11 +28,11 @@ flag overrides it; silent, ask for a flag that means this and nothing
 else.
 ---
  doc/lightningd-config.5.md   |  9 +++++++++
- doc/schemas/listconfigs.json | 26 ++++++++++++++++++++++++++
+ doc/schemas/listconfigs.json | 26 +++++++++++++++++++++++++
  lightningd/lightningd.h      |  4 ++++
  lightningd/options.c         |  5 +++++
- wallet/wallet.c              | 11 +++++------
- 5 files changed, 49 insertions(+), 6 deletions(-)
+ wallet/wallet.c              | 37 ++++++++++++++++++++----------------
+ 5 files changed, 65 insertions(+), 16 deletions(-)
 
 diff --git a/doc/lightningd-config.5.md b/doc/lightningd-config.5.md
 index 82b5aee27..10e32a780 100644
@@ -114,7 +114,7 @@ index 6ad749237..09b948de3 100644
  	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
  	enum opt_autobool ip_discovery;
 diff --git a/lightningd/options.c b/lightningd/options.c
-index 868dbeedf..81a5066d6 100644
+index 50dad5da0..7bf1ac4ba 100644
 --- a/lightningd/options.c
 +++ b/lightningd/options.c
 @@ -1005,6 +1005,7 @@ static const struct config testnet_config = {
@@ -144,10 +144,67 @@ index 868dbeedf..81a5066d6 100644
  				 &ld->config.drop_peers_without_networks,
  				 "Drop peers whose init names no networks. Off by default: on a chain that shares its genesis with another such a peer may be a node of the other one, but it may equally be a client application reaching this node's RPC, and chain_hash refuses the former at open_channel anyway");
 diff --git a/wallet/wallet.c b/wallet/wallet.c
-index 690f09a66..2fa796100 100644
+index 0a6ed1088..41e22b8ba 100644
 --- a/wallet/wallet.c
 +++ b/wallet/wallet.c
-@@ -4871,16 +4871,15 @@ bool wallet_sanity_check(struct wallet *w)
+@@ -4791,7 +4791,8 @@ void wallet_htlc_sigs_add(struct wallet *w, u64 channel_id,
+  * *known is set when the wallet had a block at that height at all, which is
+  * what separates "this is the other chain's wallet" from "cannot tell".
+  */
+-static bool wallet_followed_this_chain(struct wallet *w, bool *known)
++static bool wallet_followed_this_chain(struct wallet *w, bool *known,
++				       struct bitcoin_blkid *theirs)
+ {
+ 	struct db_stmt *stmt;
+ 	struct bitcoin_blkid blkid;
+@@ -4814,6 +4815,7 @@ static bool wallet_followed_this_chain(struct wallet *w, bool *known)
+ 	db_col_sha256d(stmt, "hash", &blkid.shad);
+ 	tal_free(stmt);
+ 	*known = true;
++	*theirs = blkid;
+ 
+ 	return bitcoin_blkid_eq(&blkid, &chainparams->genesis_blockhash);
+ }
+@@ -4839,6 +4841,7 @@ bool wallet_sanity_check(struct wallet *w)
+ 		    && bitcoin_blkid_eq(&chainhash,
+ 					chainparams_block0(chainparams))) {
+ 			bool followed, known;
++			struct bitcoin_blkid theirs;
+ 
+ 			/* Ask the wallet before asking the operator.
+ 			 *
+@@ -4849,18 +4852,21 @@ bool wallet_sanity_check(struct wallet *w)
+ 			 * the case it guards against is exactly the case
+ 			 * that gets through.  The wallet's own history
+ 			 * does not depend on what the operator passed. */
+-			followed = wallet_followed_this_chain(w, &known);
++			followed = wallet_followed_this_chain(w, &known,
++							      &theirs);
+ 			if (known && !followed) {
+-				log_broken(w->log, "Wallet has a different "
+-					   "block at height %u than this "
+-					   "chain's %s, so it followed the "
+-					   "SHA256d chain and is not this "
+-					   "chain's wallet. Refusing to "
+-					   "restamp it; --database-upgrade "
+-					   "does not override this. If this "
+-					   "is the wrong node for this "
++				log_broken(w->log, "Wallet records block %s "
++					   "at height %u, where this chain "
++					   "has %s, so it followed the SHA256d "
++					   "chain and is not this chain's "
++					   "wallet. Refusing to restamp it: "
++					   "no flag overrides this, neither "
++					   "--database-upgrade nor "
++					   "--restamp-wallet-for-this-chain. "
++					   "If this is the wrong node for this "
+ 					   "wallet, point it at the other "
+ 					   "chain's build.",
++					   fmt_bitcoin_blkid(tmpctx, &theirs),
+ 					   chainparams->chain_hash_block_height,
+ 					   fmt_bitcoin_blkid(tmpctx,
+ 							     &chainparams->genesis_blockhash));
+@@ -4872,16 +4878,15 @@ bool wallet_sanity_check(struct wallet *w)
  			 * Only reached where the wallet could not say,
  			 * since one that followed this chain is restamped
  			 * below without needing to be asked. */

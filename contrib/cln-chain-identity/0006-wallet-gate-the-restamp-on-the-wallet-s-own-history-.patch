@@ -1,4 +1,4 @@
-From 4a1364bfbde52138bd43af5551c975e5d0c2ac23 Mon Sep 17 00:00:00 2001
+From 56385374d976b98da016a1d079bf431dbce558c1 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:08:11 -0500
 Subject: [PATCH 06/14] wallet: gate the restamp on the wallet's own history,
@@ -70,10 +70,10 @@ index 087f7cbe9..5c66ef9a0 100644
  	/**
  	 * BOLT 1:
 diff --git a/wallet/wallet.c b/wallet/wallet.c
-index da6f8fdbc..690f09a66 100644
+index 9c9d8460d..0a6ed1088 100644
 --- a/wallet/wallet.c
 +++ b/wallet/wallet.c
-@@ -4778,6 +4778,45 @@ void wallet_htlc_sigs_add(struct wallet *w, u64 channel_id,
+@@ -4779,6 +4779,45 @@ void wallet_htlc_sigs_add(struct wallet *w, u64 channel_id,
  	}
  }
  
@@ -119,7 +119,7 @@ index da6f8fdbc..690f09a66 100644
  bool wallet_sanity_check(struct wallet *w)
  {
  	struct bitcoin_blkid chainhash;
-@@ -4798,9 +4837,42 @@ bool wallet_sanity_check(struct wallet *w)
+@@ -4799,9 +4838,42 @@ bool wallet_sanity_check(struct wallet *w)
  					 &chainparams->genesis_blockhash)
  		    && bitcoin_blkid_eq(&chainhash,
  					chainparams_block0(chainparams))) {

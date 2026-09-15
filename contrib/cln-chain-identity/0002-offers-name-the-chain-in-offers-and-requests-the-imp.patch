@@ -1,4 +1,4 @@
-From a0d5ea6855b5aceb98bab5e5aaede4e4bd40a270 Mon Sep 17 00:00:00 2001
+From b53d34546375e84b7ef950abe712ba6415febf87 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 02/14] offers: name the chain in offers and requests; the

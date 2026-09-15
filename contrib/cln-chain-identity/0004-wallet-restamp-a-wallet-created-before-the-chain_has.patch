@@ -1,4 +1,4 @@
-From 648384c4e6039075f787fd8c1fc7de78aae182f1 Mon Sep 17 00:00:00 2001
+From 303e25f7885622ae82f71a7b967768a58fad6d9e Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
 Subject: [PATCH 04/14] wallet: restamp a wallet created before the chain_hash
@@ -29,7 +29,7 @@ such a channel exists on Bitcoin too.
  1 file changed, 69 insertions(+)
 
 diff --git a/wallet/wallet.c b/wallet/wallet.c
-index e39a1b0a1..da6f8fdbc 100644
+index 035aa0bd9..9c9d8460d 100644
 --- a/wallet/wallet.c
 +++ b/wallet/wallet.c
 @@ -4,9 +4,11 @@
@@ -52,7 +52,7 @@ index e39a1b0a1..da6f8fdbc 100644
  #include <wallet/datastore.h>
  #include <wallet/invoices.h>
  #include <wallet/migrations.h>
-@@ -4785,6 +4788,72 @@ bool wallet_sanity_check(struct wallet *w)
+@@ -4786,6 +4789,72 @@ bool wallet_sanity_check(struct wallet *w)
  	if (db_step(stmt)) {
  		db_col_sha256d(stmt, "blobval", &chainhash.shad);
  		tal_free(stmt);

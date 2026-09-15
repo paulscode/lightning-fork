@@ -170,7 +170,7 @@ Knots definition; Lightning Fork's is in the btcd fork's `wire` package.
 
 Implemented in Lightning Fork (`github.com/paulscode/lightning-fork`) and
 running on mainnet. A patch series implementing the same values in
-Core Lightning, on top of `privkeyio/lightning` `v26.06.7-blake2b.3`, is
+Core Lightning, on top of `privkeyio/lightning` `blake2b-unified`, is
 kept under `contrib/cln-chain-identity/` in this repository with
 its proposal; with it applied, the two implementations peer, open channels
 from either side, pay each other's invoices and offers, and close, in the
