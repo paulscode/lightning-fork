@@ -191,6 +191,13 @@ func (c *Client) Stop() error {
 // fetch that is no longer waiting, are dropped.
 func (c *Client) deliver(_ context.Context, msg *onionmsg.Inbound) {
 	if len(msg.PathID) != 32 {
+		// Loud, because a reply that reaches this node and is dropped
+		// here looks from the outside exactly like a reply that never
+		// arrived: the fetch waits out its timeout with nothing in the
+		// log to say why.
+		log.Debugf("Dropping reply from peer %x: path_id is %d bytes, "+
+			"want 32 (%x)", msg.Peer, len(msg.PathID), msg.PathID)
+
 		return
 	}
 	var key [32]byte
