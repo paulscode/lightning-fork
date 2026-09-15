@@ -1,0 +1,169 @@
+From 4a1364bfbde52138bd43af5551c975e5d0c2ac23 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 15 Sep 2026 13:08:11 -0500
+Subject: [PATCH 6/8] wallet: gate the restamp on the wallet's own history, not
+ on a flag
+
+--database-upgrade=true cannot carry this decision. cln-startos passes it
+unconditionally (startos/main.ts), so on those builds the flag is always
+set and the case it guards against, a wallet from the SHA256d chain
+pointed at this build, is exactly the case that gets through. Reported by
+kwsantiago in review.
+
+The wallet can answer for itself. On this chain's mainnet the chain_hash
+was taken from the activation block, so a wallet that followed the fork
+has that block at that height and a wallet from the other chain has a
+different one. Nothing has to be asked of a backend, which matters
+because this runs at sanity-check time.
+
+So: if the wallet has our block there, restamp it, flag or no flag, since
+it plainly followed this chain. If it has a different block there, refuse,
+flag or no flag, and say which height disagreed. Only where the wallet has
+no block at that height, which is the case nothing can distinguish, does
+the flag still decide.
+
+chain_hash_block_height records where the value came from, and is zero on
+the networks that derive it by tagged hash instead and so have no block to
+compare against. Without that the check would refuse every regtest wallet,
+since no block will ever have a tagged hash as its id.
+
+Worth being plain about the damage this prevents, since it is not the
+worst case people may imagine: the restamp does not touch keys or UTXOs.
+A wallet that goes through it wrongly has not lost coins, but it has
+stopped being usable on the other chain without restoring from seed, and
+its channels are announced under the wrong identity. One way, and bad
+enough.
+---
+ bitcoin/chainparams.c |  1 +
+ bitcoin/chainparams.h |  7 ++++
+ wallet/wallet.c       | 76 +++++++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 82 insertions(+), 2 deletions(-)
+
+diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
+index 78aeb1b37..4e1196baf 100644
+--- a/bitcoin/chainparams.c
++++ b/bitcoin/chainparams.c
+@@ -30,6 +30,7 @@ const struct chainparams networks[] = {
+      * chain_hash is the id of block 961,640, the first BLAKE2b block, and
+      * its invoice prefix is `blake`: doc/blake2b-chain-identity.md. */
+     {.network_name = "bitcoin",
++     .chain_hash_block_height = 961640,
+      .onchain_hrp = "bc",
+      .lightning_hrp = "blake",
+      .legacy_lightning_hrp = "bc",
+diff --git a/bitcoin/chainparams.h b/bitcoin/chainparams.h
+index 087f7cbe9..5c66ef9a0 100644
+--- a/bitcoin/chainparams.h
++++ b/bitcoin/chainparams.h
+@@ -32,6 +32,13 @@ struct chainparams {
+ 	/* The id of block 0 as the backend reports it, when it differs from
+ 	 * genesis_blockhash (all zeros otherwise: see chainparams_block0). */
+ 	const struct bitcoin_blkid block0_hash;
++	/* The height whose block id is genesis_blockhash, where that value
++	 * was taken from a block; 0 where it was not.  On the BLAKE2b chain's
++	 * mainnet it is the activation height, which means a wallet's own
++	 * record of that block says which of the two chains it followed,
++	 * without asking a backend.  The other networks derive the value by
++	 * tagged hash instead and have no such block. */
++	const u32 chain_hash_block_height;
+ 	const int rpc_port;
+ 	/**
+ 	 * BOLT 1:
+diff --git a/wallet/wallet.c b/wallet/wallet.c
+index da6f8fdbc..690f09a66 100644
+--- a/wallet/wallet.c
++++ b/wallet/wallet.c
+@@ -4778,6 +4778,45 @@ void wallet_htlc_sigs_add(struct wallet *w, u64 channel_id,
+ 	}
+ }
+ 
++/* Did this wallet follow this chain across the fork?
++ *
++ * Where genesis_blockhash was taken from a block (this chain's mainnet, at
++ * the activation height), the wallet's own record of that height answers it:
++ * a wallet that followed the fork has that block, and a wallet from the
++ * SHA256d chain has a different one at the same height.  Nothing is asked of
++ * a backend, so this works at sanity-check time.
++ *
++ * Returns true if the wallet has the block and it is ours, false otherwise;
++ * *known is set when the wallet had a block at that height at all, which is
++ * what separates "this is the other chain's wallet" from "cannot tell".
++ */
++static bool wallet_followed_this_chain(struct wallet *w, bool *known)
++{
++	struct db_stmt *stmt;
++	struct bitcoin_blkid blkid;
++
++	*known = false;
++
++	if (chainparams->chain_hash_block_height == 0)
++		return false;
++
++	stmt = db_prepare_v2(w->db,
++			     SQL("SELECT hash FROM blocks WHERE height = ?"));
++	db_bind_int(stmt, chainparams->chain_hash_block_height);
++	db_query_prepared(stmt);
++
++	if (!db_step(stmt)) {
++		tal_free(stmt);
++		return false;
++	}
++
++	db_col_sha256d(stmt, "hash", &blkid.shad);
++	tal_free(stmt);
++	*known = true;
++
++	return bitcoin_blkid_eq(&blkid, &chainparams->genesis_blockhash);
++}
++
+ bool wallet_sanity_check(struct wallet *w)
+ {
+ 	struct bitcoin_blkid chainhash;
+@@ -4798,9 +4837,42 @@ bool wallet_sanity_check(struct wallet *w)
+ 					 &chainparams->genesis_blockhash)
+ 		    && bitcoin_blkid_eq(&chainhash,
+ 					chainparams_block0(chainparams))) {
++			bool followed, known;
++
++			/* Ask the wallet before asking the operator.
++			 *
++			 * --database-upgrade=true cannot carry this
++			 * decision: at least one distribution passes it
++			 * unconditionally (cln-startos startos/main.ts),
++			 * so on those builds the flag is always set and
++			 * the case it guards against is exactly the case
++			 * that gets through.  The wallet's own history
++			 * does not depend on what the operator passed. */
++			followed = wallet_followed_this_chain(w, &known);
++			if (known && !followed) {
++				log_broken(w->log, "Wallet has a different "
++					   "block at height %u than this "
++					   "chain's %s, so it followed the "
++					   "SHA256d chain and is not this "
++					   "chain's wallet. Refusing to "
++					   "restamp it; --database-upgrade "
++					   "does not override this. If this "
++					   "is the wrong node for this "
++					   "wallet, point it at the other "
++					   "chain's build.",
++					   chainparams->chain_hash_block_height,
++					   fmt_bitcoin_blkid(tmpctx,
++							     &chainparams->genesis_blockhash));
++				return false;
++			}
++
+ 			/* A one-way door, like a database upgrade in a
+-			 * non-final version: the operator says so once. */
+-			if (!w->ld->db_upgrade_ok || !*w->ld->db_upgrade_ok) {
++			 * non-final version: the operator says so once.
++			 * Only reached where the wallet could not say,
++			 * since one that followed this chain is restamped
++			 * below without needing to be asked. */
++			if (!followed
++			    && (!w->ld->db_upgrade_ok || !*w->ld->db_upgrade_ok)) {
+ 				log_broken(w->log, "Wallet is stamped with "
+ 					   "block 0 (%s) and this chain's "
+ 					   "chain_hash is %s: a wallet from "
+-- 
+2.43.0
+

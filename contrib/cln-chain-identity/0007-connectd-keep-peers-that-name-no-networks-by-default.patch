@@ -1,0 +1,484 @@
+From d8d69effc3a2ffba72ce933d3d944bd86f11f044 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 15 Sep 2026 13:08:11 -0500
+Subject: [PATCH 7/8] connectd: keep peers that name no networks by default
+
+cln-application sends no networks TLV, so dropping silent peers dropped
+every StartOS and Umbrel dashboard. Reported by kwsantiago in review, and
+it is a mistake rather than a tradeoff I made knowingly: I was thinking
+about lnd nodes on the SHA256d chain, which have never sent the field, and
+not about client applications that speak the wire protocol purely to reach
+a node's RPC and have no reason to know what chain they are on.
+
+The fix is not to make those clients send the TLV. That pushes chain
+awareness into a UI that otherwise needs none, and it only fixes the
+clients we happen to know about.
+
+The better argument is against my own patch. The init drop was never the
+isolation, only defence in depth. A peer from the SHA256d chain that
+connects anyway still cannot open a channel, because open_channel carries
+chain_hash, and still cannot get its gossip accepted, because
+channel_announcement carries it too. What the drop buys is that the
+failure happens earlier and more legibly. That is worth having available
+and not worth dropping every dashboard for, so it becomes opt-in.
+
+The option is renamed rather than inverted in place, because CLN names an
+option for the action it takes (--disable-dns sets use_dns false) and
+"--allow-peers-without-networks" defaulting to allowing would be a flag
+that does nothing. Generated bindings, schema and docs follow the rename.
+
+A peer that names other chains but not ours is still dropped, as before.
+That case is unambiguous.
+---
+ .msggen.json                                  |  12 +--
+ CHANGELOG.md                                  |   2 +-
+ ccan/config.h.1997605                         |  91 ++++++++++++++++++
+ cln-grpc/proto/node.proto                     | Bin 126162 -> 126161 bytes
+ cln-grpc/src/convert.rs                       | Bin 395313 -> 395311 bytes
+ cln-rpc/src/model.rs                          | Bin 428230 -> 428228 bytes
+ connectd/connectd.c                           |   2 +-
+ connectd/connectd.h                           |   2 +-
+ connectd/connectd_wire.csv                    |   2 +-
+ connectd/peer_exchange_initmsg.c              |  18 ++--
+ contrib/msggen/msggen/schema.json             |   4 +-
+ contrib/pyln-grpc-proto/pyln/grpc/node_pb2.py | Bin 331925 -> 331924 bytes
+ contrib/pyln-testing/pyln/testing/grpc2py.py  |   2 +-
+ doc/blake2b-chain-identity.md                 |   2 +-
+ doc/lightningd-config.5.md                    |  19 ++--
+ doc/schemas/listconfigs.json                  |   4 +-
+ lightningd/connect_control.c                  |   2 +-
+ lightningd/lightningd.h                       |   2 +-
+ lightningd/options.c                          |  10 +-
+ 19 files changed, 138 insertions(+), 36 deletions(-)
+ create mode 100644 ccan/config.h.1997605
+
+diff --git a/.msggen.json b/.msggen.json
+index a911cb6dd..28a89d2b9 100644
+--- a/.msggen.json
++++ b/.msggen.json
+@@ -2509,7 +2509,7 @@
+             "ListConfigs.configs.addr": 47,
+             "ListConfigs.configs.alias": 30,
+             "ListConfigs.configs.allow-deprecated-apis": 14,
+-            "ListConfigs.configs.allow-peers-without-networks": 76,
++            "ListConfigs.configs.drop-peers-without-networks": 76,
+             "ListConfigs.configs.always-use-proxy": 17,
+             "ListConfigs.configs.announce-addr": 48,
+             "ListConfigs.configs.announce-addr-discovered": 54,
+@@ -2603,8 +2603,8 @@
+             "ListConfigs.configs.allow-deprecated-apis.value_bool": 1
+         },
+         "ListconfigsConfigsAllow-peers-without-networks": {
+-            "ListConfigs.configs.allow-peers-without-networks.set": 1,
+-            "ListConfigs.configs.allow-peers-without-networks.source": 2
++            "ListConfigs.configs.drop-peers-without-networks.set": 1,
++            "ListConfigs.configs.drop-peers-without-networks.source": 2
+         },
+         "ListconfigsConfigsAlways-use-proxy": {
+             "ListConfigs.configs.always-use-proxy.source": 2,
+@@ -9780,15 +9780,15 @@
+             "added": "v23.08",
+             "deprecated": null
+         },
+-        "ListConfigs.configs.allow-peers-without-networks": {
++        "ListConfigs.configs.drop-peers-without-networks": {
+             "added": "v23.08",
+             "deprecated": null
+         },
+-        "ListConfigs.configs.allow-peers-without-networks.set": {
++        "ListConfigs.configs.drop-peers-without-networks.set": {
+             "added": "v23.08",
+             "deprecated": null
+         },
+-        "ListConfigs.configs.allow-peers-without-networks.source": {
++        "ListConfigs.configs.drop-peers-without-networks.source": {
+             "added": "v23.08",
+             "deprecated": null
+         },
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 26f6fef25..624742a53 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -19,7 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+   is a Bitcoin offer and is not answered.
+ - `init` messages that name no `networks` are dropped on this chain, since a
+   peer that sends none cannot be told from a Bitcoin node (LND never sent the
+-  field). `--allow-peers-without-networks` keeps them, for testing.
++  field). `--drop-peers-without-networks` keeps them, for testing.
+ - A wallet stamped with Bitcoin's genesis by an earlier build of this fork is
+   restamped with the chain's `chain_hash` on the first start.
+ 
+diff --git a/ccan/config.h.1997605 b/ccan/config.h.1997605
+new file mode 100644
+index 000000000..de60bc678
+--- /dev/null
++++ b/ccan/config.h.1997605
+@@ -0,0 +1,91 @@
++/* Generated by CCAN configurator */
++#ifndef CCAN_CONFIG_H
++#define CCAN_CONFIG_H
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE /* Always use GNU extensions. */
++#endif
++#define CCAN_COMPILER "cc"
++#define CCAN_CFLAGS "-Wall -Wundef -Wmissing-prototypes -Wmissing-declarations -Wstrict-prototypes -Wold-style-definition -std=gnu11 -g -fstack-protector-strong -Og -ffunction-sections -I/usr/local/lib -L/usr/local/lib -I/usr/include/postgresql"
++#define CCAN_OUTPUT_EXE_CFLAG "-o"
++
++#define HAVE_CCAN 1
++#define HAVE_32BIT_OFF_T 0
++#define HAVE_ALIGNOF 1
++#define HAVE_ASPRINTF 1
++#define HAVE_ATTRIBUTE_COLD 1
++#define HAVE_ATTRIBUTE_CONST 1
++#define HAVE_ATTRIBUTE_DEPRECATED 1
++#define HAVE_ATTRIBUTE_NONNULL 1
++#define HAVE_ATTRIBUTE_RETURNS_NONNULL 1
++#define HAVE_ATTRIBUTE_SENTINEL 1
++#define HAVE_ATTRIBUTE_PURE 1
++#define HAVE_ATTRIBUTE_MAY_ALIAS 1
++#define HAVE_ATTRIBUTE_NORETURN 1
++#define HAVE_ATTRIBUTE_PRINTF 1
++#define HAVE_ATTRIBUTE_UNUSED 1
++#define HAVE_ATTRIBUTE_USED 1
++#define HAVE_BACKTRACE 1
++#define HAVE_BIG_ENDIAN 0
++#define HAVE_BSWAP_64 1
++#define HAVE_BUILTIN_CHOOSE_EXPR 1
++#define HAVE_BUILTIN_CLZ 1
++#define HAVE_BUILTIN_CLZL 1
++#define HAVE_BUILTIN_CLZLL 1
++#define HAVE_BUILTIN_CTZ 1
++#define HAVE_BUILTIN_CTZL 1
++#define HAVE_BUILTIN_CTZLL 1
++#define HAVE_BUILTIN_CONSTANT_P 1
++#define HAVE_BUILTIN_EXPECT 1
++#define HAVE_BUILTIN_FFS 1
++#define HAVE_BUILTIN_FFSL 1
++#define HAVE_BUILTIN_FFSLL 1
++#define HAVE_BUILTIN_POPCOUNT 1
++#define HAVE_BUILTIN_POPCOUNTL 1
++#define HAVE_BUILTIN_POPCOUNTLL 1
++#define HAVE_BUILTIN_TYPES_COMPATIBLE_P 1
++#define HAVE_ICCARM_INTRINSICS 0
++#define HAVE_BYTESWAP_H 1
++#define HAVE_CLOCK_GETTIME 1
++#define HAVE_CLOCK_GETTIME_IN_LIBRT 0
++#define HAVE_COMPOUND_LITERALS 1
++#define HAVE_FCHDIR 1
++#define HAVE_ERR_H 1
++#define HAVE_FILE_OFFSET_BITS 0
++#define HAVE_FOR_LOOP_DECLARATION 1
++#define HAVE_FLEXIBLE_ARRAY_MEMBER 1
++#define HAVE_GETPAGESIZE 1
++#define HAVE_ISBLANK 1
++#define HAVE_LITTLE_ENDIAN 1
++#define HAVE_MEMMEM 1
++#define HAVE_MEMRCHR 1
++#define HAVE_MMAP 1
++#define HAVE_PROC_SELF_MAPS 1
++#define HAVE_QSORT_R_PRIVATE_LAST 1
++#define HAVE_STRUCT_TIMESPEC 1
++#define HAVE_SECTION_START_STOP 1
++#define HAVE_STACK_GROWS_UPWARDS 0
++#define HAVE_STATEMENT_EXPR 1
++#define HAVE_SYS_FILIO_H 0
++#define HAVE_SYS_TERMIOS_H 1
++#define HAVE_SYS_UNISTD_H 1
++#define HAVE_TYPEOF 1
++#define HAVE_UNALIGNED_ACCESS 1
++#define HAVE_UTIME 1
++#define HAVE_WARN_UNUSED_RESULT 1
++#define HAVE_OPENMP 1
++#define HAVE_VALGRIND_MEMCHECK_H 1
++#define HAVE_UCONTEXT 1
++#define HAVE_POINTER_SAFE_MAKECONTEXT 1
++#define HAVE_BUILTIN_CPU_SUPPORTS 1
++#define HAVE_CLOSEFROM 1
++#define HAVE_F_CLOSEM 0
++#define HAVE_NR_CLOSE_RANGE 1
++#define HAVE_F_MAXFD 0
++#define HAVE_ZLIB 1
++#define HAVE_GOOD_LIBSODIUM 1
++#define HAVE_SQLITE3 1
++#define HAVE_POSTGRES 0
++#define HAVE_USDT 0
++#define HAVE_GCC 1
++#define HAVE_MODERN_GCC 1
++#endif /* CCAN_CONFIG_H */
+diff --git a/cln-grpc/proto/node.proto b/cln-grpc/proto/node.proto
+index d8d4e8666fc274e549ce61cd2d080c45a4dce91e..1327a5222cf6796b1b5f36c5ed4bcfe7a10d7d72 100644
+GIT binary patch
+delta 22
+ecmca~ll|gN_J%EtccWQSit-D#KZ<7jFaZF7{|f&A
+
+delta 23
+fcmcb3ll{_7_J%EtccWPob8_;_w?B+#{4fCki%tt^
+
+diff --git a/cln-grpc/src/convert.rs b/cln-grpc/src/convert.rs
+index e57fcd5f47f99fde3d4c5eb7ab99e43708779bd5..789f5411ab7effd651a07e0dd4e83ff1043b28a2 100644
+GIT binary patch
+delta 67
+zcmdluL1O&`iG~)&Elhcx$|*(p1@Q%`sYS){<(VZJ`K2ZCd8sAk`9;~qRtm{_AnEqW
+SolHQ?48$zkCwH>Ws{;U{BO8tY
+
+delta 51
+zcmZ2KL1N<siG~)&Elhcx(-k_I*rreFWD?`FQb^WI%*n|wZ=cx71jNih%(8uAC+oaA
+E0PPGDW&i*H
+
+diff --git a/cln-rpc/src/model.rs b/cln-rpc/src/model.rs
+index 4a8322bef2066620ab107466254339a248325599..ba562c2ff6fe49ec97bc7ddab6fbf9ba398d2a61 100644
+GIT binary patch
+delta 40
+tcmX>$QR>J<sfHHD7N!>F7M3ln?>bphit-Dlf9_<B2D7#Ycd-`#0{~365Sjo0
+
+delta 42
+ucmX>yQR>)4sfHHD7N!>F7M3ln?>bo%b8_;_r+?~XjfOC{2X?U*{{sMRy%B8y
+
+diff --git a/connectd/connectd.c b/connectd/connectd.c
+index 64bb032bf..33504f117 100644
+--- a/connectd/connectd.c
++++ b/connectd/connectd.c
+@@ -1684,7 +1684,7 @@ static void connect_init(struct daemon *daemon, const u8 *msg)
+ 				    &daemon->always_use_proxy,
+ 				    &daemon->dev_allow_localhost,
+ 				    &daemon->use_dns,
+-				    &daemon->allow_peers_without_networks,
++				    &daemon->drop_peers_without_networks,
+ 				    &tor_password,
+ 				    &daemon->timeout_secs,
+ 				    &daemon->websocket_helper,
+diff --git a/connectd/connectd.h b/connectd/connectd.h
+index a2e34411d..9bfb6d4fa 100644
+--- a/connectd/connectd.h
++++ b/connectd/connectd.h
+@@ -324,7 +324,7 @@ struct daemon {
+ 	 * on a chain that shares its genesis with another: such a peer is
+ 	 * almost certainly a node of the other chain (LND never sent the
+ 	 * field), and nothing else identifies it before open_channel. */
+-	bool allow_peers_without_networks;
++	bool drop_peers_without_networks;
+ 
+ 	/* How much to gossip allow a peer every second (bytes) */
+ 	size_t gossip_stream_limit;
+diff --git a/connectd/connectd_wire.csv b/connectd/connectd_wire.csv
+index 15edf557b..1486b5d19 100644
+--- a/connectd/connectd_wire.csv
++++ b/connectd/connectd_wire.csv
+@@ -15,7 +15,7 @@ msgdata,connectd_init,tor_proxyaddr,?wireaddr,
+ msgdata,connectd_init,use_tor_proxy_always,bool,
+ msgdata,connectd_init,dev_allow_localhost,bool,
+ msgdata,connectd_init,use_dns,bool,
+-msgdata,connectd_init,allow_peers_without_networks,bool,
++msgdata,connectd_init,drop_peers_without_networks,bool,
+ msgdata,connectd_init,tor_password,wirestring,
+ msgdata,connectd_init,timeout_secs,u32,
+ msgdata,connectd_init,websocket_helper,wirestring,
+diff --git a/connectd/peer_exchange_initmsg.c b/connectd/peer_exchange_initmsg.c
+index b0c24c63d..204185378 100644
+--- a/connectd/peer_exchange_initmsg.c
++++ b/connectd/peer_exchange_initmsg.c
+@@ -102,19 +102,25 @@ static struct io_plan *peer_init_received(struct io_conn *conn,
+ 			msg = cryptomsg_encrypt_msg(NULL, &peer->cs, take(msg));
+ 			return io_write(conn, msg, tal_count(msg), io_close_cb, NULL);
+ 		}
+-	} else if (!peer->daemon->allow_peers_without_networks
++	} else if (peer->daemon->drop_peers_without_networks
+ 		   && !bitcoin_blkid_eq(chainparams_block0(chainparams),
+ 					&chainparams->genesis_blockhash)) {
+-		/* This chain shares its genesis with another, so a peer
+-		 * that names no chain cannot be told apart from a node of
+-		 * the other one, and LND never named any.  See
+-		 * doc/blake2b-chain-identity.md. */
++		/* This chain shares its genesis with another, so a peer that
++		 * names no chain cannot be told apart from a node of the
++		 * other one, and LND never named any.  Off by default: the
++		 * same silence comes from client applications that speak the
++		 * wire protocol only to reach this node's RPC and have no
++		 * reason to know what chain they are on, and dropping those
++		 * costs more than this catches.  chain_hash is what actually
++		 * keeps the chains apart, in open_channel and in
++		 * channel_announcement; this only makes the failure earlier
++		 * and clearer.  See doc/blake2b-chain-identity.md. */
+ 		status_peer_debug(&peer->id,
+ 				  "Peer names no networks and this chain "
+ 				  "shares its genesis, closing");
+ 		msg = towire_warningfmt(NULL, NULL,
+ 					"No networks named: this chain needs "
+-					"one (see allow-peers-without-networks)");
++					"one (see drop-peers-without-networks)");
+ 		msg = cryptomsg_encrypt_msg(NULL, &peer->cs, take(msg));
+ 		return io_write(conn, msg, tal_count(msg), io_close_cb, NULL);
+ 	}
+diff --git a/contrib/msggen/msggen/schema.json b/contrib/msggen/msggen/schema.json
+index 8668f2b9d..cb6773ae0 100644
+--- a/contrib/msggen/msggen/schema.json
++++ b/contrib/msggen/msggen/schema.json
+@@ -20904,7 +20904,7 @@
+                   }
+                 }
+               },
+-              "allow-peers-without-networks": {
++              "drop-peers-without-networks": {
+                 "type": "object",
+                 "additionalProperties": false,
+                 "required": [
+@@ -21650,7 +21650,7 @@
+                 "set": true,
+                 "source": "cmdline"
+               },
+-              "allow-peers-without-networks": {
++              "drop-peers-without-networks": {
+                 "set": false,
+                 "source": "default"
+               },
+diff --git a/contrib/pyln-grpc-proto/pyln/grpc/node_pb2.py b/contrib/pyln-grpc-proto/pyln/grpc/node_pb2.py
+index beaa701fa3582fd5b14ec3c190759c1a24a270b7..23c477527a51d396954921871a3f3e3afa92de42 100644
+GIT binary patch
+delta 32
+mcmbQbP-MzNk%kt=Ell;QEGb3#1??@WOhC-My+xHp@HGI$whM6p
+
+delta 33
+ncmbQTP-N;tk%kt=Ell;Qtcf`}`Q`1+s!Tx4yuDeKMesEM(P<0W
+
+diff --git a/contrib/pyln-testing/pyln/testing/grpc2py.py b/contrib/pyln-testing/pyln/testing/grpc2py.py
+index 632ec3d24..da04279a2 100644
+--- a/contrib/pyln-testing/pyln/testing/grpc2py.py
++++ b/contrib/pyln-testing/pyln/testing/grpc2py.py
+@@ -2235,7 +2235,7 @@ def listconfigs_configs_allow_deprecated_apis2py(m):
+     })
+ 
+ 
+-def listconfigs_configs_allow_peers_without_networks2py(m):
++def listconfigs_configs_drop_peers_without_networks2py(m):
+     return remove_default({
+         "set": m.set,  # PrimitiveField in generate_composite
+         "source": m.source,  # PrimitiveField in generate_composite
+diff --git a/doc/blake2b-chain-identity.md b/doc/blake2b-chain-identity.md
+index ce287de44..2cdb1b974 100644
+--- a/doc/blake2b-chain-identity.md
++++ b/doc/blake2b-chain-identity.md
+@@ -132,7 +132,7 @@ Knots definition; Lightning Fork's is in the btcd fork's `wire` package.
+ | `chain_hash` per network, `block0_hash` (what the backend reports for height 0) | `bitcoin/chainparams.c` |
+ | Invoice prefixes | `lightning_hrp` in `bitcoin/chainparams.c`; `common/bolt11.c` refuses the rest |
+ | BOLT 12 implicit chain stays Bitcoin | `chainparams_bolt12_implicit()`, `common/bolt12.c`, `plugins/offers_offer.c`, `plugins/fetchinvoice.c` |
+-| `init` networks: silent peers dropped | `connectd/peer_exchange_initmsg.c`, `--allow-peers-without-networks` |
++| `init` networks: peers naming another chain dropped; silent peers kept unless `--drop-peers-without-networks` | `connectd/peer_exchange_initmsg.c` |
+ | Wallet stamped with block 0 is restamped | `wallet/wallet.c` `wallet_sanity_check` |
+ 
+ Channels a node opened before this build announced themselves with
+diff --git a/doc/lightningd-config.5.md b/doc/lightningd-config.5.md
+index 830e27b2a..82b5aee27 100644
+--- a/doc/lightningd-config.5.md
++++ b/doc/lightningd-config.5.md
+@@ -721,13 +721,18 @@ all DNS lookups, to avoid leaking information.
+ 
+   Disable the DNS bootstrapping mechanism to find a node by its node ID.
+ 
+-* **allow-peers-without-networks**
+-
+-  Keep a peer whose `init` message names no `networks`. On a chain that
+-shares its genesis block with another (the Bitcoin BLAKE2b chain shares
+-Bitcoin's), such a peer is dropped by default, since nothing before
+-`open_channel` says which chain it follows and LND never sent the field.
+-Has no effect on a chain whose `chain_hash` is its genesis.
++* **drop-peers-without-networks**
++
++  Drop a peer whose `init` message names no `networks`. Off by default. On a
++chain that shares its genesis block with another (the Bitcoin BLAKE2b chain
++shares Bitcoin's) such a peer cannot be told apart from a node of the other
++chain, and lnd has never sent the field. It equally cannot be told apart from
++a client application that speaks the wire protocol only to reach this node's
++RPC and has no reason to know what chain it is on, which is why dropping is
++not the default: `chain_hash` refuses a node of the other chain at
++`open_channel` and refuses its gossip at `channel_announcement` regardless.
++Turning this on makes that failure happen earlier and more legibly, at the
++cost of those clients.
+ 
+ * **message-padding**=*BOOL*
+ 
+diff --git a/doc/schemas/listconfigs.json b/doc/schemas/listconfigs.json
+index f75befd8d..47a83a38d 100644
+--- a/doc/schemas/listconfigs.json
++++ b/doc/schemas/listconfigs.json
+@@ -1202,7 +1202,7 @@
+               }
+             }
+           },
+-          "allow-peers-without-networks": {
++          "drop-peers-without-networks": {
+             "type": "object",
+             "additionalProperties": false,
+             "required": [
+@@ -1948,7 +1948,7 @@
+             "set": true,
+             "source": "cmdline"
+           },
+-          "allow-peers-without-networks": {
++          "drop-peers-without-networks": {
+             "set": false,
+             "source": "default"
+           },
+diff --git a/lightningd/connect_control.c b/lightningd/connect_control.c
+index 99bca508a..ce5f71465 100644
+--- a/lightningd/connect_control.c
++++ b/lightningd/connect_control.c
+@@ -716,7 +716,7 @@ int connectd_init(struct lightningd *ld)
+ 				   ld->always_use_proxy || ld->pure_tor_setup,
+ 				   ld->dev_allow_localhost,
+ 				   ld->config.use_dns,
+-				   ld->config.allow_peers_without_networks,
++				   ld->config.drop_peers_without_networks,
+ 				   ld->tor_service_password ? ld->tor_service_password : "",
+ 				   ld->config.connection_timeout_secs,
+ 				   websocket_helper_path,
+diff --git a/lightningd/lightningd.h b/lightningd/lightningd.h
+index a87631e65..6ad749237 100644
+--- a/lightningd/lightningd.h
++++ b/lightningd/lightningd.h
+@@ -61,7 +61,7 @@ struct config {
+ 	bool use_dns;
+ 
+ 	/* Keep peers whose init names no networks (see connectd). */
+-	bool allow_peers_without_networks;
++	bool drop_peers_without_networks;
+ 
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	enum opt_autobool ip_discovery;
+diff --git a/lightningd/options.c b/lightningd/options.c
+index bf15d81d2..868dbeedf 100644
+--- a/lightningd/options.c
++++ b/lightningd/options.c
+@@ -1004,7 +1004,7 @@ static const struct config testnet_config = {
+ 	.rescan = 30,
+ 
+ 	.use_dns = true,
+-	.allow_peers_without_networks = false,
++	.drop_peers_without_networks = false,
+ 
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	.ip_discovery = OPT_AUTOBOOL_AUTO,
+@@ -1083,7 +1083,7 @@ static const struct config mainnet_config = {
+ 	.rescan = 15,
+ 
+ 	.use_dns = true,
+-	.allow_peers_without_networks = false,
++	.drop_peers_without_networks = false,
+ 
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	.ip_discovery = OPT_AUTOBOOL_AUTO,
+@@ -1602,9 +1602,9 @@ static void register_opts(struct lightningd *ld)
+ 		       &ld->accept_extra_tlv_types,
+ 		       "HTLC TLV type to accept (can be used multiple times)");
+ 
+-	opt_register_early_noarg("--allow-peers-without-networks", opt_set_bool,
+-				 &ld->config.allow_peers_without_networks,
+-				 "Keep peers whose init names no networks; on a chain that shares its genesis with another they are dropped by default");
++	opt_register_early_noarg("--drop-peers-without-networks", opt_set_bool,
++				 &ld->config.drop_peers_without_networks,
++				 "Drop peers whose init names no networks. Off by default: on a chain that shares its genesis with another such a peer may be a node of the other one, but it may equally be a client application reaching this node's RPC, and chain_hash refuses the former at open_channel anyway");
+ 	opt_register_early_noarg("--disable-dns", opt_set_invbool, &ld->config.use_dns,
+ 				 "Disable DNS lookups of peers");
+ 
+-- 
+2.43.0
+

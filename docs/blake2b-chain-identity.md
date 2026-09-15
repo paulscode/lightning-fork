@@ -100,9 +100,22 @@ from coins received after the fork.
 
 For the future channel type in which both sides sign commitment and HTLC
 transactions with `SIGHASH_UNIFIED`, the feature bit pair
-**32769 (optional) / 32768 (required)** is reserved. A node that supports
-the channel type sets the odd bit; the even bit stays unused until the
-whole network has it. No implementation sets either yet.
+**32769 (optional) / 32768 (required)** is reserved, and which of the pair
+is set depends on where it is set:
+
+- **Odd (32769) in `init` and `node_announcement`.** A peer that does not
+  understand it stays connected, which is what lets a pre-fork channel with
+  an unpatched counterparty still be closed cooperatively.
+- **Even (32768) in invoices and offers.** A payer that does not understand
+  it refuses to pay, which is the safe direction: a wallet on the SHA256d
+  chain must not pay an invoice from this one by accident.
+
+This asymmetry is Chris Guida's, from the migration plan, and it is a
+better answer than a single choice for both. Peering wants to be
+permissive, because during a migration you have to be able to talk to
+nodes that have not moved yet. Payment wants to be strict, because the
+failure there costs money rather than a reconnect. No implementation sets
+either bit yet.
 
 This replaces the 2100/2101 pair reserved in earlier revisions of this
 document. Nothing set those bits, so nothing breaks, and the higher pair is
@@ -110,17 +123,17 @@ the more conservative choice: it sits well clear of the numbers BOLT 9 is
 still handing out, and it matches the range implementations already treat
 as custom.
 
-Odd rather than even, and high rather than low, for two reasons.
+Odd in `init` rather than even, and high rather than low, for two reasons.
 
 BOLT 9 says a feature is introduced as an optional odd bit and upgraded to
 a compulsory even one later, "which will be refused by outdated nodes".
-Starting at the compulsory end runs that backwards: it refuses peers before
-there is anything to be compatible with, and it refuses more than intended.
-An even bit in `init` drops any peer that does not set it, which includes
-client applications that speak the wire protocol to reach a node's RPC and
-have no reason to know what chain they are on. It also leaves a pre-fork
-channel with an unpatched counterparty with no cooperative close, only a
-force close.
+Starting `init` at the compulsory end runs that backwards: it refuses peers
+before there is anything to be compatible with, and it refuses more than
+intended. An even bit in `init` drops any peer that does not set it, which
+includes client applications that speak the wire protocol to reach a node's
+RPC and have no reason to know what chain they are on. It also leaves a
+pre-fork channel with an unpatched counterparty with no cooperative close,
+only a force close.
 
 And this bit is not what keeps the two chains apart. `chain_hash` does
 that, in the `init` networks list, in `open_channel` and in
