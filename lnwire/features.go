@@ -308,6 +308,18 @@ const (
 	// that actually separates the chains.
 	Blake2bOptional FeatureBit = 69
 
+	// UnifiedSigsRequired is a required feature bit that indicates the
+	// node can negotiate a channel whose bilateral signatures opt into
+	// the Bitcoin BLAKE2b chain's unified signature hash (SIGHASH_UNIFIED,
+	// 0x20), which binds them to that chain and so cannot be replayed on
+	// the SHA256d one.
+	UnifiedSigsRequired FeatureBit = 70
+
+	// UnifiedSigsOptional is the optional form of UnifiedSigsRequired.
+	// This node sets this one: a peer that cannot do it should open an
+	// ordinary channel rather than fail to open one at all.
+	UnifiedSigsOptional FeatureBit = 71
+
 	// ExperimentalAccountabilityRequired is a required feature bit that
 	// indicates that the node will relay experimental accountability
 	// signals.
@@ -416,6 +428,8 @@ var Features = map[FeatureBit]string{
 	SimpleTaprootOverlayChansRequired:    "taproot-overlay-chans",
 	Blake2bRequired:                      "blake2b",
 	Blake2bOptional:                      "blake2b",
+	UnifiedSigsRequired:                  "unified-sigs",
+	UnifiedSigsOptional:                  "unified-sigs",
 	ExperimentalAccountabilityRequired:   "accountable-x",
 	ExperimentalAccountabilityOptional:   "accountable-x",
 	Bolt11BlindedPathsOptional:           "bolt-11-blinded-paths",

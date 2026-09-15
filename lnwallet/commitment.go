@@ -379,10 +379,40 @@ func CommitScriptToRemote(chanType channeldb.ChannelType, initiator bool,
 // transactions given the channel type.
 func HtlcSigHashType(chanType channeldb.ChannelType) txscript.SigHashType {
 	if chanType.HasAnchors() {
-		return txscript.SigHashSingle | txscript.SigHashAnyOneCanPay
+		return unifiedIf(
+			chanType,
+			txscript.SigHashSingle|txscript.SigHashAnyOneCanPay,
+		)
 	}
 
-	return txscript.SigHashAll
+	return unifiedIf(chanType, txscript.SigHashAll)
+}
+
+// CommitSigHashType returns the sighash type to use for the signature each
+// party makes over the other's commitment transaction, and for the signature
+// on a cooperative close. Both spend the funding output, which BOLT 3 signs
+// with SIGHASH_ALL.
+func CommitSigHashType(chanType channeldb.ChannelType) txscript.SigHashType {
+	return unifiedIf(chanType, txscript.SigHashAll)
+}
+
+// unifiedIf adds the unified signature hash bit to a BOLT 3 hash type when the
+// channel negotiated it. The rule is exactly that: whatever the protocol says
+// this signature commits to, plus the bit, so SIGHASH_ALL becomes 0x21 and the
+// anchor channel's SIGHASH_SINGLE|SIGHASH_ANYONECANPAY becomes 0xa3. Core
+// Lightning's port derives it the same way, in channel_type_sighash().
+//
+// This is only for signatures a peer verifies. Signatures this node makes
+// alone opt in through input.SoleSignerSigHash, which needs nobody's
+// agreement and so does not depend on the channel type.
+func unifiedIf(chanType channeldb.ChannelType,
+	base txscript.SigHashType) txscript.SigHashType {
+
+	if chanType.HasUnifiedSigs() {
+		return base | txscript.SigHashUnified
+	}
+
+	return base
 }
 
 // HtlcSignDetails converts the passed parameters to a SignDetails valid for

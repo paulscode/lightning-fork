@@ -473,6 +473,14 @@ const (
 	// final/production taproot scripts and feature bits 80/81. This MUST
 	// be set along with the SimpleTaprootFeatureBit.
 	TaprootFinalBit ChannelType = 1 << 12
+
+	// UnifiedSigsBit indicates that the signatures both parties make on
+	// this channel's commitment, second-level HTLC and cooperative close
+	// transactions opt into the unified signature hash (SIGHASH_UNIFIED,
+	// 0x20), binding them to the Bitcoin BLAKE2b chain. Negotiated at
+	// open and fixed for the channel's life: both sides must compute the
+	// same digest or every signature they exchange fails to verify.
+	UnifiedSigsBit ChannelType = 1 << 13
 )
 
 // IsSingleFunder returns true if the channel type if one of the known single
@@ -547,6 +555,12 @@ func (c ChannelType) IsTaproot() bool {
 // root commitment.
 func (c ChannelType) HasTapscriptRoot() bool {
 	return c&TapscriptRootBit == TapscriptRootBit
+}
+
+// HasUnifiedSigs returns true if the bilateral signatures on this channel opt
+// into the unified signature hash.
+func (c ChannelType) HasUnifiedSigs() bool {
+	return c&UnifiedSigsBit == UnifiedSigsBit
 }
 
 // IsTaprootFinal returns true if the channel is using final/production taproot

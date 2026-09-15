@@ -586,3 +586,112 @@ func TestCommitmentTypeNegotiation(t *testing.T) {
 		}
 	}
 }
+
+// TestUnifiedSigsNegotiation covers the unified signature hash as a channel
+// type dimension of its own. It is orthogonal to the commitment type: it
+// changes the digest both parties sign, not the transactions, so it is taken
+// off before the commitment type is decided and the caller keeps it on the
+// type it returns.
+func TestUnifiedSigsNegotiation(t *testing.T) {
+	t.Parallel()
+
+	var (
+		anchorsUnified = lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+			lnwire.StaticRemoteKeyRequired,
+			lnwire.AnchorsZeroFeeHtlcTxRequired,
+			lnwire.UnifiedSigsRequired,
+		))
+		taprootUnified = lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+			lnwire.SimpleTaprootChannelsRequiredFinal,
+			lnwire.UnifiedSigsRequired,
+		))
+		// ExplicitChannelTypeOptional on both sides is what makes the
+		// negotiation explicit; without it a requested type is only
+		// compared against what implicit negotiation would have
+		// picked, and no type is returned.
+		bothSupport = lnwire.NewFeatureVector(
+			lnwire.NewRawFeatureVector(
+				lnwire.ExplicitChannelTypeOptional,
+				lnwire.StaticRemoteKeyOptional,
+				lnwire.AnchorsZeroFeeHtlcTxOptional,
+				lnwire.UnifiedSigsOptional,
+				lnwire.SimpleTaprootChannelsOptionalFinal,
+			), lnwire.Features,
+		)
+		noUnified = lnwire.NewFeatureVector(
+			lnwire.NewRawFeatureVector(
+				lnwire.ExplicitChannelTypeOptional,
+				lnwire.StaticRemoteKeyOptional,
+				lnwire.AnchorsZeroFeeHtlcTxOptional,
+			), lnwire.Features,
+		)
+	)
+
+	t.Run("both sides support it", func(t *testing.T) {
+		t.Parallel()
+
+		chanType, commitType, err := negotiateCommitmentType(
+			&anchorsUnified, bothSupport, bothSupport,
+		)
+		require.NoError(t, err)
+		require.Equal(
+			t, lnwallet.CommitmentTypeAnchorsZeroFeeHtlcTx,
+			commitType,
+		)
+
+		// The bit stays on the type that gets echoed back and
+		// persisted; stripping it is only for deciding the commitment
+		// type.
+		features := lnwire.RawFeatureVector(*chanType)
+		require.True(t, features.IsSet(lnwire.UnifiedSigsRequired))
+	})
+
+	t.Run("peer cannot do it", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, err := negotiateCommitmentType(
+			&anchorsUnified, bothSupport, noUnified,
+		)
+		require.ErrorIs(t, err, errUnsupportedChannelType)
+	})
+
+	t.Run("refused on taproot", func(t *testing.T) {
+		t.Parallel()
+
+		// The taproot commitment signature is a MuSig2 partial
+		// signature over a BIP341 digest. Opting that in is a wire
+		// change rather than a different hash type, so agreeing to it
+		// would mean two sides signing different digests.
+		_, _, err := negotiateCommitmentType(
+			&taprootUnified, bothSupport, bothSupport,
+		)
+		require.ErrorIs(t, err, errUnsupportedChannelType)
+	})
+
+	t.Run("proposed implicitly when both support it", func(t *testing.T) {
+		t.Parallel()
+
+		chanType, _, err := negotiateCommitmentType(
+			nil, bothSupport, bothSupport,
+		)
+		require.NoError(t, err)
+
+		features := lnwire.RawFeatureVector(*chanType)
+		require.True(t, features.IsSet(lnwire.UnifiedSigsRequired))
+	})
+
+	t.Run("not proposed to a peer without it", func(t *testing.T) {
+		t.Parallel()
+
+		// This is the case that matters for interop: an lnd that does
+		// not know the bit must be offered an ordinary channel, not a
+		// type it will refuse.
+		chanType, _, err := negotiateCommitmentType(
+			nil, bothSupport, noUnified,
+		)
+		require.NoError(t, err)
+
+		features := lnwire.RawFeatureVector(*chanType)
+		require.False(t, features.IsSet(lnwire.UnifiedSigsRequired))
+	})
+}

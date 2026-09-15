@@ -19,6 +19,13 @@ var defaultSetDesc = setDesc{
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N
 	},
+	// Signalled so a peer knows a unified-signing channel can be
+	// negotiated with this node. Whether one is depends on the channel
+	// type both sides agree, not on this bit alone.
+	lnwire.UnifiedSigsOptional: {
+		SetInit:    {}, // I
+		SetNodeAnn: {}, // N
+	},
 	lnwire.DataLossProtectRequired: {
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N

@@ -473,6 +473,10 @@ func NewChannelReservation(capacity, localFundingAmt btcutil.Amount,
 		chanType |= channeldb.ScidAliasFeatureBit
 	}
 
+	if req.UnifiedSigs {
+		chanType |= channeldb.UnifiedSigsBit
+	}
+
 	taprootOverlay := req.CommitType == CommitmentTypeSimpleTaprootOverlay
 	switch {
 	case taprootOverlay && req.TapscriptRoot.IsNone():

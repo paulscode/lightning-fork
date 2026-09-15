@@ -414,6 +414,25 @@ func TestSimpleAddSettleWorkflow(t *testing.T) {
 		testAddSettleWorkflow(t, true, flags, false)
 	})
 
+	t.Run("unified sigs", func(t *testing.T) {
+		testAddSettleWorkflow(
+			t, true, channeldb.UnifiedSigsBit, false,
+		)
+	})
+
+	// The combination privkeyio's Core Lightning port negotiates:
+	// static_remotekey + anchors_zero_fee_htlc_tx + unified sigs, which
+	// is channel_type [12,22,70] on the wire.
+	t.Run("anchors with unified sigs", func(t *testing.T) {
+		testAddSettleWorkflow(
+			t, true,
+			channeldb.AnchorOutputsBit|
+				channeldb.ZeroHtlcTxFeeBit|
+				channeldb.UnifiedSigsBit,
+			false,
+		)
+	})
+
 	t.Run("storeFinalHtlcResolutions=true", func(t *testing.T) {
 		testAddSettleWorkflow(t, false, 0, true)
 	})

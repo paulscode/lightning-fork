@@ -1595,8 +1595,9 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 	}
 
 	var (
-		zeroConf bool
-		scid     bool
+		zeroConf    bool
+		scid        bool
+		unifiedSigs bool
 	)
 
 	// Only echo back a channel type in AcceptChannel if we actually used
@@ -1607,6 +1608,7 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		featureVec := lnwire.RawFeatureVector(*chanType)
 		zeroConf = featureVec.IsSet(lnwire.ZeroConfRequired)
 		scid = featureVec.IsSet(lnwire.ScidAliasRequired)
+		unifiedSigs = featureVec.IsSet(lnwire.UnifiedSigsRequired)
 
 		// If the zero-conf channel type was negotiated, ensure that
 		// the acceptor allows it.
@@ -1699,6 +1701,7 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		ZeroConf:         zeroConf,
 		OptionScidAlias:  scid,
 		ScidAliasFeature: scidFeatureVal,
+		UnifiedSigs:      unifiedSigs,
 		TapscriptRoot:    tapscriptRoot,
 	}
 
@@ -4972,8 +4975,9 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	}
 
 	var (
-		zeroConf bool
-		scid     bool
+		zeroConf    bool
+		scid        bool
+		unifiedSigs bool
 	)
 
 	if chanType != nil {
@@ -4982,6 +4986,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		featureVec := lnwire.RawFeatureVector(*chanType)
 		zeroConf = featureVec.IsSet(lnwire.ZeroConfRequired)
 		scid = featureVec.IsSet(lnwire.ScidAliasRequired)
+		unifiedSigs = featureVec.IsSet(lnwire.UnifiedSigsRequired)
 
 		// The option-scid-alias channel type for a public channel is
 		// disallowed.
@@ -5087,6 +5092,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		ZeroConf:         zeroConf,
 		OptionScidAlias:  scid,
 		ScidAliasFeature: scidFeatureVal,
+		UnifiedSigs:      unifiedSigs,
 		Memo:             msg.Memo,
 		TapscriptRoot:    tapscriptRoot,
 	}
