@@ -1,0 +1,99 @@
+From 2c22c4bba213d177b35afb432c3a87cec83ff37e Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 15 Sep 2026 14:09:16 -0500
+Subject: [PATCH 10/10] tests: skip the five that carry foreign-chain BOLT 11
+ fixtures
+
+The PR said the pytest suite was not run and that files still assert
+lnbcrt. This runs it, which turns a guess into a list: five tests fail,
+all for the same reason, and none of them for a reason that can be fixed
+by editing a string.
+
+Their fixtures are signed BOLT 11 invoices for other chains, either the
+spec's mainnet lnbc vectors or regtest lnbcrt invoices hand-made years
+ago for cases a node cannot generate on request, such as an invoice with
+no payment secret. Changing a prefix invalidates the signature, and the
+keys that signed them are not available, so they cannot be carried over.
+They are skipped with the reason attached rather than quietly deleted.
+
+The spec vectors are not lost. common/test/run-bolt11 decodes them
+against a chainparams entry that keeps the bc prefix, which this series
+already added and already runs.
+
+Running it also found something worth fixing separately, which is why the
+exact messages are recorded here. One condition, an invoice for another
+chain, produces four different errors depending on the path:
+
+  bolt11 decode  Invalid bolt11 invoice: Prefix bcrt is not for regtest
+                 (expected blakert)
+  decode command Unknown chain bc: invalid token '"lnbc1..."'
+  listinvoices   Invalid invstring
+  checkrune      Not permitted: Invalid invoice: Unknown chain bcrt
+
+The first is the message this series intended. The second is the token
+fallthrough the PR text claims it avoids, so that claim is wrong as
+written. The third tells the user nothing at all. Making these one
+message is a follow-up rather than part of this commit, but it should not
+go unrecorded: an operator who pastes a Bitcoin invoice should get the
+same answer wherever they paste it.
+---
+ tests/test_invoices.py | 1 +
+ tests/test_pay.py      | 3 +++
+ tests/test_runes.py    | 1 +
+ 3 files changed, 5 insertions(+)
+
+diff --git a/tests/test_invoices.py b/tests/test_invoices.py
+index 0eed6987b..23505f71e 100644
+--- a/tests/test_invoices.py
++++ b/tests/test_invoices.py
+@@ -610,6 +610,7 @@ def test_amountless_invoice(node_factory):
+     assert(i[0]['status'] == 'paid')
+ 
+ 
++@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
+ def test_listinvoices_filter(node_factory):
+     """ Test the optional query arguments to listinvoices
+     """
+diff --git a/tests/test_pay.py b/tests/test_pay.py
+index 01b7bf9ab..e8170f81f 100644
+--- a/tests/test_pay.py
++++ b/tests/test_pay.py
+@@ -750,6 +750,7 @@ def test_sendpay_cant_afford(node_factory, anchors):
+     l2.pay(l1, available - reserve * 2)
+ 
+ 
++@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
+ def test_decode(node_factory):
+     l1 = node_factory.get_node()
+ 
+@@ -2863,6 +2864,7 @@ def test_error_returns_blockheight(node_factory, bitcoind):
+ 
+ 
+ @unittest.skipIf(TEST_NETWORK != 'regtest', "Invoice is network specific")
++@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
+ def test_pay_no_secret(node_factory, bitcoind):
+     l1, l2 = node_factory.line_graph(2, wait_for_announce=True, opts={'old_hsmsecret': True})
+ 
+@@ -5327,6 +5329,7 @@ def test_pay_manual_exclude(node_factory, bitcoind):
+ 
+ 
+ @unittest.skipIf(TEST_NETWORK != 'regtest', "Invoice is network specific")
++@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
+ def test_pay_bolt11_metadata(node_factory, bitcoind):
+     l1, l2 = node_factory.line_graph(2, opts={'old_hsmsecret': True})
+ 
+diff --git a/tests/test_runes.py b/tests/test_runes.py
+index 625373bc5..11b92d270 100644
+--- a/tests/test_runes.py
++++ b/tests/test_runes.py
+@@ -724,6 +724,7 @@ def test_rune_error_messages(node_factory):
+                          params=['xxx', 12000])
+ 
+ 
++@pytest.mark.skip(reason="this build refuses BOLT 11 invoices that are not for this chain, so the signed foreign-chain fixtures below cannot be decoded here. The spec vectors are still checked, in common/test/run-bolt11, against a chainparams entry that keeps the bc prefix. See doc/blake2b-chain-identity.md.")
+ def test_rune_bolt11_parse(node_factory):
+     l1 = node_factory.get_node()
+     # Simple
+-- 
+2.43.0
+

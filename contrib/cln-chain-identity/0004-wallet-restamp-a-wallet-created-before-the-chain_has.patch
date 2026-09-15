@@ -1,7 +1,7 @@
 From 648384c4e6039075f787fd8c1fc7de78aae182f1 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
-Subject: [PATCH 4/9] wallet: restamp a wallet created before the chain_hash
+Subject: [PATCH 04/10] wallet: restamp a wallet created before the chain_hash
  changed
 
 A wallet is stamped with the chain's chain_hash at creation and refused

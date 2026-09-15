@@ -1,8 +1,8 @@
 From 0b4e279e2d951e4e68b45535edd35f42bc97f8b8 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:08:36 -0500
-Subject: [PATCH 8/9] doc: reserve an odd, high feature bit, split by where it
- is set
+Subject: [PATCH 08/10] doc: reserve an odd, high feature bit, split by where
+ it is set
 
 privkeyio's v26.06.7-blake2b.4 signals option_blake2b as compulsory bit
 68 in init and will not peer with a node that does not advertise it. This
