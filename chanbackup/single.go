@@ -67,11 +67,23 @@ const (
 	// closeTxVersionMask is the byte mask used that is ORed to version byte
 	// on wire indicating that the backup has CloseTxInputs.
 	closeTxVersionMask = 1 << 7
+
+	// unifiedSigsVersionMask is ORed into the version byte when this
+	// channel's bilateral signatures opt into the unified signature hash.
+	//
+	// A mask rather than a version of its own, for the same reason the
+	// channel type treats the bit as orthogonal: it applies to any
+	// commitment type, so giving it versions would mean one per existing
+	// version. This caps the version enum at 63, which is 56 more than
+	// are in use.
+	unifiedSigsVersionMask = 1 << 6
 )
 
 // Encode returns encoding of the version to put into channel backup.
-// Argument "closeTx" specifies if the backup includes force close transaction.
-func (v SingleBackupVersion) Encode(closeTx bool) byte {
+// Argument "closeTx" specifies if the backup includes force close transaction,
+// and "unifiedSigs" whether the channel's bilateral signatures opt into the
+// unified signature hash.
+func (v SingleBackupVersion) Encode(closeTx, unifiedSigs bool) byte {
 	encoded := byte(v)
 
 	// If the backup includes closing transaction, set this bit in the
@@ -80,20 +92,33 @@ func (v SingleBackupVersion) Encode(closeTx bool) byte {
 		encoded |= closeTxVersionMask
 	}
 
+	// A backup that does not record this would describe a channel whose
+	// signatures it cannot reproduce: restored without the bit, the
+	// channel signs SIGHASH_ALL where every signature on it was made
+	// under SIGHASH_ALL|SIGHASH_UNIFIED.
+	if unifiedSigs {
+		encoded |= unifiedSigsVersionMask
+	}
+
 	return encoded
 }
 
 // DecodeVersion decodes the encoding of the version from a channel backup.
-// It returns the version and if the backup includes the force close tx.
-func DecodeVersion(encoded byte) (SingleBackupVersion, bool) {
+// It returns the version, whether the backup includes the force close tx, and
+// whether the channel used the unified signature hash.
+func DecodeVersion(encoded byte) (SingleBackupVersion, bool, bool) {
 	// Find if it has a closing transaction by inspecting the bit.
 	closeTx := (encoded & closeTxVersionMask) != 0
 
-	// The version byte also encodes the closeTxVersion feature, so we
-	// extract it here and return it separately to the backup version.
-	version := SingleBackupVersion(encoded &^ closeTxVersionMask)
+	unifiedSigs := (encoded & unifiedSigsVersionMask) != 0
 
-	return version, closeTx
+	// The version byte also encodes those two features, so we extract
+	// them here and return them separately to the backup version.
+	version := SingleBackupVersion(
+		encoded &^ (closeTxVersionMask | unifiedSigsVersionMask),
+	)
+
+	return version, closeTx, unifiedSigs
 }
 
 // IsTaproot returns if this is a backup of a taproot channel. This will also be
@@ -199,6 +224,11 @@ type Single struct {
 	//
 	// The field is optional.
 	CloseTxInputs fn.Option[CloseTxInputs]
+
+	// UnifiedSigs is true when this channel's bilateral signatures opt
+	// into the unified signature hash. Carried in the version byte rather
+	// than as a field of its own, see unifiedSigsVersionMask.
+	UnifiedSigs bool
 }
 
 // CloseTxInputs contains data needed to produce a force close transaction
@@ -305,6 +335,7 @@ func NewSingle(channel *channeldb.OpenChannel,
 		LocalChanCfg:     channel.LocalChanCfg,
 		RemoteChanCfg:    channel.RemoteChanCfg,
 		ShaChainRootDesc: shaChainRootDesc,
+		UnifiedSigs:      channel.ChanType.HasUnifiedSigs(),
 	}
 
 	switch {
@@ -430,7 +461,7 @@ func (s *Single) Serialize(w io.Writer) error {
 	}
 
 	// Encode version enum and hasCloseTx flag to version byte.
-	version := s.Version.Encode(s.CloseTxInputs.IsSome())
+	version := s.Version.Encode(s.CloseTxInputs.IsSome(), s.UnifiedSigs)
 
 	// Serialize CloseTxInputs if it is provided. Fill err if it fails.
 	err := fn.MapOptionZ(s.CloseTxInputs, func(inputs CloseTxInputs) error {
@@ -585,7 +616,7 @@ func (s *Single) Deserialize(r io.Reader) error {
 
 	// Decode version byte to version enum and hasCloseTx flag.
 	var hasCloseTx bool
-	s.Version, hasCloseTx = DecodeVersion(version)
+	s.Version, hasCloseTx, s.UnifiedSigs = DecodeVersion(version)
 
 	switch s.Version {
 	case DefaultSingleVersion:

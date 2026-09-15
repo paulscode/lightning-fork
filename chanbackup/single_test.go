@@ -63,6 +63,10 @@ func assertSingleEqual(t *testing.T, a, b Single) {
 		t.Fatalf("initiators don't match: %v vs %v", a.IsInitiator,
 			b.IsInitiator)
 	}
+	if a.UnifiedSigs != b.UnifiedSigs {
+		t.Fatalf("unified sigs don't match: %v vs %v", a.UnifiedSigs,
+			b.UnifiedSigs)
+	}
 	if a.ChainHash != b.ChainHash {
 		t.Fatalf("chainhash doesn't match: %v vs %v", a.ChainHash,
 			b.ChainHash)
@@ -268,6 +272,7 @@ func TestVersionEncoding(t *testing.T) {
 	cases := []struct {
 		version     SingleBackupVersion
 		hasCloseTx  bool
+		unifiedSigs bool
 		versionByte byte
 	}{
 		{
@@ -290,15 +295,33 @@ func TestVersionEncoding(t *testing.T) {
 			hasCloseTx:  true,
 			versionByte: AnchorsCommitVersion | closeTxVersionMask,
 		},
+		{
+			version:     AnchorsZeroFeeHtlcTxCommitVersion,
+			unifiedSigs: true,
+			versionByte: AnchorsZeroFeeHtlcTxCommitVersion |
+				unifiedSigsVersionMask,
+		},
+		{
+			// Both flags at once: they are independent bits and
+			// neither may eat the other or the version enum.
+			version:     AnchorsZeroFeeHtlcTxCommitVersion,
+			hasCloseTx:  true,
+			unifiedSigs: true,
+			versionByte: AnchorsZeroFeeHtlcTxCommitVersion |
+				closeTxVersionMask | unifiedSigsVersionMask,
+		},
 	}
 
 	for _, tc := range cases {
-		gotVersionByte := tc.version.Encode(tc.hasCloseTx)
+		gotVersionByte := tc.version.Encode(tc.hasCloseTx, tc.unifiedSigs)
 		require.Equal(t, tc.versionByte, gotVersionByte)
 
-		gotVersion, gotHasCloseTx := DecodeVersion(tc.versionByte)
+		gotVersion, gotHasCloseTx, gotUnified := DecodeVersion(
+			tc.versionByte,
+		)
 		require.Equal(t, tc.version, gotVersion)
 		require.Equal(t, tc.hasCloseTx, gotHasCloseTx)
+		require.Equal(t, tc.unifiedSigs, gotUnified)
 	}
 }
 
@@ -673,3 +696,44 @@ func TestSingleUnconfirmedChannel(t *testing.T) {
 }
 
 // TODO(roasbsef): fuzz parsing
+
+// TestSingleUnifiedSigsRoundTrip checks that the unified signature hash flag
+// survives packing and unpacking. A backup that loses it describes a channel
+// whose signatures it cannot reproduce: restored without the bit, the channel
+// would sign SIGHASH_ALL where every signature on it was made under
+// SIGHASH_ALL|SIGHASH_UNIFIED.
+func TestSingleUnifiedSigsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	keyRing := &lnencrypt.MockKeyRing{}
+
+	for _, unified := range []bool{true, false} {
+		channel, err := genRandomOpenChannelShell()
+		require.NoError(t, err)
+
+		channel.ChanType = channeldb.SingleFunderTweaklessBit |
+			channeldb.AnchorOutputsBit |
+			channeldb.ZeroHtlcTxFeeBit
+		if unified {
+			channel.ChanType |= channeldb.UnifiedSigsBit
+		}
+
+		single := NewSingle(channel, nil)
+		require.Equal(t, unified, single.UnifiedSigs)
+
+		var b bytes.Buffer
+		require.NoError(t, single.PackToWriter(&b, keyRing))
+
+		var unpacked Single
+		require.NoError(
+			t, unpacked.UnpackFromReader(&b, keyRing),
+		)
+		require.Equal(t, unified, unpacked.UnifiedSigs)
+
+		// The flag must not disturb the version it shares a byte with.
+		require.Equal(
+			t, SingleBackupVersion(AnchorsZeroFeeHtlcTxCommitVersion),
+			unpacked.Version,
+		)
+	}
+}
