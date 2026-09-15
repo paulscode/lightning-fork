@@ -1,0 +1,749 @@
+From d4ad36b1bd43cf91d08c011297e0aaba0a816e32 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Mon, 14 Sep 2026 13:03:05 -0500
+Subject: [PATCH 7/7] Take onion messages from peers without channels, and
+ reply where the request went
+
+The onion messages a node on this chain exists to receive, a pool's
+invoice requests for its offers and the replies to its own requests,
+come from nodes that have no channel with it, and Core Lightning hands
+an onion message straight to any node it is connected to, channel or
+not. lnd's channel-presence gate dropped them before reading them: in
+the lab, a reply from Core Lightning relayed through a peer of the
+requester was lost at that peer. The gate is now off by default;
+protocol.onion-msg-channel-gate turns it back on, and the rate limiters
+still bound what any peer can send. Since the gate no longer keeps
+strangers out of the per-peer limiter registry, the registry is bounded:
+past 4096 buckets a newcomer takes the place of a bucket that has
+refilled, which changes nothing for that peer, or shares one overflow
+bucket with every other newcomer until one frees up.
+
+A request that goes straight to the node that reads it, as a peer or
+over a one-hop path whose introduction node is that peer, now carries a
+reply path that starts at this node: that node sees the connection the
+request arrives on anyway, and a path through a peer of ours only adds a
+hop whose owner may drop messages from strangers. A request sent any
+other way keeps a reply path that starts at a peer, so the recipient
+learns a peer of ours and not us.
+
+The Core Lightning port of this chain (privkeyio/lightning) keeps
+Bitcoin's chain identity, so the two nodes refuse each other at init;
+contrib/cln-chain-identity holds a patch series giving it the identity
+in docs/blake2b-chain-identity.md, with the proposal and the lab
+results. The document now says in which byte order the tagged hash is
+computed, which it did not.
+
+(cherry picked from commit 2dabebd7e95621add42317813da2df8cf323ad51)
+---
+ docs/bolt12-offers.md               |  26 ++++---
+ docs/onion_message_rate_limiting.md |  23 ++++++-
+ lncfg/protocol.go                   |  22 +++---
+ lncfg/protocol_integration.go       |  22 +++---
+ offerpay/client.go                  |  19 +++---
+ offerpay/client_test.go             |  14 +++-
+ onionmessage/ratelimit.go           | 101 +++++++++++++++++++++++-----
+ onionmessage/ratelimit_test.go      |  49 ++++++++++++++
+ onionmsg/messenger.go               |  65 ++++++++++++++++++
+ onionmsg/messenger_test.go          |  58 ++++++++++++++++
+ peer/brontide.go                    |   9 +--
+ sample-lnd.conf                     |  17 +++--
+ server.go                           |   5 +-
+ 13 files changed, 364 insertions(+), 66 deletions(-)
+
+diff --git a/docs/bolt12-offers.md b/docs/bolt12-offers.md
+index e3a6635e3..fc7b05452 100644
+--- a/docs/bolt12-offers.md
++++ b/docs/bolt12-offers.md
+@@ -1,10 +1,9 @@
+ # BOLT 12 offers
+ 
+-Lightning Fork can mint BOLT 12 offers, answer invoice requests for them
+-over onion messages, and fetch and pay other nodes' offers. The first of
+-these is what a miner needs to be paid over Lightning by a pool that pays to
+-offers, the way OCEAN does on the SHA256d chain and CONVOY is expected to on
+-this one.
++This build can mint BOLT 12 offers, answer invoice requests for them over
++onion messages, and fetch and pay other nodes' offers. The first of these is
++what a miner needs in order to be paid over Lightning by a pool that pays to
++offers, the way OCEAN does.
+ 
+ Everything here is native to the node. There is no side-car and nothing to
+ run besides `lnd`.
+@@ -103,7 +102,7 @@ lncli offer decode lno1...
+ decodes an offer, an invoice request (`lnr1...`) or an invoice (`lni1...`)
+ and reports whether it names this chain, whether it passes the checks a
+ payer makes, and whether this node minted it. An offer that names no chain
+-is a Bitcoin mainnet offer and is reported as not for this chain.
++BOLT 12 lets an offer name no chain at all, which means Bitcoin mainnet.
+ 
+ ## What the node does with a request
+ 
+@@ -137,9 +136,18 @@ builds carry. Its RPCs are under `offersrpc.Offers`, and over REST under
+ `/v2/offers`. The macaroon entities are `invoices` for minting, listing and
+ decoding, `offchain` read for fetching and `offchain` write for paying.
+ 
++## Reaching the node
++
++A pool's invoice request arrives as an onion message from a node that has
++no channel with this one. lnd drops onion messages from such peers by
++default (its channel-presence gate); here that gate is off, and the onion
++message rate limiters bound what any peer can send. `protocol.onion-msg-channel-gate=true`
++turns the gate back on. Requests this node sends carry a reply path that
++starts at this node whenever the request goes straight to the node it is
++for, so the reply meets no other node's gate.
++
+ ## Compatibility
+ 
+ The offer, request and invoice formats follow BOLT 12 as implemented in
+-LND, Core Lightning and LDK, with this chain's hash in `offer_chains` and
+-`invreq_chain`. The onion messages follow BOLT 4. Which pools pay to offers
+-on this chain, and what description they ask for, is the pool's to say.
++LND, Core Lightning and LDK. The onion messages follow BOLT 4. Which pools
++pay to offers, and what description they ask for, is the pool's to say.
+diff --git a/docs/onion_message_rate_limiting.md b/docs/onion_message_rate_limiting.md
+index c683650a4..bc7e6f946 100644
+--- a/docs/onion_message_rate_limiting.md
++++ b/docs/onion_message_rate_limiting.md
+@@ -96,6 +96,26 @@ channel-presence gate: only peers with a channel ever allocate a
+ per-peer bucket in the first place, so the set cannot grow
+ unboundedly through connection churn.
+ 
++## On this chain the gate is off by default
++
++The onion messages a Lightning Fork node exists to receive are a mining
++pool's invoice requests for its BOLT 12 offers, and the replies to its own
++requests. Both come from a node that has no channel with it: a pool pays
++its miners over routes, not over channels to each of them, and Core
++Lightning hands an onion message straight to a node it is connected to
++whenever it is, channel or not. With the gate on, such a request is
++dropped before it is read, and the payout never happens. The gate is
++therefore off here: `protocol.onion-msg-channel-gate=true` turns it back
++on, for a node that wants upstream's behaviour and gets its onion
++messages from channel peers only. The rate limiters below still bound
++what any peer, channel or not, can send.
++
++The same gate on other lnd nodes is why a request or reply that reaches
++one of them through a peer connection without a channel is lost there.
++This node builds its own reply paths to start at itself whenever it hands
++a request straight to the node it is for, so the reply comes back the same
++way and meets no third node's gate.
++
+ ## The escape hatch: `protocol.onion-msg-relay-all`
+ 
+ Some operators run nodes that are supposed to accept onion messages
+@@ -126,7 +146,8 @@ section.
+ | `protocol.onion-msg-peer-burst-bytes` | `262144` | Per-peer token bucket depth in bytes. |
+ | `protocol.onion-msg-global-kbps` | `5120` | Global sustained rate in decimal kilobits per second. |
+ | `protocol.onion-msg-global-burst-bytes` | `1638400` | Global token bucket depth in bytes. |
+-| `protocol.onion-msg-relay-all` | `false` | If true, skip the channel-presence gate. |
++| `protocol.onion-msg-channel-gate` | `false` | If true, drop onion messages from peers with no open channel, as upstream lnd does. Off here: see above. |
++| `protocol.onion-msg-relay-all` | `false` | Upstream's escape hatch; on this chain the gate is already off unless `onion-msg-channel-gate` is set, which this overrides. |
+ 
+ ### Rules at startup
+ 
+diff --git a/lncfg/protocol.go b/lncfg/protocol.go
+index e95e3cf4c..0f2d81ea4 100644
+--- a/lncfg/protocol.go
++++ b/lncfg/protocol.go
+@@ -97,15 +97,19 @@ type ProtocolOptions struct {
+ 	// with a zero rate, disables the global limiter.
+ 	OnionMsgGlobalBurstBytes uint64 `long:"onion-msg-global-burst-bytes" description:"token bucket burst for the global onion message limiter, in bytes; set both this and onion-msg-global-kbps to 0 to disable the global limiter"`
+ 
+-	// OnionMsgRelayAll disables the channel-presence gate on the onion
+-	// message ingress path. When false (the default), incoming onion
+-	// messages from peers that do not have at least one fully open
+-	// channel with us are dropped before the rate limiters are
+-	// consulted: without a funded channel, a new peer identity is free
+-	// and the global rate limiter alone is easy to saturate. Setting
+-	// this to true admits onion messages from any peer into the
+-	// limiter pipeline, at the cost of that Sybil-resistance property.
+-	OnionMsgRelayAll bool `long:"onion-msg-relay-all" description:"accept incoming onion messages from peers with no fully open channel; by default only peers with at least one active channel are admitted to the onion message ingress path"`
++	// OnionMsgRelayAll is upstream's switch that disables the
++	// channel-presence gate on the onion message ingress path. Here the
++	// gate is off unless OnionMsgChannelGate is set, so this changes
++	// nothing by default; when both are set, this wins.
++	OnionMsgRelayAll bool `long:"onion-msg-relay-all" description:"accept incoming onion messages from peers with no fully open channel (the default here; kept for configurations that set it)"`
++
++	// OnionMsgChannelGate turns the channel-presence gate on. Upstream lnd
++	// has it on by default; here it is off, because the onion messages
++	// this node exists to receive, a pool's invoice requests for its
++	// offers, come from a node that has no channel with it and that
++	// connects directly when it can. The rate limiters still bound what
++	// a channel-less peer can send. OnionMsgRelayAll overrides this.
++	OnionMsgChannelGate bool `long:"onion-msg-channel-gate" description:"drop incoming onion messages from peers with no fully open channel, as upstream lnd does; off by default here, since a pool's invoice requests for your offers arrive from a node with no channel to you"`
+ 
+ 	// NoExperimentalAccountabilityOption disables experimental accountability.
+ 	NoExperimentalAccountabilityOption bool `long:"no-experimental-accountability" description:"do not forward experimental accountability signals"`
+diff --git a/lncfg/protocol_integration.go b/lncfg/protocol_integration.go
+index 4fcaa642c..57e6a5942 100644
+--- a/lncfg/protocol_integration.go
++++ b/lncfg/protocol_integration.go
+@@ -100,15 +100,19 @@ type ProtocolOptions struct {
+ 	// with a zero rate, disables the global limiter.
+ 	OnionMsgGlobalBurstBytes uint64 `long:"onion-msg-global-burst-bytes" description:"token bucket burst for the global onion message limiter, in bytes; set both this and onion-msg-global-kbps to 0 to disable the global limiter"`
+ 
+-	// OnionMsgRelayAll disables the channel-presence gate on the onion
+-	// message ingress path. When false (the default), incoming onion
+-	// messages from peers that do not have at least one fully open
+-	// channel with us are dropped before the rate limiters are
+-	// consulted: without a funded channel, a new peer identity is free
+-	// and the global rate limiter alone is easy to saturate. Setting
+-	// this to true admits onion messages from any peer into the
+-	// limiter pipeline, at the cost of that Sybil-resistance property.
+-	OnionMsgRelayAll bool `long:"onion-msg-relay-all" description:"accept incoming onion messages from peers with no fully open channel; by default only peers with at least one active channel are admitted to the onion message ingress path"`
++	// OnionMsgRelayAll is upstream's switch that disables the
++	// channel-presence gate on the onion message ingress path. Here the
++	// gate is off unless OnionMsgChannelGate is set, so this changes
++	// nothing by default; when both are set, this wins.
++	OnionMsgRelayAll bool `long:"onion-msg-relay-all" description:"accept incoming onion messages from peers with no fully open channel (the default here; kept for configurations that set it)"`
++
++	// OnionMsgChannelGate turns the channel-presence gate on. Upstream lnd
++	// has it on by default; here it is off, because the onion messages
++	// this node exists to receive, a pool's invoice requests for its
++	// offers, come from a node that has no channel with it and that
++	// connects directly when it can. The rate limiters still bound what
++	// a channel-less peer can send. OnionMsgRelayAll overrides this.
++	OnionMsgChannelGate bool `long:"onion-msg-channel-gate" description:"drop incoming onion messages from peers with no fully open channel, as upstream lnd does; off by default here, since a pool's invoice requests for your offers arrive from a node with no channel to you"`
+ 
+ 	// NoExperimentalAccountabilityOption disables experimental accountability.
+ 	NoExperimentalAccountabilityOption bool `long:"no-experimental-accountability" description:"do not forward experimental accountability signals"`
+diff --git a/offerpay/client.go b/offerpay/client.go
+index 5e6167d28..ac87400de 100644
+--- a/offerpay/client.go
++++ b/offerpay/client.go
+@@ -228,15 +228,13 @@ func (c *Client) FetchInvoice(ctx context.Context,
+ 	}
+ 
+ 	// A reply path of ours with a fresh secret, so the reply is matched
+-	// to this fetch and nothing else can pose as it.
++	// to this fetch and nothing else can pose as it. The messenger builds
++	// the path once it knows how the request leaves (see
++	// onionmsg.ReplyPathID).
+ 	var pathID [32]byte
+ 	if _, err := rand.Read(pathID[:]); err != nil {
+ 		return nil, err
+ 	}
+-	replyPath, err := c.cfg.Messenger.BuildReplyPath(ctx, pathID[:])
+-	if err != nil {
+-		return nil, fmt.Errorf("reply path: %w", err)
+-	}
+ 	p := &pending{reply: make(chan *onionmsg.Inbound, 1)}
+ 	c.mu.Lock()
+ 	c.pending[pathID] = p
+@@ -247,7 +245,7 @@ func (c *Client) FetchInvoice(ctx context.Context,
+ 		c.mu.Unlock()
+ 	}()
+ 
+-	usedPath, err := c.send(ctx, params.Offer, encoded, replyPath)
++	usedPath, err := c.send(ctx, params.Offer, encoded, pathID[:])
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -403,8 +401,7 @@ func (c *Client) buildRequest(params FetchParams) (*bolt12.InvoiceRequest,
+ // an issuer ignores a request for such an offer that comes any other way.
+ // The path used is returned, or nil for the node id.
+ func (c *Client) send(ctx context.Context, offer *bolt12.Offer,
+-	encoded []byte, replyPath *lnwire.BlindedPath) (*lnwire.BlindedPath,
+-	error) {
++	encoded []byte, replyPathID []byte) (*lnwire.BlindedPath, error) {
+ 
+ 	payload := []*lnwire.FinalHopTLV{{
+ 		TLVType: onionmsg.TypeInvoiceRequest, Value: encoded,
+@@ -421,7 +418,8 @@ func (c *Client) send(ctx context.Context, offer *bolt12.Offer,
+ 		for i := range paths {
+ 			err := c.cfg.Messenger.Send(ctx, onionmsg.Destination{
+ 				Path: &paths[i],
+-			}, payload, replyPath, onionmsg.AllowConnect())
++			}, payload, nil, onionmsg.AllowConnect(),
++				onionmsg.ReplyPathID(replyPathID))
+ 			if err == nil {
+ 				return &paths[i], nil
+ 			}
+@@ -444,7 +442,8 @@ func (c *Client) send(ctx context.Context, offer *bolt12.Offer,
+ 	}
+ 	err := c.cfg.Messenger.Send(ctx, onionmsg.Destination{
+ 		NodeID: issuer,
+-	}, payload, replyPath, onionmsg.AllowConnect())
++	}, payload, nil, onionmsg.AllowConnect(),
++		onionmsg.ReplyPathID(replyPathID))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("sending the request: %w", err)
+ 	}
+diff --git a/offerpay/client_test.go b/offerpay/client_test.go
+index ca60d540b..fb55b6fab 100644
+--- a/offerpay/client_test.go
++++ b/offerpay/client_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"context"
+ 	"encoding/binary"
+ 	"errors"
++	"fmt"
+ 	"sync"
+ 	"testing"
+ 	"time"
+@@ -40,9 +41,18 @@ type fakeMessenger struct {
+ 	nodeKey   *btcec.PrivateKey
+ }
+ 
+-func (f *fakeMessenger) Send(_ context.Context, dest onionmsg.Destination,
++func (f *fakeMessenger) Send(ctx context.Context, dest onionmsg.Destination,
+ 	payload []*lnwire.FinalHopTLV, reply *lnwire.BlindedPath,
+-	_ ...onionmsg.SendOption) error {
++	opts ...onionmsg.SendOption) error {
++
++	// The real messenger builds the reply path itself when asked to.
++	if id := onionmsg.ReplyPathIDFromOptions(opts); id != nil {
++		built, err := f.BuildReplyPath(ctx, id)
++		if err != nil {
++			return fmt.Errorf("reply path: %w", err)
++		}
++		reply = built
++	}
+ 
+ 	f.mu.Lock()
+ 	defer f.mu.Unlock()
+diff --git a/onionmessage/ratelimit.go b/onionmessage/ratelimit.go
+index f012951d5..8e5ce295c 100644
+--- a/onionmessage/ratelimit.go
++++ b/onionmessage/ratelimit.go
+@@ -2,6 +2,7 @@ package onionmessage
+ 
+ import (
+ 	"errors"
++	"sync"
+ 	"sync/atomic"
+ 	"time"
+ 
+@@ -132,14 +133,17 @@ func NewGlobalLimiter(kbps uint64, burstBytes uint64) RateLimiter {
+ // often it cycles the connection, and the per-peer rate becomes a real
+ // ceiling rather than a per-connection ceiling.
+ //
+-// The memory cost of retention is bounded by the number of channel
+-// peers that have ever sent an onion message: the ingress call site
+-// gates AllowN on the peer having at least one open channel before
+-// touching this registry, so random connecting strangers never allocate
+-// a bucket. At a realistic few hundred to few thousand channel partners
+-// and ~200 bytes per entry (rate.Limiter plus SyncMap overhead), the
+-// registry stays comfortably sub-megabyte for the lifetime of the
+-// process.
++// The memory cost of retention is bounded by the registry itself, since
++// on this chain the ingress call site admits peers with no channel by
++// default (see lncfg.ProtocolOptions.OnionMsgChannelGate) and so any
++// node key that sends one message would otherwise pin an entry for the
++// life of the process. Past maxPeerBuckets entries, a new peer first
++// evicts a bucket that has refilled completely, which loses nothing:
++// a full bucket and a fresh one are the same bucket. When none has, the
++// new peer shares one overflow bucket with every other newcomer until
++// one frees up, so that a flood of identities throttles itself rather
++// than the registry growing. At ~200 bytes per entry (rate.Limiter plus
++// SyncMap overhead) the registry stays under a megabyte.
+ //
+ // The underlying bucket registry is an lnutils.SyncMap rather than a plain
+ // map guarded by a mutex. Per-peer keys are stable for the lifetime of the
+@@ -153,8 +157,19 @@ type PeerRateLimiter struct {
+ 	peers    lnutils.SyncMap[[33]byte, *rate.Limiter]
+ 	dropped  atomic.Uint64
+ 	firstLog atomic.Bool
++
++	// maxPeers bounds the registry; count tracks its size. The slow
++	// path that adds an entry past the bound holds evictMu.
++	maxPeers int
++	count    atomic.Int64
++	evictMu  sync.Mutex
++	overflow *rate.Limiter
+ }
+ 
++// DefaultMaxPeerBuckets is the number of per-peer buckets kept before a
++// newcomer has to take a refilled one or share the overflow bucket.
++const DefaultMaxPeerBuckets = 4096
++
+ // FirstDropClaim atomically returns true exactly once, on the first call.
+ // The caller is responsible for only invoking it after a rejection has
+ // actually occurred. The ingress site uses this to emit a single
+@@ -170,10 +185,19 @@ func (p *PeerRateLimiter) FirstDropClaim() bool {
+ // disables limiting; in that case AllowN always returns true and no
+ // per-peer state is retained.
+ func NewPeerRateLimiter(kbps uint64, burstBytes uint64) *PeerRateLimiter {
+-	p := &PeerRateLimiter{}
++	return NewPeerRateLimiterBounded(kbps, burstBytes, DefaultMaxPeerBuckets)
++}
++
++// NewPeerRateLimiterBounded is NewPeerRateLimiter with the registry bound
++// given; a bound of zero or less keeps every bucket.
++func NewPeerRateLimiterBounded(kbps uint64, burstBytes uint64,
++	maxPeers int) *PeerRateLimiter {
++
++	p := &PeerRateLimiter{maxPeers: maxPeers}
+ 	if kbps > 0 && burstBytes > 0 {
+ 		p.rate = rate.Limit(kbpsToBytesPerSecond(kbps))
+ 		p.burst = int(burstBytes)
++		p.overflow = rate.NewLimiter(p.rate, p.burst)
+ 	}
+ 
+ 	return p
+@@ -195,12 +219,7 @@ func (p *PeerRateLimiter) AllowN(peer [33]byte, n int) bool {
+ 
+ 	lim, ok := p.peers.Load(peer)
+ 	if !ok {
+-		// Allocate a fresh limiter and race for ownership via
+-		// LoadOrStore: if a concurrent caller inserted one first,
+-		// we discard ours and use theirs so that every peer ends
+-		// up with a single authoritative bucket.
+-		newLim := rate.NewLimiter(p.rate, p.burst)
+-		lim, _ = p.peers.LoadOrStore(peer, newLim)
++		lim = p.bucketFor(peer)
+ 	}
+ 
+ 	if lim.AllowN(time.Now(), n) {
+@@ -211,6 +230,58 @@ func (p *PeerRateLimiter) AllowN(peer [33]byte, n int) bool {
+ 	return false
+ }
+ 
++// bucketFor returns the bucket a peer not yet in the registry gets: its
++// own while the registry has room or a refilled bucket can make room,
++// the shared overflow bucket otherwise. The slow path is serialised so
++// the bound holds under concurrent newcomers.
++func (p *PeerRateLimiter) bucketFor(peer [33]byte) *rate.Limiter {
++	p.evictMu.Lock()
++	defer p.evictMu.Unlock()
++
++	// A concurrent caller may have added it while we waited.
++	if lim, ok := p.peers.Load(peer); ok {
++		return lim
++	}
++	if p.maxPeers > 0 && p.count.Load() >= int64(p.maxPeers) &&
++		!p.evictRefilled() {
++
++		return p.overflow
++	}
++	lim := rate.NewLimiter(p.rate, p.burst)
++	p.peers.Store(peer, lim)
++	p.count.Add(1)
++
++	return lim
++}
++
++// evictRefilled drops one bucket that has refilled completely, reporting
++// whether it found one. Only ever called with evictMu held.
++func (p *PeerRateLimiter) evictRefilled() bool {
++	var victim *[33]byte
++	p.peers.Range(func(key [33]byte, lim *rate.Limiter) bool {
++		if lim.Tokens() >= float64(p.burst) {
++			k := key
++			victim = &k
++
++			return false
++		}
++
++		return true
++	})
++	if victim == nil {
++		return false
++	}
++	p.peers.Delete(*victim)
++	p.count.Add(-1)
++
++	return true
++}
++
++// Buckets returns how many per-peer buckets the registry holds.
++func (p *PeerRateLimiter) Buckets() int {
++	return int(p.count.Load())
++}
++
+ // Dropped returns the total number of onion messages this registry has
+ // rejected since process start, summed across all peers.
+ func (p *PeerRateLimiter) Dropped() uint64 {
+diff --git a/onionmessage/ratelimit_test.go b/onionmessage/ratelimit_test.go
+index c43a9ef1c..3f03906a8 100644
+--- a/onionmessage/ratelimit_test.go
++++ b/onionmessage/ratelimit_test.go
+@@ -1,9 +1,11 @@
+ package onionmessage
+ 
+ import (
++	"golang.org/x/time/rate"
+ 	"sync"
+ 	"sync/atomic"
+ 	"testing"
++	"time"
+ 
+ 	"github.com/stretchr/testify/require"
+ )
+@@ -245,3 +247,50 @@ func TestPeerRateLimiterConcurrentAllowN(t *testing.T) {
+ func peerMapLen(p *PeerRateLimiter) int {
+ 	return p.peers.Len()
+ }
++
++// TestPeerRateLimiterBounded checks that the registry never grows past
++// its bound: a newcomer takes a refilled bucket's place, and when every
++// bucket is drained it shares the overflow bucket instead.
++func TestPeerRateLimiterBounded(t *testing.T) {
++	t.Parallel()
++
++	// 1 kbps = 125 bytes/s, burst 100 bytes: a drained bucket refills
++	// in under a second, a nearly full one in a few milliseconds.
++	p := NewPeerRateLimiterBounded(1, 100, 2)
++	peer := func(i byte) [33]byte {
++		var k [33]byte
++		k[0] = i
++
++		return k
++	}
++
++	require.True(t, p.AllowN(peer(1), 10))
++	require.True(t, p.AllowN(peer(2), 10))
++	require.Equal(t, 2, p.Buckets())
++
++	// Once the buckets have refilled, the third peer evicts one of
++	// them and gets its own bucket; the registry stays at its bound.
++	time.Sleep(200 * time.Millisecond)
++	require.True(t, p.AllowN(peer(3), 10))
++	require.Equal(t, 2, p.Buckets())
++
++	// Drain every bucket in the registry, then a newcomer has nothing
++	// to evict and shares the overflow bucket: the first fills it, the
++	// second is refused, and the registry has not grown.
++	time.Sleep(200 * time.Millisecond)
++	p.peers.Range(func(key [33]byte, _ *rate.Limiter) bool {
++		require.True(t, p.AllowN(key, 100))
++
++		return true
++	})
++	require.True(t, p.AllowN(peer(4), 100), "the overflow bucket is full")
++	require.False(t, p.AllowN(peer(5), 100), "and shared")
++	require.Equal(t, 2, p.Buckets())
++
++	// An unbounded registry keeps every bucket.
++	u := NewPeerRateLimiterBounded(1, 100, 0)
++	for i := byte(1); i <= 10; i++ {
++		require.True(t, u.AllowN(peer(i), 1))
++	}
++	require.Equal(t, 10, u.Buckets())
++}
+diff --git a/onionmsg/messenger.go b/onionmsg/messenger.go
+index 38dbb629e..699735b0a 100644
+--- a/onionmsg/messenger.go
++++ b/onionmsg/messenger.go
+@@ -158,6 +158,33 @@ type SendOption func(*sendOptions)
+ 
+ type sendOptions struct {
+ 	allowConnect bool
++	replyPathID  []byte
++}
++
++// ReplyPathID has the send build the reply path itself, carrying pathID,
++// once it knows how the message leaves. Handed straight to the node that
++// reads it (a peer, or a one-hop blinded path whose introduction node is a
++// peer), the path starts at this node: that node sees the connection the
++// message arrives on anyway, and a path through a peer of ours would only
++// add a hop whose owner may drop messages from strangers (lnd's
++// channel-presence gate). Sent any other way, the path starts at a peer,
++// so the recipient learns a peer of ours and not us. The replyPath
++// argument of Send is ignored when this is set.
++func ReplyPathID(pathID []byte) SendOption {
++	return func(o *sendOptions) {
++		o.replyPathID = pathID
++	}
++}
++
++// ReplyPathIDFromOptions returns the path id ReplyPathID set, or nil. For
++// fakes of the Messenger in tests.
++func ReplyPathIDFromOptions(opts []SendOption) []byte {
++	var options sendOptions
++	for _, opt := range opts {
++		opt(&options)
++	}
++
++	return options.replyPathID
+ }
+ 
+ // AllowConnect lets the send open a connection to the first hop or the
+@@ -508,6 +535,35 @@ func offerPathSessionKey(pathSecret [32]byte,
+ 	return key
+ }
+ 
++// isDirect reports whether a message handed to first goes straight to
++// whoever reads it: a node reached as a peer, or a one-hop blinded path
++// whose introduction node is that peer, which is then the recipient
++// itself. Either way that node sees where the message came from.
++func isDirect(dest Destination, first *btcec.PublicKey) bool {
++	if dest.NodeID != nil {
++		return first.IsEqual(dest.NodeID)
++	}
++	if dest.Path == nil || len(dest.Path.Hops) != 1 {
++		return false
++	}
++	intro, ok := dest.Path.IntroductionNode.(lnwire.PubkeyIntro)
++
++	return ok && intro.Pubkey != nil && first.IsEqual(intro.Pubkey)
++}
++
++// replyPathFor builds the reply path for a send: starting at this node when
++// the message goes straight to its destination, at a peer otherwise. See
++// ReplyPathID.
++func (m *Messenger) replyPathFor(ctx context.Context, pathID []byte,
++	direct bool) (*lnwire.BlindedPath, error) {
++
++	if direct {
++		return m.buildPathToSelf(nil, pathID, nil)
++	}
++
++	return m.BuildReplyPath(ctx, pathID)
++}
++
+ // BuildReplyPath builds one blinded path to this node for a reply_path,
+ // carrying pathID. It goes through an introduction peer when one is
+ // available, a channel peer first, and is otherwise a single-hop path
+@@ -746,6 +802,15 @@ func (m *Messenger) Send(ctx context.Context, dest Destination,
+ 		return err
+ 	}
+ 
++	if options.replyPathID != nil {
++		replyPath, err = m.replyPathFor(
++			ctx, options.replyPathID, isDirect(dest, first),
++		)
++		if err != nil {
++			return fmt.Errorf("reply path: %w", err)
++		}
++	}
++
+ 	sphinxPath, err := route.OnionMessageBlindedPathToSphinxPath(
+ 		full, replyPath, payload,
+ 	)
+diff --git a/onionmsg/messenger_test.go b/onionmsg/messenger_test.go
+index fb5442fd6..897570658 100644
+--- a/onionmsg/messenger_test.go
++++ b/onionmsg/messenger_test.go
+@@ -676,6 +676,64 @@ func TestSendToNode(t *testing.T) {
+ 	require.NotErrorIs(t, err, ErrUnreachable)
+ }
+ 
++// TestReplyPathForSend checks where a reply path starts when the send
++// builds it: at the sender when the message goes straight to its
++// destination, at a peer otherwise.
++func TestReplyPathForSend(t *testing.T) {
++	t.Parallel()
++
++	nw := newNetwork(t)
++	sender, peer, far := nw.newNode(), nw.newNode(), nw.newNode()
++	nw.peer(sender, peer, true)
++	nw.peer(peer, far, true)
++	s, _ := nw.messenger(sender)
++	ctx := context.Background()
++
++	// Straight to a peer: the peer sees us anyway, so the reply path
++	// starts here and no other node has to relay the reply.
++	err := s.Send(ctx, Destination{NodeID: peer.pub()},
++		payload(TypeInvoiceRequest, []byte{1}), nil,
++		ReplyPathID([]byte{7}))
++	require.NoError(t, err)
++	d := nw.route()
++	require.Equal(t, peer.id(), d.at)
++	require.NotNil(t, d.payload.ReplyPath)
++	intro, ok := d.payload.ReplyPath.IntroductionNode.(lnwire.PubkeyIntro)
++	require.True(t, ok)
++	require.True(t, sender.pub().IsEqual(intro.Pubkey),
++		"a direct send's reply path starts at the sender")
++	require.Len(t, d.payload.ReplyPath.Hops, 1)
++
++	// The reply reaches the sender with the path id.
++	p, _ := nw.messenger(peer)
++	err = p.Send(ctx, Destination{Path: d.payload.ReplyPath},
++		payload(TypeInvoice, []byte{2}), nil)
++	require.NoError(t, err)
++	d = nw.route()
++	require.Equal(t, sender.id(), d.at)
++	require.Equal(t, []byte{7}, d.pathID(t, sender))
++
++	// Through a peer to a node further away: the path starts at a peer,
++	// so the recipient learns a peer of ours and not us.
++	err = s.Send(ctx, Destination{NodeID: far.pub()},
++		payload(TypeInvoiceRequest, []byte{3}), nil,
++		ReplyPathID([]byte{8}))
++	require.NoError(t, err)
++	d = nw.route()
++	require.Equal(t, far.id(), d.at)
++	intro, ok = d.payload.ReplyPath.IntroductionNode.(lnwire.PubkeyIntro)
++	require.True(t, ok)
++	require.True(t, peer.pub().IsEqual(intro.Pubkey),
++		"a relayed send's reply path starts at a peer")
++	require.Len(t, d.payload.ReplyPath.Hops, 2)
++
++	// The explicit path is ignored when the send builds its own.
++	require.Nil(t, ReplyPathIDFromOptions(nil))
++	require.Equal(t, []byte{9}, ReplyPathIDFromOptions(
++		[]SendOption{AllowConnect(), ReplyPathID([]byte{9})},
++	))
++}
++
+ // TestRouteThroughConnectedPeer takes a longer route through a connected
+ // peer when the shortest route's first hop is not connected.
+ func TestRouteThroughConnectedPeer(t *testing.T) {
+diff --git a/peer/brontide.go b/peer/brontide.go
+index 5eb177032..51fa73848 100644
+--- a/peer/brontide.go
++++ b/peer/brontide.go
+@@ -344,10 +344,11 @@ type Config struct {
+ 	// OnionRelayAll, when true, disables the channel-presence gate on
+ 	// incoming onion messages: messages from peers with no fully open
+ 	// channel are admitted to the rate-limiter pipeline instead of
+-	// being dropped at ingress. The default (false) keeps the gate in
+-	// place so that a no-cost Sybil identity cannot burn a full
+-	// per-peer byte budget on each of many connections and saturate
+-	// the global limiter through sheer identity count.
++	// being dropped at ingress. On this chain it is true unless
++	// protocol.onion-msg-channel-gate is set: the requests a node here
++	// exists to receive come from nodes with no channel to it. The
++	// per-peer registry is bounded and newcomers past the bound share
++	// one bucket, which is what keeps a flood of identities in check.
+ 	OnionRelayAll bool
+ 
+ 	// OnionActorOpts returns ActorOptions for the onion peer actor
+diff --git a/sample-lnd.conf b/sample-lnd.conf
+index f881c1174..382e0062f 100644
+--- a/sample-lnd.conf
++++ b/sample-lnd.conf
+@@ -1518,12 +1518,17 @@
+ ; protocol.onion-msg-global-kbps to 0.
+ ; protocol.onion-msg-global-burst-bytes=1638400
+ 
+-; If set, accept incoming onion messages from peers that do not have a
+-; fully open channel with us. By default only peers with at least one
+-; active channel are admitted to the onion message ingress path, so
+-; that a new peer identity cannot burn onion bandwidth without first
+-; paying the capital cost of opening a channel. Enable this only if
+-; you want your node to accept onion messages from arbitrary peers.
++; If set, drop incoming onion messages from peers that do not have a
++; fully open channel with us, as upstream lnd does by default. Off here:
++; a mining pool's invoice requests for your offers come from a node that
++; has no channel with you, and Core Lightning hands them to you directly
++; when it is connected. The onion message rate limiters above still
++; bound what any peer can send.
++; protocol.onion-msg-channel-gate=false
++
++; Upstream's switch to accept onion messages from peers with no channel.
++; With the gate off (the default here) it changes nothing; it overrides
++; protocol.onion-msg-channel-gate when both are set.
+ ; protocol.onion-msg-relay-all=false
+ 
+ ; Set to handle messages of a particular type that falls outside of the
+diff --git a/server.go b/server.go
+index 48426ae39..4a4b5950c 100644
+--- a/server.go
++++ b/server.go
+@@ -4740,7 +4740,10 @@ func (s *server) peerConnected(conn net.Conn, connReq *connmgr.ConnReq,
+ 		SphinxPayment:           s.sphinxPayment,
+ 		SpawnOnionActor:         s.onionActorFactory,
+ 		OnionLimiter:            s.onionLimiter,
+-		OnionRelayAll:           s.cfg.ProtocolOptions.OnionMsgRelayAll,
++		// The channel-presence gate is off unless asked for: see
++		// lncfg.ProtocolOptions.OnionMsgChannelGate.
++		OnionRelayAll: !s.cfg.ProtocolOptions.OnionMsgChannelGate ||
++			s.cfg.ProtocolOptions.OnionMsgRelayAll,
+ 		OnionActorOpts: func(_ [33]byte) []actor.ActorOption[
+ 			*onionmessage.Request, *onionmessage.Response,
+ 		] {
+-- 
+2.43.0
+

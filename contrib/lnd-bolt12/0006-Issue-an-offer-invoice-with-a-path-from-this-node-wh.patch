@@ -1,0 +1,223 @@
+From 7aa2ec350cedd0427a19cd7b17526fb8d0468669 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Mon, 14 Sep 2026 04:36:09 -0500
+Subject: [PATCH 6/7] Issue an offer invoice with a path from this node when no
+ peer can start one
+
+An invoice's blinded payment paths are found through the node's peers, and
+a peer is only used as an introduction node when it has a channel other
+than the one to this node. On a small chain that is often not so: a node
+whose only peer's only channel is the one between them could mint an offer
+but answered every invoice request with "cannot issue an invoice right
+now", so a pool could not pay it.
+
+When the node's settings ask for a path through a peer and none is found,
+the offer server now asks again for a path that starts at this node, which
+always exists, padded with dummy hops as the settings say. The payer then
+learns the node id, which an offer without paths shows anyway, and the
+invoice is issued. The fallback is logged.
+
+(cherry picked from commit abeb95686ff9ef57adfa5a96dc22b53600820550)
+---
+ docs/bolt12-offers.md    |  7 +++
+ offerserve/paths.go      | 31 +++++++++++++
+ offerserve/paths_test.go | 99 ++++++++++++++++++++++++++++++++++++++++
+ server.go                | 19 ++++++--
+ 4 files changed, 153 insertions(+), 3 deletions(-)
+ create mode 100644 offerserve/paths.go
+ create mode 100644 offerserve/paths_test.go
+
+diff --git a/docs/bolt12-offers.md b/docs/bolt12-offers.md
+index 4e4b20c77..e3a6635e3 100644
+--- a/docs/bolt12-offers.md
++++ b/docs/bolt12-offers.md
+@@ -81,6 +81,13 @@ The node needs a route to the issuer's introduction node for the request,
+ which it finds through the graph or, for a fetch it makes itself, by
+ connecting to the node at its announced address.
+ 
++The invoice's payment paths start at the node's peers, under the node's
++blinded path settings (`routing.blinding.*`). When no peer can start one,
++because each peer's only channel is the one to this node or none of them
++signals route blinding, the path starts at this node itself, padded with
++dummy hops, so that the invoice is still issued; a payer then learns the
++node id, which an offer without paths shows anyway.
++
+ When one of the invoice's payment paths starts at this node, because this
+ node is the issuer's channel peer, the router processes its own hop of the
+ path and pays on through that channel, splitting the payment into parts
+diff --git a/offerserve/paths.go b/offerserve/paths.go
+new file mode 100644
+index 000000000..47fa594bf
+--- /dev/null
++++ b/offerserve/paths.go
+@@ -0,0 +1,31 @@
++package offerserve
++
++import (
++	"github.com/lightningnetwork/lnd/routing"
++	"github.com/lightningnetwork/lnd/routing/route"
++)
++
++// FindPathsWithFallback asks find for the blinded routes an invoice's paths
++// are built from, under the node's restrictions. When those ask for a path
++// through a peer and no peer can start one, because every peer's only channel
++// is the one to this node or none of them signals route blinding, it asks
++// again for a path that starts at this node, which always exists, so that the
++// invoice can be issued. The second result is whether that fallback was used.
++func FindPathsWithFallback(
++	find func(*routing.BlindedPathRestrictions) ([]*route.Route, error),
++	restrictions *routing.BlindedPathRestrictions) ([]*route.Route, bool,
++	error) {
++
++	routes, err := find(restrictions)
++	if err != nil || len(routes) > 0 ||
++		restrictions.MinDistanceFromIntroNode == 0 {
++
++		return routes, false, err
++	}
++
++	direct := *restrictions
++	direct.MinDistanceFromIntroNode = 0
++	routes, err = find(&direct)
++
++	return routes, err == nil, err
++}
+diff --git a/offerserve/paths_test.go b/offerserve/paths_test.go
+new file mode 100644
+index 000000000..d25f396dd
+--- /dev/null
++++ b/offerserve/paths_test.go
+@@ -0,0 +1,99 @@
++package offerserve
++
++import (
++	"errors"
++	"testing"
++
++	"github.com/lightningnetwork/lnd/fn/v2"
++	"github.com/lightningnetwork/lnd/routing"
++	"github.com/lightningnetwork/lnd/routing/route"
++	"github.com/stretchr/testify/require"
++)
++
++// TestFindPathsWithFallback checks that a path starting at this node is only
++// asked for when a path through a peer was asked for and none was found.
++func TestFindPathsWithFallback(t *testing.T) {
++	t.Parallel()
++
++	restrictions := &routing.BlindedPathRestrictions{
++		MinDistanceFromIntroNode: 1,
++		NumHops:                  2,
++		MaxNumPaths:              3,
++		NodeOmissionSet:          fn.NewSet[route.Vertex](),
++	}
++	peerRoute := []*route.Route{{}}
++
++	// A path through a peer: used as is.
++	var asked []routing.BlindedPathRestrictions
++	find := func(r *routing.BlindedPathRestrictions) ([]*route.Route,
++		error) {
++
++		asked = append(asked, *r)
++		if r.MinDistanceFromIntroNode > 0 {
++			return peerRoute, nil
++		}
++
++		return []*route.Route{{}, {}}, nil
++	}
++	routes, fellBack, err := FindPathsWithFallback(find, restrictions)
++	require.NoError(t, err)
++	require.False(t, fellBack)
++	require.Len(t, routes, 1)
++	require.Len(t, asked, 1)
++
++	// No peer can start a path: asked again for one starting here, with
++	// the other restrictions kept.
++	asked = nil
++	find = func(r *routing.BlindedPathRestrictions) ([]*route.Route,
++		error) {
++
++		asked = append(asked, *r)
++		if r.MinDistanceFromIntroNode > 0 {
++			return nil, nil
++		}
++
++		return []*route.Route{{}, {}}, nil
++	}
++	routes, fellBack, err = FindPathsWithFallback(find, restrictions)
++	require.NoError(t, err)
++	require.True(t, fellBack)
++	require.Len(t, routes, 2)
++	require.Len(t, asked, 2)
++	require.Equal(t, uint8(0), asked[1].MinDistanceFromIntroNode)
++	require.Equal(t, uint8(2), asked[1].NumHops)
++	require.Equal(t, uint8(3), asked[1].MaxNumPaths)
++	require.Equal(t, uint8(1), restrictions.MinDistanceFromIntroNode,
++		"the caller's restrictions are left alone")
++
++	// Path finding failing is reported, not retried.
++	asked = nil
++	boom := errors.New("graph on fire")
++	find = func(r *routing.BlindedPathRestrictions) ([]*route.Route,
++		error) {
++
++		asked = append(asked, *r)
++
++		return nil, boom
++	}
++	_, fellBack, err = FindPathsWithFallback(find, restrictions)
++	require.ErrorIs(t, err, boom)
++	require.False(t, fellBack)
++	require.Len(t, asked, 1)
++
++	// Already asking for a path starting here: nothing to fall back to.
++	asked = nil
++	direct := *restrictions
++	direct.MinDistanceFromIntroNode = 0
++	find = func(r *routing.BlindedPathRestrictions) ([]*route.Route,
++		error) {
++
++		asked = append(asked, *r)
++
++		return nil, nil
++	}
++	routes, fellBack, err = FindPathsWithFallback(find, &direct)
++	require.NoError(t, err)
++	require.False(t, fellBack)
++	require.Empty(t, routes)
++	require.Len(t, asked, 1)
++}
+diff --git a/server.go b/server.go
+index 6cdddaec6..48426ae39 100644
+--- a/server.go
++++ b/server.go
+@@ -5841,10 +5841,23 @@ func (s *server) addOfferInvoice(ctx context.Context, amountMsat uint64,
+ 		QueryBlindedRoutes: func(amt lnwire.MilliSatoshi) (
+ 			[]*route.Route, error) {
+ 
+-			return s.chanRouter.FindBlindedPaths(
+-				selfNode, amt, s.defaultMC.GetProbability,
+-				restrictions,
++			routes, fellBack, err := offerserve.FindPathsWithFallback(
++				func(r *routing.BlindedPathRestrictions) (
++					[]*route.Route, error) {
++
++					return s.chanRouter.FindBlindedPaths(
++						selfNode, amt,
++						s.defaultMC.GetProbability, r,
++					)
++				}, restrictions,
+ 			)
++			if fellBack {
++				srvrLog.Infof("No peer can start a blinded " +
++					"path for an offer invoice; using one " +
++					"that starts at this node")
++			}
++
++			return routes, err
+ 		},
+ 	}
+ 	hash, invoice, err := invoicesrpc.AddInvoice(
+-- 
+2.43.0
+

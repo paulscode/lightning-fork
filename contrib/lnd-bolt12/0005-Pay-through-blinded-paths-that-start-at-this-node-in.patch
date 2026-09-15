@@ -1,0 +1,1618 @@
+From 87d1552208975ee366f24666faf308d377af0874 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Mon, 14 Sep 2026 03:38:10 -0500
+Subject: [PATCH 5/7] Pay through blinded paths that start at this node, in the
+ router
+
+A blinded path whose introduction node is this node used to be refused
+by the router with "introduction point as own node not supported", so a
+payer that is the issuer's channel peer, the common case on a small
+chain, could not pay a BOLT 11 invoice with blinded paths, nor a BOLT 12
+invoice, whose paths are always blinded. The offer payer worked around
+that by processing its own hop before handing the payment to the
+router, which left BOLT 11 uncovered and disabled multi-part payments.
+
+The router now does it for every payment. When a payment session is
+started, each path that starts at this node has our hop processed: the
+encrypted data is decrypted with the node's key, the next node is read
+from it or looked up over the named channel, the next blinding point is
+derived, and our relay fee and expiry are taken back out of the path's
+aggregate so that the next hop receives at least what the recipient
+computed and at most three millisatoshi plus a millionth more, which
+the recipient keeps. A path that leads back to this node, or one whose
+policy does not fit under the aggregate, is dropped; when no path is
+left, the payment fails with a reason. QueryRoutes processes the same
+way, so a queried route is the one a payment takes.
+
+The offer payer's own processing is removed. Multi-part payments through
+such paths work as through any other.
+
+(cherry picked from commit 8af06fe0957c428c8e142a939be46afa354a821a)
+---
+ docs/bolt12-offers.md                         |   7 +-
+ lnrpc/offersrpc/deps.go                       |  13 -
+ lnrpc/offersrpc/offers_server.go              |   8 +-
+ lnrpc/routerrpc/router_backend.go             |  15 +
+ .../router_backend_selfintro_test.go          | 131 ++++++
+ offerpay/client_test.go                       | 229 ----------
+ offerpay/intent.go                            | 203 +--------
+ routing/blinded_self_intro.go                 | 274 ++++++++++++
+ routing/blinded_self_intro_test.go            | 390 ++++++++++++++++++
+ routing/payment_session_source.go             |  12 +
+ rpcserver.go                                  |   1 +
+ server.go                                     |  77 ++--
+ 12 files changed, 884 insertions(+), 476 deletions(-)
+ create mode 100644 lnrpc/routerrpc/router_backend_selfintro_test.go
+ create mode 100644 routing/blinded_self_intro.go
+ create mode 100644 routing/blinded_self_intro_test.go
+
+diff --git a/docs/bolt12-offers.md b/docs/bolt12-offers.md
+index da1657998..4e4b20c77 100644
+--- a/docs/bolt12-offers.md
++++ b/docs/bolt12-offers.md
+@@ -82,9 +82,10 @@ which it finds through the graph or, for a fetch it makes itself, by
+ connecting to the node at its announced address.
+ 
+ When one of the invoice's payment paths starts at this node, because this
+-node is the issuer's channel peer, the node processes its own hop of the
+-path itself and pays on through that channel. Such a payment is sent as a
+-single part.
++node is the issuer's channel peer, the router processes its own hop of the
++path and pays on through that channel, splitting the payment into parts
++when it has to. The same holds for a BOLT 11 invoice with blinded paths,
++whichever way it is paid.
+ 
+ ## Decoding
+ 
+diff --git a/lnrpc/offersrpc/deps.go b/lnrpc/offersrpc/deps.go
+index 2aea01e7b..aadcd08fc 100644
+--- a/lnrpc/offersrpc/deps.go
++++ b/lnrpc/offersrpc/deps.go
+@@ -45,17 +45,4 @@ type Deps struct {
+ 	// direction, for paying an invoice whose paths use that form.
+ 	ResolveIntro func(ctx context.Context,
+ 		node lnwire.IntroductionNode) (*btcec.PublicKey, error)
+-
+-	// NodeKey is this node's id.
+-	NodeKey *btcec.PublicKey
+-
+-	// PeerOverChannel, DecryptBlindedData and NextPathKey let a payment
+-	// path that starts at this node be processed here, since the router
+-	// cannot pay through a path it is the introduction node of.
+-	PeerOverChannel func(ctx context.Context,
+-		scid lnwire.ShortChannelID) (*btcec.PublicKey, error)
+-	DecryptBlindedData func(blindingPoint *btcec.PublicKey,
+-		data []byte) ([]byte, error)
+-	NextPathKey func(blindingPoint *btcec.PublicKey) (*btcec.PublicKey,
+-		error)
+ }
+diff --git a/lnrpc/offersrpc/offers_server.go b/lnrpc/offersrpc/offers_server.go
+index e315c7a43..98694a54b 100644
+--- a/lnrpc/offersrpc/offers_server.go
++++ b/lnrpc/offersrpc/offers_server.go
+@@ -666,13 +666,7 @@ func (s *Server) PayOffer(ctx context.Context,
+ 		FeeLimitMsat: feeLimit,
+ 		Timeout:      timeout,
+ 		MaxParts:     maxParts,
+-	}, offerpay.IntentHooks{
+-		NodeKey:            s.cfg.Deps.NodeKey,
+-		ResolveIntro:       s.cfg.Deps.ResolveIntro,
+-		PeerOverChannel:    s.cfg.Deps.PeerOverChannel,
+-		DecryptBlindedData: s.cfg.Deps.DecryptBlindedData,
+-		NextPathKey:        s.cfg.Deps.NextPathKey,
+-	})
++	}, offerpay.IntentHooks{ResolveIntro: s.cfg.Deps.ResolveIntro})
+ 	if err != nil {
+ 		return nil, status.Error(codes.InvalidArgument, err.Error())
+ 	}
+diff --git a/lnrpc/routerrpc/router_backend.go b/lnrpc/routerrpc/router_backend.go
+index bd0dd58d3..fc790ad58 100644
+--- a/lnrpc/routerrpc/router_backend.go
++++ b/lnrpc/routerrpc/router_backend.go
+@@ -74,6 +74,11 @@ type RouterBackend struct {
+ 	// routes.
+ 	FindRoute func(*routing.RouteRequest) (*route.Route, float64, error)
+ 
++	// SelfHop processes this node's own hop of a blinded path that starts
++	// here, so that a route can be queried through it. Nil refuses such
++	// paths.
++	SelfHop routing.SelfHopProcessor
++
+ 	MissionControl MissionControl
+ 
+ 	// ActiveNetParams are the network parameters of the primary network
+@@ -358,6 +363,16 @@ func (r *RouterBackend) parseQueryRoutesRequest(in *lnrpc.QueryRoutesRequest) (
+ 			return nil, err
+ 		}
+ 
++		// A path that starts at this node is processed here, the way
++		// a payment through it would be, so the route found is the
++		// one a payment takes.
++		blindedPathSet, err = routing.PeelSelfIntro(
++			blindedPathSet, r.SelfNode, r.SelfHop,
++		)
++		if err != nil {
++			return nil, err
++		}
++
+ 		pathFeatures := blindedPathSet.Features()
+ 		if pathFeatures != nil {
+ 			destinationFeatures = pathFeatures.Clone()
+diff --git a/lnrpc/routerrpc/router_backend_selfintro_test.go b/lnrpc/routerrpc/router_backend_selfintro_test.go
+new file mode 100644
+index 000000000..bdb01b196
+--- /dev/null
++++ b/lnrpc/routerrpc/router_backend_selfintro_test.go
+@@ -0,0 +1,131 @@
++package routerrpc
++
++import (
++	"errors"
++	"testing"
++
++	"github.com/btcsuite/btcd/btcec/v2"
++	sphinx "github.com/lightningnetwork/lightning-onion"
++	"github.com/lightningnetwork/lnd/lnrpc"
++	"github.com/lightningnetwork/lnd/lnwire"
++	"github.com/lightningnetwork/lnd/record"
++	"github.com/lightningnetwork/lnd/routing"
++	"github.com/lightningnetwork/lnd/routing/route"
++	"github.com/stretchr/testify/require"
++)
++
++// selfHop processes this node's hop with a real sphinx router and a fixed
++// channel table.
++type selfHop struct {
++	router *sphinx.Router
++	peers  map[lnwire.ShortChannelID]*btcec.PublicKey
++}
++
++func (s *selfHop) DecryptBlindedData(blindingPoint *btcec.PublicKey,
++	data []byte) ([]byte, error) {
++
++	return s.router.DecryptBlindedHopData(blindingPoint, data)
++}
++
++func (s *selfHop) NextBlindingPoint(
++	blindingPoint *btcec.PublicKey) (*btcec.PublicKey, error) {
++
++	return s.router.NextEphemeral(blindingPoint)
++}
++
++func (s *selfHop) PeerOverChannel(
++	scid lnwire.ShortChannelID) (*btcec.PublicKey, error) {
++
++	if pub, ok := s.peers[scid]; ok {
++		return pub, nil
++	}
++
++	return nil, errors.New("no such channel")
++}
++
++// TestQueryRoutesSelfIntro checks that a route query through a blinded path
++// that starts at this node is answered with our hop processed: the query
++// targets the node after us, with the expiry our hop no longer needs.
++// Without a processor the query is refused as before.
++func TestQueryRoutesSelfIntro(t *testing.T) {
++	t.Parallel()
++
++	us, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	recipient, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	scid := lnwire.NewShortChanIDFromInt(0x1234)
++
++	router := sphinx.NewRouter(
++		&sphinx.PrivKeyECDH{PrivKey: us}, sphinx.NewNoOpReplayLog(),
++	)
++	require.NoError(t, router.Start())
++	t.Cleanup(router.Stop)
++
++	relay, err := record.EncodeBlindedRouteData(
++		record.NewNonFinalBlindedRouteData(
++			scid, nil, record.PaymentRelayInfo{
++				CltvExpiryDelta: 40, FeeRate: 100, BaseFee: 1000,
++			}, &record.PaymentConstraints{MaxCltvExpiry: 1000},
++			nil,
++		),
++	)
++	require.NoError(t, err)
++	final, err := record.EncodeBlindedRouteData(
++		record.NewFinalHopBlindedRouteData(nil, []byte{1}),
++	)
++	require.NoError(t, err)
++
++	sessionKey, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	built, err := sphinx.BuildBlindedPath(sessionKey, []*sphinx.HopInfo{
++		{NodePub: us.PubKey(), PlainText: relay},
++		{NodePub: recipient.PubKey(), PlainText: final},
++	})
++	require.NoError(t, err)
++
++	rpcPath := &lnrpc.BlindedPaymentPath{
++		BlindedPath: &lnrpc.BlindedPath{
++			IntroductionNode: us.PubKey().SerializeCompressed(),
++			BlindingPoint: built.Path.BlindingPoint.
++				SerializeCompressed(),
++		},
++		BaseFeeMsat:         2000,
++		ProportionalFeeRate: 300,
++		TotalCltvDelta:      100,
++		HtlcMaxMsat:         1_000_000_000,
++	}
++	for _, hop := range built.Path.BlindedHops {
++		rpcPath.BlindedPath.BlindedHops = append(
++			rpcPath.BlindedPath.BlindedHops, &lnrpc.BlindedHop{
++				BlindedNode: hop.BlindedNodePub.
++					SerializeCompressed(),
++				EncryptedData: hop.CipherText,
++			},
++		)
++	}
++	in := &lnrpc.QueryRoutesRequest{
++		AmtMsat:             1_000_000,
++		BlindedPaymentPaths: []*lnrpc.BlindedPaymentPath{rpcPath},
++	}
++
++	backend := &RouterBackend{
++		SelfNode:         route.NewVertex(us.PubKey()),
++		MaxTotalTimelock: 1000,
++		SelfHop: &selfHop{
++			router: router,
++			peers: map[lnwire.ShortChannelID]*btcec.PublicKey{
++				scid: recipient.PubKey(),
++			},
++		},
++	}
++	req, err := backend.parseQueryRoutesRequest(in)
++	require.NoError(t, err)
++	require.Equal(t, route.NewVertex(recipient.PubKey()), req.Target)
++	require.Equal(t, uint16(60), req.FinalExpiry)
++	require.False(t, req.BlindedPathSet.IsIntroNode(backend.SelfNode))
++
++	backend.SelfHop = nil
++	_, err = backend.parseQueryRoutesRequest(in)
++	require.ErrorIs(t, err, routing.ErrSelfIntro)
++}
+diff --git a/offerpay/client_test.go b/offerpay/client_test.go
+index cea8f53dd..ca60d540b 100644
+--- a/offerpay/client_test.go
++++ b/offerpay/client_test.go
+@@ -5,22 +5,17 @@ import (
+ 	"context"
+ 	"encoding/binary"
+ 	"errors"
+-	"math"
+ 	"sync"
+ 	"testing"
+ 	"time"
+ 
+ 	"github.com/btcsuite/btcd/btcec/v2"
+-	sphinx "github.com/lightningnetwork/lightning-onion"
+ 	"github.com/lightningnetwork/lnd/bolt12"
+ 	"github.com/lightningnetwork/lnd/clock"
+ 	"github.com/lightningnetwork/lnd/feature"
+-	"github.com/lightningnetwork/lnd/fn/v2"
+ 	"github.com/lightningnetwork/lnd/lnwire"
+ 	"github.com/lightningnetwork/lnd/onionmsg"
+ 	"github.com/lightningnetwork/lnd/record"
+-	"github.com/lightningnetwork/lnd/routing"
+-	"github.com/lightningnetwork/lnd/routing/route"
+ 	"github.com/lightningnetwork/lnd/tlv"
+ 	"github.com/stretchr/testify/require"
+ )
+@@ -747,230 +742,6 @@ func TestPaymentIntent(t *testing.T) {
+ 	require.Error(t, err)
+ }
+ 
+-// TestPaymentIntentSelfIntro pays a path that starts at this node: our hop
+-// is processed here and the router gets the path from our peer on.
+-func TestPaymentIntentSelfIntro(t *testing.T) {
+-	t.Parallel()
+-
+-	e := newEnv(t)
+-	us, err := btcec.NewPrivateKey()
+-	require.NoError(t, err)
+-	router := sphinx.NewRouter(
+-		&sphinx.PrivKeyECDH{PrivKey: us}, sphinx.NewNoOpReplayLog(),
+-	)
+-	require.NoError(t, router.Start())
+-	t.Cleanup(router.Stop)
+-	peer, err := btcec.NewPrivateKey()
+-	require.NoError(t, err)
+-
+-	// The recipient (the issuer) built a path: us -> peer (-> issuer).
+-	scid := lnwire.NewShortChanIDFromInt(0x1234)
+-	ourHop := record.NewNonFinalBlindedRouteData(
+-		scid, nil, record.PaymentRelayInfo{
+-			CltvExpiryDelta: 40, FeeRate: 1000, BaseFee: 1000,
+-		}, &record.PaymentConstraints{MaxCltvExpiry: 1000}, nil,
+-	)
+-	ourPlain, err := record.EncodeBlindedRouteData(ourHop)
+-	require.NoError(t, err)
+-	peerHop := record.NewNonFinalBlindedRouteData(
+-		lnwire.NewShortChanIDFromInt(0x5678), nil,
+-		record.PaymentRelayInfo{
+-			CltvExpiryDelta: 80, FeeRate: 500, BaseFee: 500,
+-		}, &record.PaymentConstraints{MaxCltvExpiry: 1000}, nil,
+-	)
+-	peerPlain, err := record.EncodeBlindedRouteData(peerHop)
+-	require.NoError(t, err)
+-	finalPlain, err := record.EncodeBlindedRouteData(
+-		record.NewFinalHopBlindedRouteData(nil, []byte{1, 2, 3}),
+-	)
+-	require.NoError(t, err)
+-	sessionKey, err := btcec.NewPrivateKey()
+-	require.NoError(t, err)
+-	built, err := sphinx.BuildBlindedPath(sessionKey, []*sphinx.HopInfo{
+-		{NodePub: us.PubKey(), PlainText: ourPlain},
+-		{NodePub: peer.PubKey(), PlainText: peerPlain},
+-		{NodePub: e.issuer.PubKey(), PlainText: finalPlain},
+-	})
+-	require.NoError(t, err)
+-	wirePath, err := fromSphinx(built.Path)
+-	require.NoError(t, err)
+-
+-	payer, err := btcec.NewPrivateKey()
+-	require.NoError(t, err)
+-	offer := e.offer(0, false, nil)
+-	ir, err := bolt12.NewInvoiceRequestFromOffer(
+-		offer, payer.PubKey(), []byte{1}, testChain,
+-	)
+-	require.NoError(t, err)
+-	ir.InvreqAmount = tlv.SomeRecordT(
+-		tlv.NewPrimitiveRecord[tlv.TlvType82](bolt12.TUint64(1_000_000)),
+-	)
+-	// The aggregate fee over both relay hops, as the issuer computes it.
+-	inv := e.invoiceFor(ir, 1_000_000, func(inv *bolt12.Invoice) {
+-		inv.InvoicePaths = tlv.SomeRecordT(
+-			tlv.NewRecordT[tlv.TlvType160](lnwire.BlindedPaths{
+-				Paths: []lnwire.BlindedPath{*wirePath},
+-			}),
+-		)
+-		inv.InvoiceBlindedPay = tlv.SomeRecordT(
+-			tlv.NewRecordT[tlv.TlvType162](bolt12.BlindedPayInfos{
+-				Infos: []bolt12.BlindedPayInfo{{
+-					FeeBaseMsat:               1501,
+-					FeeProportionalMillionths: 1501,
+-					CltvExpiryDelta:           120,
+-					HtlcMinimumMsat:           1,
+-					HtlcMaximumMsat:           1_000_000_000,
+-					Features:                  *lnwire.NewRawFeatureVector(),
+-				}},
+-			}),
+-		)
+-	})
+-
+-	hooks := IntentHooks{
+-		NodeKey: us.PubKey(),
+-		PeerOverChannel: func(_ context.Context,
+-			got lnwire.ShortChannelID) (*btcec.PublicKey, error) {
+-
+-			require.Equal(t, scid, got)
+-
+-			return peer.PubKey(), nil
+-		},
+-		DecryptBlindedData: router.DecryptBlindedHopData,
+-		NextPathKey:        router.NextEphemeral,
+-	}
+-	intent, err := PaymentIntent(context.Background(), inv, PaymentParams{
+-		MaxParts: 4,
+-	}, hooks)
+-	require.NoError(t, err)
+-	require.Equal(t, uint32(1), intent.MaxParts, "a peeled path is exact")
+-
+-	// The router is handed a path starting at our peer, under the key
+-	// our peer expects, with our hop's fee and delta taken out.
+-	set := intent.BlindedPathSet
+-	require.False(t, set.IsIntroNode(route.NewVertex(us.PubKey())))
+-	require.True(t, set.IsIntroNode(route.NewVertex(peer.PubKey())))
+-	hints, err := set.ToRouteHints()
+-	require.NoError(t, err)
+-	require.NotEmpty(t, hints)
+-	expectedKey, err := router.NextEphemeral(built.Path.BlindingPoint)
+-	require.NoError(t, err)
+-	var got *routing.BlindedPayment
+-	for _, edges := range hints {
+-		for _, edge := range edges {
+-			if p := edge.BlindedPayment(); p != nil {
+-				got = p
+-			}
+-		}
+-	}
+-	require.NotNil(t, got)
+-	require.True(t, got.BlindedPath.BlindingPoint.IsEqual(expectedKey))
+-	// Our hop is gone; the set appends its own final marker hop.
+-	require.Len(t, got.BlindedPath.BlindedHops, 3)
+-	require.Equal(t, built.Path.BlindedHops[1].CipherText,
+-		got.BlindedPath.BlindedHops[0].CipherText)
+-	require.True(t, routing.IsBlindedRouteNUMSTargetKey(
+-		got.BlindedPath.BlindedHops[2].BlindedNodePub.SerializeCompressed(),
+-	))
+-	require.Equal(t, uint16(80), got.CltvExpiryDelta)
+-	// in = 1_000_000 + 1501 + 1501 = 1_003_002; out = ceil((in - 1000) *
+-	// 1e6 / 1_001_000) = 1_001_001, rounded up the way a forwarding node
+-	// rounds; remaining fee = 1001.
+-	require.Equal(t, uint32(0), got.ProportionalFeeRate)
+-	require.Equal(t, uint32(1001), got.BaseFee)
+-
+-	// The next hop can process the remaining path: its hop data
+-	// decrypts under the derived key.
+-	peerRouter := sphinx.NewRouter(
+-		&sphinx.PrivKeyECDH{PrivKey: peer}, sphinx.NewNoOpReplayLog(),
+-	)
+-	require.NoError(t, peerRouter.Start())
+-	t.Cleanup(peerRouter.Stop)
+-	plain, err := peerRouter.DecryptBlindedHopData(
+-		got.BlindedPath.BlindingPoint,
+-		got.BlindedPath.BlindedHops[0].CipherText,
+-	)
+-	require.NoError(t, err)
+-	data, err := record.DecodeBlindedRouteData(bytes.NewReader(plain))
+-	require.NoError(t, err)
+-	require.True(t, data.ShortChannelID.IsSome())
+-
+-	// Without the hooks the path cannot be used.
+-	_, err = PaymentIntent(context.Background(), inv, PaymentParams{},
+-		IntentHooks{NodeKey: us.PubKey()})
+-	require.Error(t, err)
+-
+-	// Our hop without payment_relay cannot be processed.
+-	bare := record.NewNonFinalBlindedRouteDataOnionMessage(
+-		fn.NewRight[*btcec.PublicKey](scid), nil, nil,
+-	)
+-	barePlain, err := record.EncodeBlindedRouteData(bare)
+-	require.NoError(t, err)
+-	builtBare, err := sphinx.BuildBlindedPath(sessionKey, []*sphinx.HopInfo{
+-		{NodePub: us.PubKey(), PlainText: barePlain},
+-		{NodePub: peer.PubKey(), PlainText: peerPlain},
+-		{NodePub: e.issuer.PubKey(), PlainText: finalPlain},
+-	})
+-	require.NoError(t, err)
+-	bareWire, err := fromSphinx(builtBare.Path)
+-	require.NoError(t, err)
+-	bareInv := e.invoiceFor(ir, 1_000_000, func(inv *bolt12.Invoice) {
+-		inv.InvoicePaths = tlv.SomeRecordT(
+-			tlv.NewRecordT[tlv.TlvType160](lnwire.BlindedPaths{
+-				Paths: []lnwire.BlindedPath{*bareWire},
+-			}),
+-		)
+-	})
+-	_, err = PaymentIntent(context.Background(), bareInv, PaymentParams{},
+-		hooks)
+-	require.ErrorContains(t, err, "payment_relay")
+-}
+-
+-// TestForwardingMath pins the BOLT 4 rounding and the overflow guards.
+-func TestForwardingMath(t *testing.T) {
+-	t.Parallel()
+-
+-	// Exact division needs no rounding.
+-	out, err := amountToForward(1_001_000, 1000)
+-	require.NoError(t, err)
+-	require.Equal(t, uint64(1_000_000), out)
+-	// A remainder rounds up.
+-	out, err = amountToForward(1_002_002, 1000)
+-	require.NoError(t, err)
+-	require.Equal(t, uint64(1_001_001), out)
+-	// Zero fee rate passes through.
+-	out, err = amountToForward(12_345, 0)
+-	require.NoError(t, err)
+-	require.Equal(t, uint64(12_345), out)
+-	// The largest amount still divides without wrapping; a fee that
+-	// would overflow is refused.
+-	_, err = amountToForward(math.MaxUint64, 1)
+-	require.NoError(t, err)
+-	_, err = amountIn(1<<63, 0, 1_000_000)
+-	require.Error(t, err)
+-	in, err := amountIn(1_000_000, 1501, 1501)
+-	require.NoError(t, err)
+-	require.Equal(t, uint64(1_003_002), in)
+-}
+-
+-// fromSphinx converts a built path to the wire form, as an issuer would.
+-func fromSphinx(p *sphinx.BlindedPath) (*lnwire.BlindedPath, error) {
+-	intro, err := lnwire.NewPubkeyIntro(p.IntroductionPoint)
+-	if err != nil {
+-		return nil, err
+-	}
+-	out := &lnwire.BlindedPath{
+-		IntroductionNode: intro, BlindingPoint: p.BlindingPoint,
+-	}
+-	for _, h := range p.BlindedHops {
+-		out.Hops = append(out.Hops, lnwire.BlindedHop{
+-			BlindedNodeID: h.BlindedNodePub,
+-			EncryptedData: h.CipherText,
+-		})
+-	}
+-
+-	return out, nil
+-}
+-
+ // TestNewRequirements checks the configuration checks and defaults.
+ func TestNewRequirements(t *testing.T) {
+ 	t.Parallel()
+diff --git a/offerpay/intent.go b/offerpay/intent.go
+index 76260633c..18dd6f6d4 100644
+--- a/offerpay/intent.go
++++ b/offerpay/intent.go
+@@ -1,19 +1,15 @@
+ package offerpay
+ 
+ import (
+-	"bytes"
+ 	"context"
+ 	"errors"
+ 	"fmt"
+-	"math"
+-	"math/bits"
+ 	"time"
+ 
+ 	"github.com/btcsuite/btcd/btcec/v2"
+ 	sphinx "github.com/lightningnetwork/lightning-onion"
+ 	"github.com/lightningnetwork/lnd/bolt12"
+ 	"github.com/lightningnetwork/lnd/lnwire"
+-	"github.com/lightningnetwork/lnd/record"
+ 	"github.com/lightningnetwork/lnd/routing"
+ 	"github.com/lightningnetwork/lnd/tlv"
+ )
+@@ -25,26 +21,9 @@ type IntroResolver func(ctx context.Context,
+ 
+ // IntentHooks is what building a payment needs from the node.
+ type IntentHooks struct {
+-	// NodeKey is this node's id, for noticing a path that starts at us.
+-	NodeKey *btcec.PublicKey
+-
+ 	// ResolveIntro resolves an introduction node given as a channel and
+ 	// direction.
+ 	ResolveIntro IntroResolver
+-
+-	// PeerOverChannel returns the node at the other end of one of our
+-	// channels, for a path whose hop after ours names the channel.
+-	PeerOverChannel func(ctx context.Context,
+-		scid lnwire.ShortChannelID) (*btcec.PublicKey, error)
+-
+-	// DecryptBlindedData decrypts the data a blinded path put on our
+-	// hop, with our node key and the path's blinding point.
+-	DecryptBlindedData func(blindingPoint *btcec.PublicKey,
+-		data []byte) ([]byte, error)
+-
+-	// NextPathKey derives the blinding point for the hop after ours.
+-	NextPathKey func(blindingPoint *btcec.PublicKey) (*btcec.PublicKey,
+-		error)
+ }
+ 
+ // PaymentParams is how to pay a fetched invoice.
+@@ -98,11 +77,7 @@ func PaymentIntent(ctx context.Context, inv *bolt12.Invoice,
+ 		return nil, errors.New("invoice without an amount")
+ 	}
+ 
+-	var (
+-		payments = make([]*routing.BlindedPayment, 0, len(paths.Paths))
+-		peeled   bool
+-		peelErr  error
+-	)
++	payments := make([]*routing.BlindedPayment, 0, len(paths.Paths))
+ 	for i := range paths.Paths {
+ 		path, info := paths.Paths[i], infos.Infos[i]
+ 		intro, err := resolveIntro(
+@@ -138,25 +113,11 @@ func PaymentIntent(ctx context.Context, inv *bolt12.Invoice,
+ 		if err := payment.Validate(); err != nil {
+ 			return nil, fmt.Errorf("invoice path %d: %w", i, err)
+ 		}
+-
+-		// A path that starts at this node: the router cannot pay
+-		// through a path it is the introduction node of, so our own
+-		// hop is processed here and the path continues from the next
+-		// node, which is a peer over one of our channels.
+-		if hooks.NodeKey != nil && intro.IsEqual(hooks.NodeKey) {
+-			payment, err = peelSelfIntro(ctx, payment, amount, hooks)
+-			if err != nil {
+-				peelErr = fmt.Errorf("invoice path %d starts "+
+-					"at this node: %w", i, err)
+-				continue
+-			}
+-			peeled = true
+-		}
+ 		payments = append(payments, payment)
+ 	}
+-	if len(payments) == 0 && peelErr != nil {
+-		return nil, peelErr
+-	}
++	// A path that starts at this node, because the node is the issuer's
++	// channel peer, is the router's to handle: it processes our own hop
++	// when the payment is made.
+ 	pathSet, err := routing.NewBlindedPaymentPathSet(payments)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("invoice paths: %w", err)
+@@ -197,11 +158,6 @@ func PaymentIntent(ctx context.Context, inv *bolt12.Invoice,
+ 	} else {
+ 		intent.MaxParts = 1
+ 	}
+-	// A peeled path's fee is exact for the invoice amount only, so the
+-	// payment is not split.
+-	if peeled {
+-		intent.MaxParts = 1
+-	}
+ 	intent.DestFeatures = lnwire.NewFeatureVector(dest, lnwire.Features)
+ 	if pathFeatures := pathSet.Features(); !pathFeatures.IsEmpty() {
+ 		intent.DestFeatures = pathFeatures.Clone()
+@@ -224,154 +180,3 @@ func resolveIntro(ctx context.Context, node lnwire.IntroductionNode,
+ 
+ 	return resolve(ctx, node)
+ }
+-
+-// peelSelfIntro processes our own hop of a blinded payment path that has
+-// this node as its introduction node, and returns the path from the next
+-// hop on. The next hop is the peer on the channel our hop's data names,
+-// under the blinding point that hop expects. The fee and expiry the path
+-// aggregates over all its hops are reduced by our hop's own relay policy,
+-// the way our hop would apply it when forwarding, so the amount handed to
+-// the next hop is what the rest of the path expects for the invoice
+-// amount.
+-func peelSelfIntro(ctx context.Context, payment *routing.BlindedPayment,
+-	amount uint64, hooks IntentHooks) (*routing.BlindedPayment, error) {
+-
+-	if hooks.DecryptBlindedData == nil || hooks.NextPathKey == nil {
+-		return nil, errors.New("no way to process our own hop")
+-	}
+-	path := payment.BlindedPath
+-	if len(path.BlindedHops) < 2 {
+-		return nil, errors.New("the path ends at this node")
+-	}
+-	plain, err := hooks.DecryptBlindedData(
+-		path.BlindingPoint, bytes.Clone(path.BlindedHops[0].CipherText),
+-	)
+-	if err != nil {
+-		return nil, fmt.Errorf("own hop data: %w", err)
+-	}
+-	data, err := record.DecodeBlindedRouteData(bytes.NewReader(plain))
+-	if err != nil {
+-		return nil, fmt.Errorf("own hop data: %w", err)
+-	}
+-
+-	// Where our hop forwards to.
+-	var next *btcec.PublicKey
+-	data.NextNodeID.WhenSome(
+-		func(r tlv.RecordT[tlv.TlvType4, *btcec.PublicKey]) {
+-			next = r.Val
+-		},
+-	)
+-	if next == nil {
+-		var scid lnwire.ShortChannelID
+-		data.ShortChannelID.WhenSome(
+-			func(r tlv.RecordT[tlv.TlvType2, lnwire.ShortChannelID]) {
+-				scid = r.Val
+-			},
+-		)
+-		if scid.ToUint64() == 0 || hooks.PeerOverChannel == nil {
+-			return nil, errors.New("own hop names no next node")
+-		}
+-		next, err = hooks.PeerOverChannel(ctx, scid)
+-		if err != nil {
+-			return nil, fmt.Errorf("own hop's channel: %w", err)
+-		}
+-	}
+-	if next.IsEqual(hooks.NodeKey) {
+-		return nil, errors.New("own hop leads back to this node")
+-	}
+-
+-	// The blinding point the next hop expects.
+-	nextKey, err := hooks.NextPathKey(path.BlindingPoint)
+-	if err != nil {
+-		return nil, fmt.Errorf("next blinding point: %w", err)
+-	}
+-	data.NextBlindingOverride.WhenSome(
+-		func(r tlv.RecordT[tlv.TlvType8, *btcec.PublicKey]) {
+-			nextKey = r.Val
+-		},
+-	)
+-
+-	// What our hop would forward: the incoming amount under the path's
+-	// aggregate fee, less our own relay fee, rounded the way BOLT 4 has
+-	// a forwarding node round; the expiry less our delta.
+-	var (
+-		relay    record.PaymentRelayInfo
+-		hasRelay bool
+-	)
+-	data.RelayInfo.WhenSome(
+-		func(r tlv.RecordT[tlv.TlvType10, record.PaymentRelayInfo]) {
+-			relay, hasRelay = r.Val, true
+-		},
+-	)
+-	if !hasRelay {
+-		return nil, errors.New("own hop carries no payment_relay")
+-	}
+-	in, err := amountIn(amount, payment.BaseFee, payment.ProportionalFeeRate)
+-	if err != nil {
+-		return nil, err
+-	}
+-	if in < uint64(relay.BaseFee) {
+-		return nil, errors.New("own hop's fee exceeds the path's")
+-	}
+-	out, err := amountToForward(in-uint64(relay.BaseFee), relay.FeeRate)
+-	if err != nil {
+-		return nil, err
+-	}
+-	if out < amount {
+-		return nil, errors.New("own hop's fee exceeds the path's")
+-	}
+-	if out-amount > math.MaxUint32 {
+-		return nil, errors.New("remaining fee does not fit")
+-	}
+-	if payment.CltvExpiryDelta < relay.CltvExpiryDelta {
+-		return nil, errors.New("own hop's expiry delta exceeds the " +
+-			"path's")
+-	}
+-
+-	return &routing.BlindedPayment{
+-		BlindedPath: &sphinx.BlindedPath{
+-			IntroductionPoint: next,
+-			BlindingPoint:     nextKey,
+-			BlindedHops:       path.BlindedHops[1:],
+-		},
+-		// The remaining fee, exact for this amount.
+-		BaseFee:             uint32(out - amount),
+-		ProportionalFeeRate: 0,
+-		CltvExpiryDelta:     payment.CltvExpiryDelta - relay.CltvExpiryDelta,
+-		HtlcMinimum:         payment.HtlcMinimum,
+-		HtlcMaximum:         payment.HtlcMaximum,
+-		Features:            payment.Features,
+-	}, nil
+-}
+-
+-// amountIn is what a path's introduction node is sent for an amount to
+-// arrive: the amount plus the path's aggregate fee.
+-func amountIn(amount uint64, baseFee, feeRate uint32) (uint64, error) {
+-	hi, prop := bits.Mul64(amount, uint64(feeRate))
+-	if hi != 0 {
+-		return 0, errors.New("fee overflows")
+-	}
+-	in := amount + uint64(baseFee) + prop/1_000_000
+-	if in < amount {
+-		return 0, errors.New("fee overflows")
+-	}
+-
+-	return in, nil
+-}
+-
+-// amountToForward is BOLT 4's forwarding amount for a hop with the given
+-// proportional fee, once the base fee is taken off: the division rounds up,
+-// so the hop after gets no less than it expects.
+-func amountToForward(afterBase uint64, feeRate uint32) (uint64, error) {
+-	denominator := 1_000_000 + uint64(feeRate)
+-	hi, lo := bits.Mul64(afterBase, 1_000_000)
+-	var carry uint64
+-	lo, carry = bits.Add64(lo, denominator-1, 0)
+-	hi += carry
+-	if hi >= denominator {
+-		return 0, errors.New("amount overflows")
+-	}
+-	out, _ := bits.Div64(hi, lo, denominator)
+-
+-	return out, nil
+-}
+diff --git a/routing/blinded_self_intro.go b/routing/blinded_self_intro.go
+new file mode 100644
+index 000000000..a66926085
+--- /dev/null
++++ b/routing/blinded_self_intro.go
+@@ -0,0 +1,274 @@
++package routing
++
++import (
++	"bytes"
++	"errors"
++	"fmt"
++	"math/bits"
++
++	"github.com/btcsuite/btcd/btcec/v2"
++	sphinx "github.com/lightningnetwork/lightning-onion"
++	"github.com/lightningnetwork/lnd/lnwire"
++	"github.com/lightningnetwork/lnd/record"
++	"github.com/lightningnetwork/lnd/routing/route"
++	"github.com/lightningnetwork/lnd/tlv"
++)
++
++// SelfHopProcessor lets the router process this node's own hop of a blinded
++// payment path that starts at it. A recipient that has only this node as a
++// peer builds every path with this node as the introduction node; paying
++// such a path means doing here what the introduction node would do:
++// decrypt our hop's data, find the next node, derive the next blinding
++// point, and forward what our relay policy says.
++type SelfHopProcessor interface {
++	// DecryptBlindedData decrypts the data a blinded path put on our
++	// hop, with our node key and the path's blinding point.
++	DecryptBlindedData(blindingPoint *btcec.PublicKey,
++		data []byte) ([]byte, error)
++
++	// NextBlindingPoint derives the blinding point for the hop after
++	// ours from the one at ours.
++	NextBlindingPoint(blindingPoint *btcec.PublicKey) (*btcec.PublicKey,
++		error)
++
++	// PeerOverChannel returns the node at the other end of one of our
++	// channels, for a hop whose data names the channel.
++	PeerOverChannel(scid lnwire.ShortChannelID) (*btcec.PublicKey, error)
++}
++
++// ErrSelfIntroUnpayable is returned when every path in a set starts at this
++// node and none of them can be processed.
++var ErrSelfIntroUnpayable = errors.New("no payable path: every path starts " +
++	"at this node and none can be processed")
++
++// PeelSelfIntro returns a path set in which every path that starts at self
++// has had our own hop processed, so that the router can pay through it as
++// through any other path. Paths that do not start at self are kept as they
++// are; paths that start at self but cannot be processed are dropped. When
++// no path is left, an error says why.
++func PeelSelfIntro(set *BlindedPaymentPathSet, self route.Vertex,
++	proc SelfHopProcessor) (*BlindedPaymentPathSet, error) {
++
++	if set == nil || !set.IsIntroNode(self) {
++		return set, nil
++	}
++	if proc == nil {
++		return nil, ErrSelfIntro
++	}
++
++	var (
++		kept    []*BlindedPayment
++		lastErr error
++	)
++	for _, path := range set.paths {
++		intro := route.NewVertex(path.BlindedPath.IntroductionPoint)
++		if intro != self {
++			kept = append(kept, stripNUMSHop(path))
++			continue
++		}
++		peeled, err := peelOwnHop(stripNUMSHop(path), self, proc)
++		if err != nil {
++			log.Warnf("Blinded path starting at this node cannot "+
++				"be processed: %v", err)
++			lastErr = err
++			continue
++		}
++		kept = append(kept, peeled)
++	}
++	if len(kept) == 0 {
++		return nil, fmt.Errorf("%w: %v", ErrSelfIntroUnpayable, lastErr)
++	}
++	peeled, err := NewBlindedPaymentPathSet(kept)
++	if err != nil {
++		return nil, err
++	}
++	// Our hop is processed once; a path that still starts at us after
++	// that names us twice, which no honest recipient does.
++	if peeled.IsIntroNode(self) {
++		return nil, fmt.Errorf("%w: a path names this node twice",
++			ErrSelfIntroUnpayable)
++	}
++
++	return peeled, nil
++}
++
++// PeelPaymentForSelf returns a copy of a payment whose blinded path set has
++// had our own hop processed, with the target and final expiry the router
++// pathfinds with taken from the new set. The caller's payment is left as it
++// was. A payment with no path set, or none starting at self, is returned
++// unchanged.
++func PeelPaymentForSelf(p *LightningPayment, self route.Vertex,
++	proc SelfHopProcessor) (*LightningPayment, error) {
++
++	if p.BlindedPathSet == nil || !p.BlindedPathSet.IsIntroNode(self) {
++		return p, nil
++	}
++	peeled, err := PeelSelfIntro(p.BlindedPathSet, self, proc)
++	if err != nil {
++		return nil, err
++	}
++
++	// The target is the set's, which changes when the remaining path is
++	// a single hop and the recipient's real key becomes the target; so
++	// does the final expiry.
++	pp := *p
++	pp.BlindedPathSet = peeled
++	copy(pp.Target[:], peeled.TargetPubKey().SerializeCompressed())
++	pp.FinalCLTVDelta = peeled.FinalCLTVDelta()
++
++	return &pp, nil
++}
++
++// stripNUMSHop returns a copy of the payment without the final hop the path
++// set adds for path finding, so the set can be built again.
++func stripNUMSHop(b *BlindedPayment) *BlindedPayment {
++	c := b.deepCopy()
++	hops := c.BlindedPath.BlindedHops
++	if len(hops) > 1 && IsBlindedRouteNUMSTargetKey(
++		hops[len(hops)-1].BlindedNodePub.SerializeCompressed(),
++	) {
++		c.BlindedPath.BlindedHops = hops[:len(hops)-1]
++	}
++
++	return c
++}
++
++// peelOwnHop processes our own hop of a path that starts at this node and
++// returns the path from the next hop on, under the blinding point that hop
++// expects, with the path's aggregate fee and expiry reduced by our hop's
++// relay policy.
++func peelOwnHop(payment *BlindedPayment, self route.Vertex,
++	proc SelfHopProcessor) (*BlindedPayment, error) {
++
++	path := payment.BlindedPath
++	if len(path.BlindedHops) < 2 {
++		return nil, errors.New("the path ends at this node")
++	}
++	plain, err := proc.DecryptBlindedData(
++		path.BlindingPoint, bytes.Clone(path.BlindedHops[0].CipherText),
++	)
++	if err != nil {
++		return nil, fmt.Errorf("own hop data: %w", err)
++	}
++	data, err := record.DecodeBlindedRouteData(bytes.NewReader(plain))
++	if err != nil {
++		return nil, fmt.Errorf("own hop data: %w", err)
++	}
++
++	// Where our hop forwards to.
++	var next *btcec.PublicKey
++	data.NextNodeID.WhenSome(
++		func(r tlv.RecordT[tlv.TlvType4, *btcec.PublicKey]) {
++			next = r.Val
++		},
++	)
++	if next == nil {
++		var scid lnwire.ShortChannelID
++		data.ShortChannelID.WhenSome(
++			func(r tlv.RecordT[tlv.TlvType2, lnwire.ShortChannelID]) {
++				scid = r.Val
++			},
++		)
++		if scid.ToUint64() == 0 {
++			return nil, errors.New("own hop names no next node")
++		}
++		next, err = proc.PeerOverChannel(scid)
++		if err != nil {
++			return nil, fmt.Errorf("own hop's channel %v: %w", scid,
++				err)
++		}
++	}
++
++	if route.NewVertex(next) == self {
++		return nil, errors.New("own hop leads back to this node")
++	}
++
++	// The blinding point the next hop expects.
++	nextKey, err := proc.NextBlindingPoint(path.BlindingPoint)
++	if err != nil {
++		return nil, fmt.Errorf("next blinding point: %w", err)
++	}
++	data.NextBlindingOverride.WhenSome(
++		func(r tlv.RecordT[tlv.TlvType8, *btcec.PublicKey]) {
++			nextKey = r.Val
++		},
++	)
++
++	// Our hop's relay policy, which the recipient folded into the path's
++	// aggregate fee and expiry.
++	var (
++		relay    record.PaymentRelayInfo
++		hasRelay bool
++	)
++	data.RelayInfo.WhenSome(
++		func(r tlv.RecordT[tlv.TlvType10, record.PaymentRelayInfo]) {
++			relay, hasRelay = r.Val, true
++		},
++	)
++	if !hasRelay {
++		return nil, errors.New("own hop carries no payment_relay")
++	}
++	baseFee, feeRate, err := feeAfterOwnHop(
++		payment.BaseFee, payment.ProportionalFeeRate,
++		uint32(relay.BaseFee), relay.FeeRate,
++	)
++	if err != nil {
++		return nil, err
++	}
++	if payment.CltvExpiryDelta < relay.CltvExpiryDelta {
++		return nil, errors.New("own hop's expiry delta exceeds the " +
++			"path's")
++	}
++
++	return &BlindedPayment{
++		BlindedPath: &sphinx.BlindedPath{
++			IntroductionPoint: next,
++			BlindingPoint:     nextKey,
++			BlindedHops:       path.BlindedHops[1:],
++		},
++		BaseFee:             baseFee,
++		ProportionalFeeRate: feeRate,
++		CltvExpiryDelta:     payment.CltvExpiryDelta - relay.CltvExpiryDelta,
++		HtlcMinimum:         payment.HtlcMinimum,
++		HtlcMaximum:         payment.HtlcMaximum,
++		Features:            payment.Features,
++	}, nil
++}
++
++// feeAfterOwnHop turns a path's aggregate fee (base and proportional, as the
++// recipient computed them over every hop including ours) into the fee for
++// the path from the next hop on, by taking our own hop's policy back out.
++//
++// A forwarding node sends on amt_to_forward = ceil((amt_in - base) * 1e6 /
++// (1e6 + rate)), and amt_in for the introduction node is amount + B +
++// floor(amount * P / 1e6). What our hop would forward is then at most
++// amount * (1e6 + P) / (1e6 + p) + (B - b) * 1e6 / (1e6 + p) + 1, so a base of
++// ceil((B - b) * 1e6 / (1e6 + p)) + 2 and a rate of ceil((P - p) * 1e6 /
++// (1e6 + p)) send the next hop at least that for every amount, and at most
++// three millisatoshi plus one millionth of the amount more, which the
++// recipient keeps.
++func feeAfterOwnHop(pathBase, pathRate, ownBase, ownRate uint32) (uint32,
++	uint32, error) {
++
++	if pathBase < ownBase || pathRate < ownRate {
++		return 0, 0, errors.New("own hop's fee exceeds the path's")
++	}
++	denominator := 1_000_000 + uint64(ownRate)
++	base := ceilDiv(uint64(pathBase-ownBase)*1_000_000, denominator) + 2
++	rate := ceilDiv(uint64(pathRate-ownRate)*1_000_000, denominator)
++	if base > uint64(^uint32(0)) || rate > uint64(^uint32(0)) {
++		return 0, 0, errors.New("fee after own hop does not fit")
++	}
++
++	return uint32(base), uint32(rate), nil
++}
++
++// ceilDiv divides, rounding up.
++func ceilDiv(n, d uint64) uint64 {
++	q, r := bits.Div64(0, n, d)
++	if r != 0 {
++		q++
++	}
++
++	return q
++}
+diff --git a/routing/blinded_self_intro_test.go b/routing/blinded_self_intro_test.go
+new file mode 100644
+index 000000000..611279a6e
+--- /dev/null
++++ b/routing/blinded_self_intro_test.go
+@@ -0,0 +1,390 @@
++package routing
++
++import (
++	"bytes"
++	"errors"
++	"math/rand"
++	"testing"
++
++	"github.com/btcsuite/btcd/btcec/v2"
++	sphinx "github.com/lightningnetwork/lightning-onion"
++	"github.com/lightningnetwork/lnd/lnwire"
++	"github.com/lightningnetwork/lnd/record"
++	"github.com/lightningnetwork/lnd/routing/route"
++	"github.com/stretchr/testify/require"
++)
++
++// forwardedByHop is what a forwarding node sends on for an incoming amount
++// under its policy, as BOLT 4 has it: the division rounds up.
++func forwardedByHop(in uint64, base, rate uint32) uint64 {
++	if in < uint64(base) {
++		return 0
++	}
++	n := (in - uint64(base)) * 1_000_000
++	d := 1_000_000 + uint64(rate)
++
++	return (n + d - 1) / d
++}
++
++// TestFeeAfterOwnHop checks, over many policies and amounts, that paying
++// the remaining path with the fee taken back out sends the next hop at
++// least what our hop would have forwarded, and not much more.
++func TestFeeAfterOwnHop(t *testing.T) {
++	t.Parallel()
++
++	rng := rand.New(rand.NewSource(7))
++	for i := 0; i < 20_000; i++ {
++		// Our hop's policy and the rest of the path's, aggregated the
++		// way a recipient aggregates them (fees compound).
++		ownBase := uint32(rng.Intn(5_000))
++		ownRate := uint32(rng.Intn(5_000))
++		restBase := uint32(rng.Intn(5_000))
++		restRate := uint32(rng.Intn(5_000))
++		pathBase := ownBase + restBase +
++			uint32((uint64(restBase)*uint64(ownRate)+999_999)/1_000_000)
++		pathRate := ownRate + restRate +
++			uint32((uint64(restRate)*uint64(ownRate)+999_999)/1_000_000)
++
++		base, rate, err := feeAfterOwnHop(
++			pathBase, pathRate, ownBase, ownRate,
++		)
++		require.NoError(t, err)
++
++		amount := uint64(1 + rng.Intn(1_000_000_000))
++		if i%3 == 0 {
++			amount = uint64(1 + rng.Intn(20_000))
++		}
++		in := amount + uint64(pathBase) + amount*uint64(pathRate)/1_000_000
++		want := forwardedByHop(in, ownBase, ownRate)
++		got := amount + uint64(base) + amount*uint64(rate)/1_000_000
++		require.GreaterOrEqual(t, got, want,
++			"amount %d own %d/%d path %d/%d", amount, ownBase,
++			ownRate, pathBase, pathRate)
++		require.LessOrEqual(t, got-want, uint64(3)+amount/1_000_000,
++			"overpays by more than a few msat")
++	}
++
++	_, _, err := feeAfterOwnHop(10, 10, 11, 10)
++	require.Error(t, err, "own base above the path's")
++	_, _, err = feeAfterOwnHop(10, 10, 10, 11)
++	require.Error(t, err, "own rate above the path's")
++	base, rate, err := feeAfterOwnHop(1000, 1000, 1000, 1000)
++	require.NoError(t, err)
++	require.Equal(t, uint32(2), base, "only the slack remains")
++	require.Equal(t, uint32(0), rate)
++}
++
++// selfHop is a SelfHopProcessor over a real sphinx router with a node key.
++type selfHop struct {
++	router *sphinx.Router
++	peers  map[lnwire.ShortChannelID]*btcec.PublicKey
++}
++
++func (s *selfHop) DecryptBlindedData(blindingPoint *btcec.PublicKey,
++	data []byte) ([]byte, error) {
++
++	return s.router.DecryptBlindedHopData(blindingPoint, data)
++}
++
++func (s *selfHop) NextBlindingPoint(
++	blindingPoint *btcec.PublicKey) (*btcec.PublicKey, error) {
++
++	return s.router.NextEphemeral(blindingPoint)
++}
++
++func (s *selfHop) PeerOverChannel(
++	scid lnwire.ShortChannelID) (*btcec.PublicKey, error) {
++
++	if pub, ok := s.peers[scid]; ok {
++		return pub, nil
++	}
++
++	return nil, errors.New("no such channel")
++}
++
++func newRouter(t *testing.T, key *btcec.PrivateKey) *sphinx.Router {
++	t.Helper()
++
++	router := sphinx.NewRouter(
++		&sphinx.PrivKeyECDH{PrivKey: key}, sphinx.NewNoOpReplayLog(),
++	)
++	require.NoError(t, router.Start())
++	t.Cleanup(router.Stop)
++
++	return router
++}
++
++// TestPeelSelfIntro builds a real blinded path that starts at this node,
++// peels our hop, and checks the next hop can process what is left.
++func TestPeelSelfIntro(t *testing.T) {
++	t.Parallel()
++
++	us, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	peer, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	recipient, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	self := route.NewVertex(us.PubKey())
++
++	scid := lnwire.NewShortChanIDFromInt(0x1234)
++	ourHop := record.NewNonFinalBlindedRouteData(
++		scid, nil, record.PaymentRelayInfo{
++			CltvExpiryDelta: 40, FeeRate: 1000, BaseFee: 1000,
++		}, &record.PaymentConstraints{MaxCltvExpiry: 1000}, nil,
++	)
++	ourPlain, err := record.EncodeBlindedRouteData(ourHop)
++	require.NoError(t, err)
++	peerHop := record.NewNonFinalBlindedRouteData(
++		lnwire.NewShortChanIDFromInt(0x5678), nil,
++		record.PaymentRelayInfo{
++			CltvExpiryDelta: 80, FeeRate: 500, BaseFee: 500,
++		}, &record.PaymentConstraints{MaxCltvExpiry: 1000}, nil,
++	)
++	peerPlain, err := record.EncodeBlindedRouteData(peerHop)
++	require.NoError(t, err)
++	finalPlain, err := record.EncodeBlindedRouteData(
++		record.NewFinalHopBlindedRouteData(nil, []byte{1, 2, 3}),
++	)
++	require.NoError(t, err)
++	sessionKey, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	built, err := sphinx.BuildBlindedPath(sessionKey, []*sphinx.HopInfo{
++		{NodePub: us.PubKey(), PlainText: ourPlain},
++		{NodePub: peer.PubKey(), PlainText: peerPlain},
++		{NodePub: recipient.PubKey(), PlainText: finalPlain},
++	})
++	require.NoError(t, err)
++
++	// The aggregate over both relay hops, as the recipient computes it.
++	payment := &BlindedPayment{
++		BlindedPath:         built.Path,
++		BaseFee:             1501,
++		ProportionalFeeRate: 1501,
++		CltvExpiryDelta:     120,
++		HtlcMinimum:         1,
++		HtlcMaximum:         1_000_000_000,
++		Features:            lnwire.EmptyFeatureVector(),
++	}
++	set, err := NewBlindedPaymentPathSet([]*BlindedPayment{payment})
++	require.NoError(t, err)
++	require.True(t, set.IsIntroNode(self))
++
++	proc := &selfHop{
++		router: newRouter(t, us),
++		peers:  map[lnwire.ShortChannelID]*btcec.PublicKey{scid: peer.PubKey()},
++	}
++	peeled, err := PeelSelfIntro(set, self, proc)
++	require.NoError(t, err)
++	require.False(t, peeled.IsIntroNode(self))
++	require.True(t, peeled.IsIntroNode(route.NewVertex(peer.PubKey())))
++	require.Len(t, peeled.paths, 1)
++	got := peeled.paths[0]
++
++	// Our hop is gone, the marker hop is back once, and the fee and
++	// expiry have our policy taken out.
++	require.Len(t, got.BlindedPath.BlindedHops, 3)
++	require.Equal(t, built.Path.BlindedHops[1].CipherText,
++		got.BlindedPath.BlindedHops[0].CipherText)
++	require.True(t, IsBlindedRouteNUMSTargetKey(
++		got.BlindedPath.BlindedHops[2].BlindedNodePub.SerializeCompressed(),
++	))
++	require.Equal(t, uint16(80), got.CltvExpiryDelta)
++	require.Equal(t, uint32(503), got.BaseFee, "ceil(501e6/1001e3)+2")
++	require.Equal(t, uint32(501), got.ProportionalFeeRate)
++	expectedKey, err := proc.router.NextEphemeral(built.Path.BlindingPoint)
++	require.NoError(t, err)
++	require.True(t, got.BlindedPath.BlindingPoint.IsEqual(expectedKey))
++
++	// The next hop can process its hop under the derived key.
++	peerRouter := newRouter(t, peer)
++	plain, err := peerRouter.DecryptBlindedHopData(
++		got.BlindedPath.BlindingPoint,
++		bytes.Clone(got.BlindedPath.BlindedHops[0].CipherText),
++	)
++	require.NoError(t, err)
++	data, err := record.DecodeBlindedRouteData(bytes.NewReader(plain))
++	require.NoError(t, err)
++	require.True(t, data.ShortChannelID.IsSome())
++
++	// A set not starting at us is returned as is; with no processor the
++	// old refusal stands; a path ending at us is unpayable; an unknown
++	// channel is unpayable.
++	same, err := PeelSelfIntro(set, route.NewVertex(peer.PubKey()), proc)
++	require.NoError(t, err)
++	require.Equal(t, set, same)
++	_, err = PeelSelfIntro(set, self, nil)
++	require.ErrorIs(t, err, ErrSelfIntro)
++	short, err := NewBlindedPaymentPathSet([]*BlindedPayment{{
++		BlindedPath: &sphinx.BlindedPath{
++			IntroductionPoint: us.PubKey(),
++			BlindingPoint:     built.Path.BlindingPoint,
++			BlindedHops:       built.Path.BlindedHops[:1],
++		},
++		Features: lnwire.EmptyFeatureVector(),
++	}})
++	require.NoError(t, err)
++	_, err = PeelSelfIntro(short, self, proc)
++	require.ErrorIs(t, err, ErrSelfIntroUnpayable)
++	noChan := &selfHop{router: proc.router, peers: nil}
++	_, err = PeelSelfIntro(set, self, noChan)
++	require.ErrorIs(t, err, ErrSelfIntroUnpayable)
++
++	// A mixed set keeps the path through another node and peels ours.
++	other, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	viaOther := payment.deepCopy()
++	viaOther.BlindedPath.IntroductionPoint = other.PubKey()
++	mixed, err := NewBlindedPaymentPathSet([]*BlindedPayment{
++		payment, viaOther,
++	})
++	require.NoError(t, err)
++	peeled, err = PeelSelfIntro(mixed, self, proc)
++	require.NoError(t, err)
++	require.Len(t, peeled.paths, 2)
++	require.False(t, peeled.IsIntroNode(self))
++	require.True(t, peeled.IsIntroNode(route.NewVertex(other.PubKey())))
++}
++
++// TestPeelPaymentForSelf checks the payment the router pathfinds with after
++// peeling: the target and final expiry follow the peeled set, a path that
++// ends right after our hop makes the recipient's real key the target, a
++// path that leads back to us is refused, and a huge own base fee is refused
++// rather than truncated.
++func TestPeelPaymentForSelf(t *testing.T) {
++	t.Parallel()
++
++	us, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	peer, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	recipient, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	self := route.NewVertex(us.PubKey())
++	scid := lnwire.NewShortChanIDFromInt(0x1234)
++	scidToRecipient := lnwire.NewShortChanIDFromInt(0x4321)
++	proc := &selfHop{
++		router: newRouter(t, us),
++		peers: map[lnwire.ShortChannelID]*btcec.PublicKey{
++			scid:            peer.PubKey(),
++			scidToRecipient: recipient.PubKey(),
++		},
++	}
++
++	build := func(hops []*sphinx.HopInfo) *sphinx.BlindedPath {
++		sessionKey, err := btcec.NewPrivateKey()
++		require.NoError(t, err)
++		built, err := sphinx.BuildBlindedPath(sessionKey, hops)
++		require.NoError(t, err)
++
++		return built.Path
++	}
++	relay := func(scid lnwire.ShortChannelID, base uint64) []byte {
++		data := record.NewNonFinalBlindedRouteData(
++			scid, nil, record.PaymentRelayInfo{
++				CltvExpiryDelta: 40, FeeRate: 100,
++				BaseFee: lnwire.MilliSatoshi(base),
++			}, &record.PaymentConstraints{MaxCltvExpiry: 1000}, nil,
++		)
++		plain, err := record.EncodeBlindedRouteData(data)
++		require.NoError(t, err)
++
++		return plain
++	}
++	finalPlain, err := record.EncodeBlindedRouteData(
++		record.NewFinalHopBlindedRouteData(nil, []byte{1}),
++	)
++	require.NoError(t, err)
++	payment := func(path *sphinx.BlindedPath) *LightningPayment {
++		set, err := NewBlindedPaymentPathSet([]*BlindedPayment{{
++			BlindedPath:         path,
++			BaseFee:             2000,
++			ProportionalFeeRate: 300,
++			CltvExpiryDelta:     100,
++			HtlcMaximum:         1_000_000_000,
++			Features:            lnwire.EmptyFeatureVector(),
++		}})
++		require.NoError(t, err)
++		p := &LightningPayment{
++			Amount:         1_000_000,
++			BlindedPathSet: set,
++			FinalCLTVDelta: set.FinalCLTVDelta(),
++		}
++		copy(p.Target[:], set.TargetPubKey().SerializeCompressed())
++
++		return p
++	}
++
++	// Three hops: after ours, a two-hop path with the marker target.
++	long := payment(build([]*sphinx.HopInfo{
++		{NodePub: us.PubKey(), PlainText: relay(scid, 1000)},
++		{NodePub: peer.PubKey(), PlainText: relay(
++			lnwire.NewShortChanIDFromInt(9), 500,
++		)},
++		{NodePub: recipient.PubKey(), PlainText: finalPlain},
++	}))
++	peeled, err := PeelPaymentForSelf(long, self, proc)
++	require.NoError(t, err)
++	require.NotSame(t, long, peeled, "the caller's payment is left alone")
++	require.True(t, long.BlindedPathSet.IsIntroNode(self))
++	require.False(t, peeled.BlindedPathSet.IsIntroNode(self))
++	require.True(t, IsBlindedRouteNUMSTargetKey(peeled.Target[:]))
++	// A multi-hop set carries its expiry inside the blinded path, so
++	// the final delta the router adds is the set's, which is zero.
++	require.Equal(t, peeled.BlindedPathSet.FinalCLTVDelta(),
++		peeled.FinalCLTVDelta)
++	require.Equal(t, uint16(0), peeled.FinalCLTVDelta)
++
++	// Two hops: after ours the recipient is the only hop, so it becomes
++	// the target itself, with the remaining expiry as the final delta.
++	short := payment(build([]*sphinx.HopInfo{
++		{NodePub: us.PubKey(), PlainText: relay(scidToRecipient, 1000)},
++		{NodePub: recipient.PubKey(), PlainText: finalPlain},
++	}))
++	require.True(t, IsBlindedRouteNUMSTargetKey(short.Target[:]))
++	peeled, err = PeelPaymentForSelf(short, self, proc)
++	require.NoError(t, err)
++	require.Equal(t, route.NewVertex(recipient.PubKey()), peeled.Target)
++	require.Equal(t, uint16(60), peeled.FinalCLTVDelta)
++	hints, err := peeled.BlindedPathSet.ToRouteHints()
++	require.NoError(t, err)
++	require.Empty(t, hints, "a single-hop path needs no hint")
++
++	// A path that leads back to us is refused.
++	loop := payment(build([]*sphinx.HopInfo{
++		{NodePub: us.PubKey(), PlainText: relay(
++			lnwire.NewShortChanIDFromInt(7), 1000,
++		)},
++		{NodePub: us.PubKey(), PlainText: relay(scid, 1000)},
++		{NodePub: recipient.PubKey(), PlainText: finalPlain},
++	}))
++	loopProc := &selfHop{
++		router: proc.router,
++		peers: map[lnwire.ShortChannelID]*btcec.PublicKey{
++			lnwire.NewShortChanIDFromInt(7): us.PubKey(),
++			scid:                            peer.PubKey(),
++			scidToRecipient:                 recipient.PubKey(),
++		},
++	}
++	_, err = PeelPaymentForSelf(loop, self, loopProc)
++	require.ErrorIs(t, err, ErrSelfIntroUnpayable)
++
++	// An own base fee above the path's aggregate is refused: the
++	// recipient folded every hop's fee into the aggregate, so ours can
++	// never exceed it.
++	greedy := payment(build([]*sphinx.HopInfo{
++		{NodePub: us.PubKey(), PlainText: relay(scidToRecipient, 5000)},
++		{NodePub: recipient.PubKey(), PlainText: finalPlain},
++	}))
++	_, err = PeelPaymentForSelf(greedy, self, proc)
++	require.ErrorIs(t, err, ErrSelfIntroUnpayable)
++
++	// Not ours to peel: returned as is.
++	other := payment(build([]*sphinx.HopInfo{
++		{NodePub: peer.PubKey(), PlainText: relay(scid, 1000)},
++		{NodePub: recipient.PubKey(), PlainText: finalPlain},
++	}))
++	same, err := PeelPaymentForSelf(other, self, proc)
++	require.NoError(t, err)
++	require.Same(t, other, same)
++}
+diff --git a/routing/payment_session_source.go b/routing/payment_session_source.go
+index 15820059d..19cf89cb7 100644
+--- a/routing/payment_session_source.go
++++ b/routing/payment_session_source.go
+@@ -44,6 +44,11 @@ type SessionSource struct {
+ 	// PathFindingConfig defines global parameters that control the
+ 	// trade-off in path finding between fees and probability.
+ 	PathFindingConfig PathFindingConfig
++
++	// SelfHop lets a payment through a blinded path that starts at this
++	// node be made, by processing our own hop of it. Optional: without
++	// it such a payment is refused.
++	SelfHop SelfHopProcessor
+ }
+ 
+ // NewPaymentSession creates a new payment session backed by the latest prune
+@@ -62,6 +67,13 @@ func (m *SessionSource) NewPaymentSession(p *LightningPayment,
+ 		)
+ 	}
+ 
++	// A path set with this node as an introduction node is paid through
++	// the hop after ours; the payment's own copy stays as it was.
++	p, err := PeelPaymentForSelf(p, m.SourceNode.PubKeyBytes, m.SelfHop)
++	if err != nil {
++		return nil, err
++	}
++
+ 	session, err := newPaymentSession(
+ 		p, m.SourceNode.PubKeyBytes, getBandwidthHints,
+ 		m.GraphSessionFactory, m.MissionControl, m.PathFindingConfig,
+diff --git a/rpcserver.go b/rpcserver.go
+index 72f53629c..c4321f250 100644
+--- a/rpcserver.go
++++ b/rpcserver.go
+@@ -694,6 +694,7 @@ func (r *rpcServer) addDeps(ctx context.Context, s *server,
+ 
+ 	routerBackend := &routerrpc.RouterBackend{
+ 		SelfNode: selfNode.PubKeyBytes,
++		SelfHop:  &selfHopProcessor{s: s},
+ 		Clock:    clock.NewDefaultClock(),
+ 		FetchChannelCapacity: func(chanID uint64) (btcutil.Amount,
+ 			error) {
+diff --git a/server.go b/server.go
+index 004892e16..6cdddaec6 100644
+--- a/server.go
++++ b/server.go
+@@ -1236,6 +1236,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
+ 		MissionControl:      s.defaultMC,
+ 		GetLink:             s.htlcSwitch.GetLinkByShortID,
+ 		PathFindingConfig:   pathFindingConfig,
++		SelfHop:             &selfHopProcessor{s: s},
+ 	}
+ 
+ 	s.controlTower = routing.NewControlTower(dbs.PaymentsDB)
+@@ -5694,6 +5695,57 @@ func (s *server) SendOnionMessage(ctx context.Context, peerPub [33]byte,
+ 	return peer.SendMessageLazy(true, msg)
+ }
+ 
++// selfHopProcessor lets the router pay through a blinded path that starts
++// at this node, by processing our own hop with the node key.
++type selfHopProcessor struct {
++	s *server
++}
++
++// DecryptBlindedData decrypts our hop's data with the node key.
++func (p *selfHopProcessor) DecryptBlindedData(blindingPoint *btcec.PublicKey,
++	data []byte) ([]byte, error) {
++
++	return p.s.sphinxOnionMsg.DecryptBlindedHopData(blindingPoint, data)
++}
++
++// NextBlindingPoint derives the blinding point for the hop after ours.
++func (p *selfHopProcessor) NextBlindingPoint(
++	blindingPoint *btcec.PublicKey) (*btcec.PublicKey, error) {
++
++	return p.s.sphinxOnionMsg.NextEphemeral(blindingPoint)
++}
++
++// PeerOverChannel returns the peer at the other end of one of our channels,
++// which may be named by an alias, ours or the peer's. The switch knows
++// every open channel under every name it goes by; the graph is the fallback
++// for a channel the switch has no link for.
++func (p *selfHopProcessor) PeerOverChannel(
++	scid lnwire.ShortChannelID) (*btcec.PublicKey, error) {
++
++	if link, err := p.s.htlcSwitch.GetLinkByShortID(scid); err == nil {
++		peer := link.PeerPubKey()
++
++		return btcec.ParsePubKey(peer[:])
++	}
++	if base, err := p.s.aliasMgr.FindBaseSCID(scid); err == nil {
++		scid = base
++	}
++	info, _, _, err := p.s.graphDB.FetchChannelEdgesByID(
++		context.Background(), scid.ToUint64(),
++	)
++	if err != nil {
++		return nil, err
++	}
++	other, err := info.OtherNodeKeyBytes(
++		p.s.identityECDH.PubKey().SerializeCompressed(),
++	)
++	if err != nil {
++		return nil, err
++	}
++
++	return btcec.ParsePubKey(other[:])
++}
++
+ // offersDeps is what the offers sub-server gets from the node. Without
+ // onion messages there is no client: fetching and paying are refused up
+ // front rather than waiting for replies that cannot come.
+@@ -5740,31 +5792,6 @@ func (s *server) offersDeps() *offersrpc.Deps {
+ 			return [32]byte{}, false, !payment.Terminated(), nil
+ 		},
+ 		ResolveIntro: s.onionMessenger.ResolveIntro,
+-		NodeKey:      s.identityECDH.PubKey(),
+-		PeerOverChannel: func(ctx context.Context,
+-			scid lnwire.ShortChannelID) (*btcec.PublicKey, error) {
+-
+-			// The channel may be named by an alias.
+-			if base, err := s.aliasMgr.FindBaseSCID(scid); err == nil {
+-				scid = base
+-			}
+-			info, _, _, err := s.graphDB.FetchChannelEdgesByID(
+-				ctx, scid.ToUint64(),
+-			)
+-			if err != nil {
+-				return nil, err
+-			}
+-			other, err := info.OtherNodeKeyBytes(
+-				s.identityECDH.PubKey().SerializeCompressed(),
+-			)
+-			if err != nil {
+-				return nil, err
+-			}
+-
+-			return btcec.ParsePubKey(other[:])
+-		},
+-		DecryptBlindedData: s.sphinxOnionMsg.DecryptBlindedHopData,
+-		NextPathKey:        s.sphinxOnionMsg.NextEphemeral,
+ 	}
+ }
+ 
+-- 
+2.43.0
+

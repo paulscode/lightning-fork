@@ -1,0 +1,3924 @@
+From aa629b1e47cd87f1cfe55c723d347069ea202413 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Sun, 13 Sep 2026 20:31:09 -0500
+Subject: [PATCH 3/7] onionmsg: carry BOLT 12 messages over onion messages
+
+A new onionmsg package builds blinded paths to this node, sends a
+payload to a node id or to a blinded path, and turns delivered onion
+messages into typed invoice requests, invoices and invoice errors for
+the offers layer. It sits on the upstream onionmessage package, which
+relays and delivers the raw messages.
+
+Ported from LND master first, byte for byte: the onion message payload
+now carries reply_path as lnwire.BlindedPath, which closes the clash of
+two codecs for TLV type 2 in the lnwire package and accepts the sciddir
+introduction-node form; and onionmessage gains master's breadth-first
+FindPath over nodes that advertise onion messages. The RPC stream and
+the route helper follow the type change.
+
+Sending finds a route through the graph whose first hop is a connected
+peer, searching from each connected onion peer when the shortest route
+starts elsewhere, uses a direct peer when the destination or the
+introduction node is one, resolves an introduction node given as a
+channel and direction through the channel edge, and processes our own
+hop when we are the path's introduction node, the case where the payer
+is the miner's only peer. Opening a connection to an unrouted node is
+opt-in per send and capped, for fetches this node initiates; a reply to
+an inbound message never dials out, since the reply path is the
+sender's to choose. Hop data is padded to equal lengths, and the large
+onion is used when the payload does not fit the regular one.
+
+Receiving decrypts a copy of our hop's recipient data for the path_id,
+decodes the BOLT 12 record, and fans out to registered handlers with a
+cap on how many run at once; past the cap messages are dropped rather
+than queued. The server's connect hook dials on its own goroutine,
+honours the context and waits for the handshake so the new peer's
+features are known before it is used.
+
+The offers manager now gets the messenger as its path builder: an offer
+minted while the node has a channel peer that speaks onion messages
+carries a blinded path through it. The tests route every built onion
+through real sphinx routers hop by hop.
+
+(cherry picked from commit a63589d421a21b57a114be5c42fe15e1bb5d2992)
+---
+ lnwire/onion_msg_payload.go      |  183 +----
+ lnwire/onion_msg_payload_test.go |  125 ++--
+ lnwire/test_utils.go             |   49 +-
+ log.go                           |    2 +
+ onionmessage/errors.go           |   11 +
+ onionmessage/onion_endpoint.go   |    4 +-
+ onionmessage/pathfind.go         |  161 ++++
+ onionmessage/pathfind_test.go    |  361 +++++++++
+ onionmsg/invoice_error.go        |  143 ++++
+ onionmsg/log.go                  |   32 +
+ onionmsg/messenger.go            | 1179 ++++++++++++++++++++++++++++++
+ onionmsg/messenger_test.go       | 1118 ++++++++++++++++++++++++++++
+ routing/route/blindedroute.go    |    2 +-
+ rpcserver.go                     |   45 +-
+ server.go                        |  136 +++-
+ 15 files changed, 3273 insertions(+), 278 deletions(-)
+ create mode 100644 onionmessage/pathfind.go
+ create mode 100644 onionmessage/pathfind_test.go
+ create mode 100644 onionmsg/invoice_error.go
+ create mode 100644 onionmsg/log.go
+ create mode 100644 onionmsg/messenger.go
+ create mode 100644 onionmsg/messenger_test.go
+
+diff --git a/lnwire/onion_msg_payload.go b/lnwire/onion_msg_payload.go
+index fc4a1e986..157ebdc8b 100644
+--- a/lnwire/onion_msg_payload.go
++++ b/lnwire/onion_msg_payload.go
+@@ -7,7 +7,6 @@ import (
+ 	"io"
+ 	"sort"
+ 
+-	sphinx "github.com/lightningnetwork/lightning-onion"
+ 	"github.com/lightningnetwork/lnd/tlv"
+ )
+ 
+@@ -36,16 +35,9 @@ const (
+ 	InvoiceErrorNamespaceType tlv.Type = 68
+ )
+ 
+-var (
+-	// ErrNotFinalPayload is returned when a final hop payload is not
+-	// within the correct range.
+-	ErrNotFinalPayload = errors.New("final hop payloads type should be " +
+-		">= 64")
+-
+-	// ErrNoHops is returned when we handle a reply path that does not
+-	// have any hops (this makes no sense).
+-	ErrNoHops = errors.New("reply path requires hops")
+-)
++// ErrNotFinalPayload is returned when a final hop payload is not within the
++// correct range.
++var ErrNotFinalPayload = errors.New("final hop payloads type should be >= 64")
+ 
+ // ErrUnknownEvenType is returned when an onion message payload contains an
+ // unknown even TLV type. BOLT 4 requires the whole message to be ignored in
+@@ -63,7 +55,7 @@ var ErrMultipleFinalHopPayloads = errors.New("onion message payload contains " +
+ type OnionMessagePayload struct {
+ 	// ReplyPath contains a blinded path that can be used to respond to an
+ 	// onion message.
+-	ReplyPath *sphinx.BlindedPath
++	ReplyPath *BlindedPath
+ 
+ 	// EncryptedData contains encrypted data for the recipient.
+ 	EncryptedData []byte
+@@ -85,7 +77,7 @@ func (o *OnionMessagePayload) Encode() ([]byte, error) {
+ 	var records []tlv.Record
+ 
+ 	if o.ReplyPath != nil {
+-		records = append(records, replyPathRecord(o.ReplyPath))
++		records = append(records, o.ReplyPath.Record())
+ 	}
+ 
+ 	if len(o.EncryptedData) != 0 {
+@@ -143,11 +135,13 @@ func (o *OnionMessagePayload) Decode(r io.Reader) (map[tlv.Type][]byte, error) {
+ 			TLVType: InvoiceRequestNamespaceType,
+ 		}
+ 	)
+-	// Create a non-nil entry so that we can directly decode into it.
+-	o.ReplyPath = &sphinx.BlindedPath{}
++
++	// replyPath is used for decoding, we will later check if it was
++	// actually present and assign it to the message struct.
++	var replyPath BlindedPath
+ 
+ 	records := []tlv.Record{
+-		replyPathRecord(o.ReplyPath),
++		replyPath.Record(),
+ 		tlv.MakePrimitiveRecord(
+ 			encryptedDataTLVType, &o.EncryptedData,
+ 		),
+@@ -183,9 +177,8 @@ func (o *OnionMessagePayload) Decode(r io.Reader) (map[tlv.Type][]byte, error) {
+ 		return tlvMap, fmt.Errorf("decode stream: %w", err)
+ 	}
+ 
+-	// If our reply path wasn't populated, replace it with a nil entry.
+-	if _, ok := tlvMap[replyPathType]; !ok {
+-		o.ReplyPath = nil
++	if _, ok := tlvMap[replyPathType]; ok {
++		o.ReplyPath = &replyPath
+ 	}
+ 
+ 	// Once we're decoded our message, we want to also include any tlvs
+@@ -295,155 +288,3 @@ func (f *FinalHopTLV) Validate() error {
+ 
+ 	return nil
+ }
+-
+-// replyPathRecord produces a tlv record for a reply path.
+-func replyPathRecord(r *sphinx.BlindedPath) tlv.Record {
+-	return tlv.MakeDynamicRecord(
+-		replyPathType, r, replyPathSize(r), encodeReplyPath,
+-		decodeReplyPath,
+-	)
+-}
+-
+-// replyPathSize returns the encoded size of a reply path.
+-func replyPathSize(r *sphinx.BlindedPath) func() uint64 {
+-	return func() uint64 {
+-		// First node pubkey 33 + blinding point pubkey 33 + 1 byte for
+-		// uint8 for our hop count.
+-		size := uint64(33 + 33 + 1)
+-
+-		// Add each hop's size to our total.
+-		for _, hop := range r.BlindedHops {
+-			size += blindedHopSize(hop)
+-		}
+-
+-		return size
+-	}
+-}
+-
+-// encodeReplyPath encodes a reply path tlv.
+-func encodeReplyPath(w io.Writer, val interface{}, buf *[8]byte) error {
+-	if p, ok := val.(*sphinx.BlindedPath); ok {
+-		err := tlv.EPubKey(w, &p.IntroductionPoint, buf)
+-		if err != nil {
+-			return fmt.Errorf("encode first node id: %w", err)
+-		}
+-
+-		if err := tlv.EPubKey(w, &p.BlindingPoint, buf); err != nil {
+-			return fmt.Errorf("encode blinding point: %w", err)
+-		}
+-
+-		hopCount := uint8(len(p.BlindedHops))
+-		if hopCount == 0 {
+-			return ErrNoHops
+-		}
+-
+-		if err := tlv.EUint8(w, &hopCount, buf); err != nil {
+-			return fmt.Errorf("encode hop count: %w", err)
+-		}
+-
+-		for i, hop := range p.BlindedHops {
+-			if err := encodeBlindedHop(w, hop, buf); err != nil {
+-				return fmt.Errorf("hop %v: %w", i, err)
+-			}
+-		}
+-
+-		return nil
+-	}
+-
+-	return tlv.NewTypeForEncodingErr(val, "*sphinx.BlindedPath")
+-}
+-
+-// decodeReplyPath decodes a reply path tlv.
+-func decodeReplyPath(r io.Reader, val interface{}, buf *[8]byte,
+-	l uint64) error {
+-
+-	// If we have the correct type, and the length exceeds the fixed header
+-	// size (first node pubkey (33) + blinding point (33) + hop count (1) =
+-	// 67 bytes) to accommodate at least one hop, decode the reply path.
+-	if p, ok := val.(*sphinx.BlindedPath); ok && l > 67 {
+-		err := tlv.DPubKey(r, &p.IntroductionPoint, buf, 33)
+-		if err != nil {
+-			return fmt.Errorf("decode first id: %w", err)
+-		}
+-
+-		err = tlv.DPubKey(r, &p.BlindingPoint, buf, 33)
+-		if err != nil {
+-			return fmt.Errorf("decode blinding point:  %w", err)
+-		}
+-
+-		var hopCount uint8
+-		if err := tlv.DUint8(r, &hopCount, buf, 1); err != nil {
+-			return fmt.Errorf("decode hop count: %w", err)
+-		}
+-
+-		if hopCount == 0 {
+-			return ErrNoHops
+-		}
+-
+-		for i := 0; i < int(hopCount); i++ {
+-			hop := &sphinx.BlindedHopInfo{}
+-			if err := decodeBlindedHop(r, hop, buf); err != nil {
+-				return fmt.Errorf("decode hop: %w", err)
+-			}
+-
+-			p.BlindedHops = append(p.BlindedHops, hop)
+-		}
+-
+-		return nil
+-	}
+-
+-	return tlv.NewTypeForDecodingErr(val, "*sphinx.BlindedPath", l, l)
+-}
+-
+-// blindedHopSize returns the encoded size of a blinded hop.
+-func blindedHopSize(b *sphinx.BlindedHopInfo) uint64 {
+-	// 33 byte pubkey + 2 bytes uint16 length + var bytes.
+-	return uint64(33 + 2 + len(b.CipherText))
+-}
+-
+-// encodeBlindedHop encodes a blinded hop tlv.
+-func encodeBlindedHop(w io.Writer, val interface{}, buf *[8]byte) error {
+-	if b, ok := val.(*sphinx.BlindedHopInfo); ok {
+-		if err := tlv.EPubKey(w, &b.BlindedNodePub, buf); err != nil {
+-			return fmt.Errorf("encode blinded id: %w", err)
+-		}
+-
+-		dataLen := uint16(len(b.CipherText))
+-		if err := tlv.EUint16(w, &dataLen, buf); err != nil {
+-			return fmt.Errorf("data len: %w", err)
+-		}
+-
+-		if err := tlv.EVarBytes(w, &b.CipherText, buf); err != nil {
+-			return fmt.Errorf("encode encrypted data: %w", err)
+-		}
+-
+-		return nil
+-	}
+-
+-	return tlv.NewTypeForEncodingErr(val, "*sphinx.BlindedHopInfo")
+-}
+-
+-// decodeBlindedHop decodes a blinded hop tlv.
+-func decodeBlindedHop(r io.Reader, val interface{}, buf *[8]byte) error {
+-	if b, ok := val.(*sphinx.BlindedHopInfo); ok {
+-		err := tlv.DPubKey(r, &b.BlindedNodePub, buf, 33)
+-		if err != nil {
+-			return fmt.Errorf("decode blinded id: %w", err)
+-		}
+-
+-		var dataLen uint16
+-		err = tlv.DUint16(r, &dataLen, buf, 2)
+-		if err != nil {
+-			return fmt.Errorf("decode data len: %w", err)
+-		}
+-
+-		err = tlv.DVarBytes(r, &b.CipherText, buf, uint64(dataLen))
+-		if err != nil {
+-			return fmt.Errorf("decode data: %w", err)
+-		}
+-
+-		return nil
+-	}
+-
+-	return tlv.NewTypeForDecodingErr(val, "*sphinx.BlindedHopInfo", 0, 0)
+-}
+diff --git a/lnwire/onion_msg_payload_test.go b/lnwire/onion_msg_payload_test.go
+index 24e5a3e0b..f5345ea91 100644
+--- a/lnwire/onion_msg_payload_test.go
++++ b/lnwire/onion_msg_payload_test.go
+@@ -5,15 +5,14 @@ import (
+ 	"fmt"
+ 	"testing"
+ 
+-	sphinx "github.com/lightningnetwork/lightning-onion"
+ 	"github.com/lightningnetwork/lnd/tlv"
+ 	"github.com/stretchr/testify/require"
+ 	"pgregory.net/rapid"
+ )
+ 
+ // makeBlindedPath creates a BlindedPath with the given number of hops for
+-// testing. Each hop has a random blinded node pub and some cipher text.
+-func makeBlindedPath(t *testing.T, numHops int) *sphinx.BlindedPath {
++// testing. Each hop has a random blinded node ID and some cipher text.
++func makeBlindedPath(t *testing.T, numHops int) *BlindedPath {
+ 	t.Helper()
+ 
+ 	introKey, err := randPubKey()
+@@ -22,55 +21,48 @@ func makeBlindedPath(t *testing.T, numHops int) *sphinx.BlindedPath {
+ 	blindingKey, err := randPubKey()
+ 	require.NoError(t, err)
+ 
+-	hops := make([]*sphinx.BlindedHopInfo, numHops)
++	hops := make([]BlindedHop, numHops)
+ 	for i := range hops {
+ 		nodePub, err := randPubKey()
+ 		require.NoError(t, err)
+ 
+-		hops[i] = &sphinx.BlindedHopInfo{
+-			BlindedNodePub: nodePub,
+-			CipherText:     bytes.Repeat([]byte{byte(i + 1)}, 32),
+-		}
++		hops[i].BlindedNodeID = nodePub
++		hops[i].EncryptedData = bytes.Repeat([]byte{byte(i + 1)}, 32)
+ 	}
+ 
+-	return &sphinx.BlindedPath{
+-		IntroductionPoint: introKey,
+-		BlindingPoint:     blindingKey,
+-		BlindedHops:       hops,
++	return &BlindedPath{
++		IntroductionNode: PubkeyIntro{Pubkey: introKey},
++		BlindingPoint:    blindingKey,
++		Hops:             hops,
+ 	}
+ }
+ 
+-// assertBlindedPathEqual compares two BlindedPaths for equality, checking each
+-// field.
+-func assertBlindedPathEqual(t *testing.T, expected,
+-	actual *sphinx.BlindedPath) {
+-
++// assertBlindedPathEqual compares two BlindedPaths field-by-field. Direct
++// require.Equal would also work, but the per-field assertions surface
++// localised mismatches for easier triage.
++func assertBlindedPathEqual(t *testing.T, expected, actual *BlindedPath) {
+ 	t.Helper()
+ 
+-	require.True(
+-		t,
+-		expected.IntroductionPoint.IsEqual(actual.IntroductionPoint),
+-		"IntroductionPoint mismatch",
++	require.Equal(
++		t, expected.IntroductionNode, actual.IntroductionNode,
++		"IntroductionNode mismatch",
+ 	)
+-	require.True(
+-		t, expected.BlindingPoint.IsEqual(actual.BlindingPoint),
++	require.Equal(
++		t, expected.BlindingPoint, actual.BlindingPoint,
+ 		"BlindingPoint mismatch",
+ 	)
+-	require.Len(t, actual.BlindedHops, len(expected.BlindedHops))
+-
+-	for i, expectedHop := range expected.BlindedHops {
+-		actualHop := actual.BlindedHops[i]
++	require.Len(t, actual.Hops, len(expected.Hops))
+ 
+-		require.True(
+-			t,
+-			expectedHop.BlindedNodePub.IsEqual(
+-				actualHop.BlindedNodePub,
+-			),
+-			"hop %d: BlindedNodePub mismatch", i,
++	for i := range expected.Hops {
++		require.Equal(
++			t, expected.Hops[i].BlindedNodeID,
++			actual.Hops[i].BlindedNodeID,
++			"hop %d: BlindedNodeID mismatch", i,
+ 		)
+ 		require.Equal(
+-			t, expectedHop.CipherText, actualHop.CipherText,
+-			"hop %d: CipherText mismatch", i,
++			t, expected.Hops[i].EncryptedData,
++			actual.Hops[i].EncryptedData,
++			"hop %d: EncryptedData mismatch", i,
+ 		)
+ 	}
+ }
+@@ -112,6 +104,29 @@ func TestOnionMessagePayloadRoundTrip(t *testing.T) {
+ 		require.Empty(t, decoded.FinalHopTLVs)
+ 	})
+ 
++	t.Run("sciddir intro reply path", func(t *testing.T) {
++		t.Parallel()
++
++		path := makeBlindedPath(t, 2)
++		path.IntroductionNode = SciddirIntro{
++			Direction: 0x01,
++			SCID: [scidLen]byte{
++				0x00, 0x11, 0x22, 0x33,
++				0x44, 0x55, 0x66, 0x77,
++			},
++		}
++
++		original := &OnionMessagePayload{ReplyPath: path}
++
++		decoded := encodeAndDecode(t, original)
++
++		require.NotNil(t, decoded.ReplyPath)
++		require.IsType(
++			t, SciddirIntro{}, decoded.ReplyPath.IntroductionNode,
++		)
++		assertBlindedPathEqual(t, original.ReplyPath, decoded.ReplyPath)
++	})
++
+ 	t.Run("only encrypted data", func(t *testing.T) {
+ 		t.Parallel()
+ 
+@@ -408,15 +423,15 @@ func TestOnionMessagePayloadEncodeReplyPathNoHops(t *testing.T) {
+ 	require.NoError(t, err)
+ 
+ 	payload := &OnionMessagePayload{
+-		ReplyPath: &sphinx.BlindedPath{
+-			IntroductionPoint: introKey,
+-			BlindingPoint:     blindingKey,
+-			BlindedHops:       nil,
++		ReplyPath: &BlindedPath{
++			IntroductionNode: PubkeyIntro{Pubkey: introKey},
++			BlindingPoint:    blindingKey,
++			Hops:             nil,
+ 		},
+ 	}
+ 
+ 	_, err = payload.Encode()
+-	require.ErrorIs(t, err, ErrNoHops)
++	require.ErrorIs(t, err, ErrEmptyBlindedPath)
+ }
+ 
+ // TestOnionMessagePayloadEmpty tests that an empty payload roundtrips
+@@ -500,35 +515,9 @@ func TestOnionMessagePayloadRoundTripQuickCheck(t *testing.T) {
+ 			require.Nil(t, decoded.ReplyPath)
+ 		} else {
+ 			require.NotNil(t, decoded.ReplyPath)
+-			require.True(
+-				t,
+-				original.ReplyPath.IntroductionPoint.IsEqual(
+-					decoded.ReplyPath.IntroductionPoint,
+-				),
+-			)
+-			require.True(
+-				t,
+-				original.ReplyPath.BlindingPoint.IsEqual(
+-					decoded.ReplyPath.BlindingPoint,
+-				),
+-			)
+-			require.Len(
+-				t, decoded.ReplyPath.BlindedHops,
+-				len(original.ReplyPath.BlindedHops),
++			require.Equal(
++				t, original.ReplyPath, decoded.ReplyPath,
+ 			)
+-			for i, hop := range original.ReplyPath.BlindedHops {
+-				dHop := decoded.ReplyPath.BlindedHops[i]
+-				require.True(
+-					t,
+-					hop.BlindedNodePub.IsEqual(
+-						dHop.BlindedNodePub,
+-					),
+-				)
+-				require.Equal(
+-					t, hop.CipherText,
+-					dHop.CipherText,
+-				)
+-			}
+ 		}
+ 
+ 		// Verify encrypted data.
+diff --git a/lnwire/test_utils.go b/lnwire/test_utils.go
+index 602724a9d..ef0aaf0a3 100644
+--- a/lnwire/test_utils.go
++++ b/lnwire/test_utils.go
+@@ -9,7 +9,6 @@ import (
+ 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+ 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+ 	"github.com/btcsuite/btcd/wire"
+-	sphinx "github.com/lightningnetwork/lightning-onion"
+ 	"github.com/lightningnetwork/lnd/fn/v2"
+ 	"github.com/stretchr/testify/require"
+ 	"pgregory.net/rapid"
+@@ -59,30 +58,48 @@ func RandPubKey(t *rapid.T) *btcec.PublicKey {
+ 	return pub
+ }
+ 
+-// RandBlindedPath generates a random blinded path with 1-5 hops.
+-func RandBlindedPath(t *rapid.T) *sphinx.BlindedPath {
+-	introKey := RandPubKey(t)
+-	blindingKey := RandPubKey(t)
++// RandBlindedPath generates a random blinded path with 1-5 hops, alternating
++// between the pubkey and sciddir introduction-node variants per draw.
++func RandBlindedPath(t *rapid.T) *BlindedPath {
++	useSciddir := rapid.Bool().Draw(t, "introIsSciddir")
++
++	var intro IntroductionNode
++	if useSciddir {
++		var scid [scidLen]byte
++		copy(scid[:], rapid.SliceOfN(
++			rapid.Byte(), scidLen, scidLen,
++		).Draw(t, "introScid"))
++
++		dir := byte(rapid.IntRange(0, 1).Draw(t, "introDir"))
++		sciddir, err := NewSciddirIntro(dir, scid)
++		require.NoError(t, err)
++		intro = sciddir
++	} else {
++		pubkey, err := NewPubkeyIntro(RandPubKey(t))
++		require.NoError(t, err)
++		intro = pubkey
++	}
++
++	blindingPoint := RandPubKey(t)
+ 
+ 	numHops := rapid.IntRange(1, 5).Draw(t, "numBlindedHops")
+-	hops := make([]*sphinx.BlindedHopInfo, numHops)
++	hops := make([]BlindedHop, numHops)
+ 	for i := range hops {
+ 		cipherLen := rapid.IntRange(1, 128).Draw(
+ 			t, fmt.Sprintf("cipherLen-%d", i),
+ 		)
+ 
+-		hops[i] = &sphinx.BlindedHopInfo{
+-			BlindedNodePub: RandPubKey(t),
+-			CipherText: rapid.SliceOfN(
+-				rapid.Byte(), cipherLen, cipherLen,
+-			).Draw(t, fmt.Sprintf("cipherText-%d", i)),
+-		}
++		hops[i].BlindedNodeID = RandPubKey(t)
++
++		hops[i].EncryptedData = rapid.SliceOfN(
++			rapid.Byte(), cipherLen, cipherLen,
++		).Draw(t, fmt.Sprintf("cipherText-%d", i))
+ 	}
+ 
+-	return &sphinx.BlindedPath{
+-		IntroductionPoint: introKey,
+-		BlindingPoint:     blindingKey,
+-		BlindedHops:       hops,
++	return &BlindedPath{
++		IntroductionNode: intro,
++		BlindingPoint:    blindingPoint,
++		Hops:             hops,
+ 	}
+ }
+ 
+diff --git a/log.go b/log.go
+index 53cf84760..d5e513365 100644
+--- a/log.go
++++ b/log.go
+@@ -49,6 +49,7 @@ import (
+ 	"github.com/lightningnetwork/lnd/netann"
+ 	"github.com/lightningnetwork/lnd/offers"
+ 	"github.com/lightningnetwork/lnd/onionmessage"
++	"github.com/lightningnetwork/lnd/onionmsg"
+ 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
+ 	"github.com/lightningnetwork/lnd/peer"
+ 	"github.com/lightningnetwork/lnd/peernotifier"
+@@ -203,6 +204,7 @@ func SetupLoggers(root *build.SubLoggerManager, interceptor signal.Interceptor)
+ 	AddSubLogger(root, rpcwallet.Subsystem, interceptor, rpcwallet.UseLogger)
+ 	AddSubLogger(root, peersrpc.Subsystem, interceptor, peersrpc.UseLogger)
+ 	AddSubLogger(root, offers.Subsystem, interceptor, offers.UseLogger)
++	AddSubLogger(root, onionmsg.Subsystem, interceptor, onionmsg.UseLogger)
+ 	AddSubLogger(root, offersrpc.Subsystem, interceptor, offersrpc.UseLogger)
+ 	AddSubLogger(root, graph.Subsystem, interceptor, graph.UseLogger)
+ 	AddSubLogger(root, lncfg.Subsystem, interceptor, lncfg.UseLogger)
+diff --git a/onionmessage/errors.go b/onionmessage/errors.go
+index ac7980814..32898b41b 100644
+--- a/onionmessage/errors.go
++++ b/onionmessage/errors.go
+@@ -19,4 +19,15 @@ var (
+ 	// would be sent back to the same peer it was received from.
+ 	ErrSamePeerCycle = errors.New("onion message cycle: next " +
+ 		"hop is the sending peer")
++	// ErrNoPathFound is returned when no path exists between the source
++	// and destination nodes that supports onion messaging.
++	ErrNoPathFound = errors.New("no path found to destination")
++
++	// ErrDestinationNoOnionSupport is returned when the destination node
++	// does not advertise support for onion messages.
++	ErrDestinationNoOnionSupport = errors.New("destination does not " +
++		"support onion messages")
++
++	// ErrNodeNotFound is returned when the node is not found in the graph.
++	ErrNodeNotFound = errors.New("node not found in graph")
+ )
+diff --git a/onionmessage/onion_endpoint.go b/onionmessage/onion_endpoint.go
+index f6a32d2eb..0c9829e24 100644
+--- a/onionmessage/onion_endpoint.go
++++ b/onionmessage/onion_endpoint.go
+@@ -1,7 +1,7 @@
+ package onionmessage
+ 
+ import (
+-	sphinx "github.com/lightningnetwork/lightning-onion"
++	"github.com/lightningnetwork/lnd/lnwire"
+ 	"github.com/lightningnetwork/lnd/record"
+ )
+ 
+@@ -26,7 +26,7 @@ type OnionMessageUpdate struct {
+ 	CustomRecords record.CustomSet
+ 
+ 	// ReplyPath contains the reply path information for the onion message.
+-	ReplyPath *sphinx.BlindedPath
++	ReplyPath *lnwire.BlindedPath
+ 
+ 	// EncryptedRecipientData contains the encrypted recipient data for the
+ 	// onion message, created by the creator of the blinded route. This is
+diff --git a/onionmessage/pathfind.go b/onionmessage/pathfind.go
+new file mode 100644
+index 000000000..a9e4ff6ff
+--- /dev/null
++++ b/onionmessage/pathfind.go
+@@ -0,0 +1,161 @@
++package onionmessage
++
++import (
++	"context"
++	"errors"
++
++	graphdb "github.com/lightningnetwork/lnd/graph/db"
++	"github.com/lightningnetwork/lnd/lnwire"
++	"github.com/lightningnetwork/lnd/routing/route"
++)
++
++// OnionMessagePath represents a route found for an onion message. It is a slice
++// of vertices ordered from the first-hop peer to the destination.
++type OnionMessagePath []route.Vertex
++
++// FindPath finds the shortest path (by hop count) from source to destination
++// through nodes that support onion messaging (feature bit 38/39). It uses a
++// standard BFS on the channel graph filtered by the OnionMessagesOptional
++// feature bit.
++func FindPath(ctx context.Context, graph graphdb.NodeTraverser, source,
++	destination route.Vertex, maxHops int) (OnionMessagePath, error) {
++
++	// Check that the destination supports onion messaging.
++	destFeatures, err := graph.FetchNodeFeatures(ctx, destination)
++	if err != nil {
++		return nil, err
++	}
++
++	// An empty feature vector means the node is absent from our graph.
++	// In that case, we send back a NotFound error.
++	if len(destFeatures.Features()) == 0 {
++		return nil, ErrNodeNotFound
++	}
++
++	if !destFeatures.HasFeature(lnwire.OnionMessagesOptional) {
++		return nil, ErrDestinationNoOnionSupport
++	}
++
++	// If source == destination, return empty path.
++	if source == destination {
++		return OnionMessagePath{}, nil
++	}
++
++	parent := make(map[route.Vertex]route.Vertex)
++	visited := make(map[route.Vertex]bool)
++
++	visited[source] = true
++
++	queue := []route.Vertex{source}
++	depth := 0
++
++	for len(queue) > 0 {
++		depth++
++		if depth > maxHops {
++			break
++		}
++
++		nextQueue := make([]route.Vertex, 0)
++
++		for _, current := range queue {
++			err := graph.ForEachNodeDirectedChannel(ctx, current,
++				func(channel *graphdb.DirectedChannel) error {
++					neighbor := channel.OtherNode
++
++					if visited[neighbor] {
++						return nil
++					}
++
++					// Mark visited before the feature check
++					// so we never fetch features for the
++					// same node twice.
++					visited[neighbor] = true
++
++					// Skip nodes that don't support onion
++					// messaging.
++					feats, err := graph.FetchNodeFeatures(
++						ctx, neighbor,
++					)
++					if err != nil {
++						// If the context is canceled or
++						// deadline exceeded, propagate
++						// the error.
++
++						if ctx.Err() != nil {
++							return err
++						}
++
++						log.Tracef("Unable to fetch "+
++							"features for node "+
++							"%v: %v",
++							neighbor.String(), err)
++
++						return nil
++					}
++
++					if !feats.HasFeature(
++						lnwire.OnionMessagesOptional,
++					) {
++
++						return nil
++					}
++
++					parent[neighbor] = current
++
++					if neighbor == destination {
++						return errBFSDone
++					}
++
++					nextQueue = append(
++						nextQueue, neighbor,
++					)
++
++					return nil
++				},
++				func() {},
++			)
++
++			// Check if we found the destination.
++			if errors.Is(err, errBFSDone) {
++				return reconstructPath(
++					parent, source, destination,
++				), nil
++			}
++
++			if err != nil {
++				return nil, err
++			}
++		}
++
++		queue = nextQueue
++	}
++
++	return nil, ErrNoPathFound
++}
++
++// errBFSDone is a sentinel error used internally to break out of the
++// ForEachNodeDirectedChannel callback when the destination is found.
++var errBFSDone = errors.New("bfs done")
++
++// reconstructPath rebuilds the path from destination back to source using the
++// parent map, returning the hops in forward order (excluding source).
++func reconstructPath(parent map[route.Vertex]route.Vertex,
++	source, destination route.Vertex) OnionMessagePath {
++
++	// Calculate path length to pre-allocate the slice.
++	pathLen := 0
++	for curr := destination; curr != source; curr = parent[curr] {
++		pathLen++
++	}
++
++	// Populate the path in correct order, avoiding a separate reversal
++	// step.
++	path := make(OnionMessagePath, pathLen)
++	curr := destination
++	for i := pathLen - 1; i >= 0; i-- {
++		path[i] = curr
++		curr = parent[curr]
++	}
++
++	return path
++}
+diff --git a/onionmessage/pathfind_test.go b/onionmessage/pathfind_test.go
+new file mode 100644
+index 000000000..1b7e6ff70
+--- /dev/null
++++ b/onionmessage/pathfind_test.go
+@@ -0,0 +1,361 @@
++package onionmessage
++
++import (
++	"context"
++	"testing"
++
++	graphdb "github.com/lightningnetwork/lnd/graph/db"
++	"github.com/lightningnetwork/lnd/lnwire"
++	"github.com/lightningnetwork/lnd/routing/route"
++	"github.com/stretchr/testify/require"
++)
++
++// mockNodeTraverser implements graphdb.NodeTraverser for testing the BFS
++// pathfinding algorithm.
++type mockNodeTraverser struct {
++	// edges maps each node to its list of channel neighbors.
++	edges map[route.Vertex][]route.Vertex
++
++	// features maps each node to its advertised feature vector.
++	features map[route.Vertex]*lnwire.FeatureVector
++}
++
++// newMockNodeTraverser creates a new mockNodeTraverser with initialized maps.
++func newMockNodeTraverser() *mockNodeTraverser {
++	return &mockNodeTraverser{
++		edges:    make(map[route.Vertex][]route.Vertex),
++		features: make(map[route.Vertex]*lnwire.FeatureVector),
++	}
++}
++
++// addNode adds a node with the given features to the mock graph.
++func (m *mockNodeTraverser) addNode(v route.Vertex,
++	features *lnwire.FeatureVector) {
++
++	m.features[v] = features
++}
++
++// addEdge adds a bidirectional edge between two nodes.
++func (m *mockNodeTraverser) addEdge(a, b route.Vertex) {
++	m.edges[a] = append(m.edges[a], b)
++	m.edges[b] = append(m.edges[b], a)
++}
++
++// ForEachNodeDirectedChannel calls the callback for every channel neighbor of
++// the given node.
++func (m *mockNodeTraverser) ForEachNodeDirectedChannel(
++	_ context.Context, nodePub route.Vertex,
++	cb func(channel *graphdb.DirectedChannel) error,
++	reset func()) error {
++
++	neighbors, ok := m.edges[nodePub]
++	if !ok {
++		return nil
++	}
++
++	for _, neighbor := range neighbors {
++		err := cb(&graphdb.DirectedChannel{
++			OtherNode: neighbor,
++		})
++		if err != nil {
++			return err
++		}
++	}
++
++	return nil
++}
++
++// FetchNodeFeatures returns the features of the given node. Returns an
++// EmptyFeatureVector (nil error) when the node is absent, matching the
++// production DB behaviour of graphdb.nodeTraverserSession.
++func (m *mockNodeTraverser) FetchNodeFeatures(
++	_ context.Context,
++	nodePub route.Vertex) (*lnwire.FeatureVector, error) {
++
++	features, ok := m.features[nodePub]
++	if !ok {
++		return lnwire.EmptyFeatureVector(), nil
++	}
++
++	return features, nil
++}
++
++// vertexFromByte creates a test Vertex from a single byte for readability.
++func vertexFromByte(b byte) route.Vertex {
++	var v route.Vertex
++	v[0] = b
++
++	return v
++}
++
++// onionFeatures returns a feature vector with the OnionMessagesOptional bit
++// set.
++func onionFeatures() *lnwire.FeatureVector {
++	return lnwire.NewFeatureVector(
++		lnwire.NewRawFeatureVector(lnwire.OnionMessagesOptional),
++		nil,
++	)
++}
++
++// noOnionFeatures returns a feature vector that has some bits set (e.g.
++// data-loss-protect) but NOT onion message support. This simulates a node
++// that is present in the graph but does not advertise onion messages,
++// as distinct from a node that is absent from the graph entirely (which
++// returns a zero-bit EmptyFeatureVector).
++func noOnionFeatures() *lnwire.FeatureVector {
++	return lnwire.NewFeatureVector(
++		lnwire.NewRawFeatureVector(lnwire.DataLossProtectOptional),
++		nil,
++	)
++}
++
++// TestFindPathDirectNeighbor tests pathfinding when destination is a direct
++// neighbor.
++func TestFindPathDirectNeighbor(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	dest := vertexFromByte(2)
++
++	graph.addNode(source, onionFeatures())
++	graph.addNode(dest, onionFeatures())
++	graph.addEdge(source, dest)
++
++	path, err := FindPath(t.Context(), graph, source, dest, 20)
++	require.NoError(t, err)
++	require.Len(t, path, 1)
++	require.Equal(t, dest, path[0])
++}
++
++// TestFindPathMultiHop tests pathfinding across multiple hops.
++func TestFindPathMultiHop(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	hop1 := vertexFromByte(2)
++	hop2 := vertexFromByte(3)
++	dest := vertexFromByte(4)
++
++	graph.addNode(source, onionFeatures())
++	graph.addNode(hop1, onionFeatures())
++	graph.addNode(hop2, onionFeatures())
++	graph.addNode(dest, onionFeatures())
++
++	graph.addEdge(source, hop1)
++	graph.addEdge(hop1, hop2)
++	graph.addEdge(hop2, dest)
++
++	path, err := FindPath(t.Context(), graph, source, dest, 20)
++	require.NoError(t, err)
++	require.Len(t, path, 3)
++	require.Equal(t, hop1, path[0])
++	require.Equal(t, hop2, path[1])
++	require.Equal(t, dest, path[2])
++}
++
++// TestFindPathFeatureFiltering tests that nodes without onion message support
++// are skipped, finding a longer path through supporting nodes.
++func TestFindPathFeatureFiltering(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	noOnion := vertexFromByte(2)
++	withOnion := vertexFromByte(3)
++	withOnion2 := vertexFromByte(4)
++	dest := vertexFromByte(5)
++
++	graph.addNode(source, onionFeatures())
++	graph.addNode(noOnion, noOnionFeatures())
++	graph.addNode(withOnion, onionFeatures())
++	graph.addNode(withOnion2, onionFeatures())
++	graph.addNode(dest, onionFeatures())
++
++	// Direct path through noOnion (shorter).
++	graph.addEdge(source, noOnion)
++	graph.addEdge(noOnion, dest)
++
++	// Alternate path through withOnion (longer).
++	graph.addEdge(source, withOnion)
++	graph.addEdge(withOnion, withOnion2)
++	graph.addEdge(withOnion2, dest)
++
++	path, err := FindPath(t.Context(), graph, source, dest, 20)
++	require.NoError(t, err)
++	require.Len(t, path, 3)
++	require.Equal(t, withOnion, path[0])
++	require.Equal(t, withOnion2, path[1])
++	require.Equal(t, dest, path[2])
++}
++
++// TestFindPathNoPathExists tests that ErrNoPathFound is returned when the
++// graph is disconnected.
++func TestFindPathNoPathExists(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	dest := vertexFromByte(2)
++
++	graph.addNode(source, onionFeatures())
++	graph.addNode(dest, onionFeatures())
++
++	// No edges between source and dest.
++	_, err := FindPath(t.Context(), graph, source, dest, 20)
++	require.ErrorIs(t, err, ErrNoPathFound)
++}
++
++// TestFindPathDestinationNotInGraph tests that ErrNodeNotFound is returned when
++// the destination has no entry in the graph (empty feature vector).
++func TestFindPathDestinationNotInGraph(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	dest := vertexFromByte(2)
++
++	// dest not added to graph; FetchNodeFeatures returns
++	// EmptyFeatureVector.
++	graph.addNode(source, onionFeatures())
++
++	_, err := FindPath(t.Context(), graph, source, dest, 20)
++	require.ErrorIs(t, err, ErrNodeNotFound)
++}
++
++// TestFindPathDestinationNoOnionSupport tests that
++// ErrDestinationNoOnionSupport is returned when the destination doesn't
++// support onion messages.
++func TestFindPathDestinationNoOnionSupport(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	dest := vertexFromByte(2)
++
++	graph.addNode(source, onionFeatures())
++	graph.addNode(dest, noOnionFeatures())
++	graph.addEdge(source, dest)
++
++	_, err := FindPath(t.Context(), graph, source, dest, 20)
++	require.ErrorIs(t, err, ErrDestinationNoOnionSupport)
++}
++
++// TestFindPathMaxHopsExceeded tests that ErrNoPathFound is returned when the
++// path exceeds the maximum number of hops.
++func TestFindPathMaxHopsExceeded(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	hop1 := vertexFromByte(2)
++	hop2 := vertexFromByte(3)
++	dest := vertexFromByte(4)
++
++	graph.addNode(source, onionFeatures())
++	graph.addNode(hop1, onionFeatures())
++	graph.addNode(hop2, onionFeatures())
++	graph.addNode(dest, onionFeatures())
++
++	graph.addEdge(source, hop1)
++	graph.addEdge(hop1, hop2)
++	graph.addEdge(hop2, dest)
++
++	// Path requires 3 hops, but maxHops is 2.
++	_, err := FindPath(t.Context(), graph, source, dest, 2)
++	require.ErrorIs(t, err, ErrNoPathFound)
++}
++
++// TestFindPathWithCycles tests that BFS correctly handles cycles in the graph.
++func TestFindPathWithCycles(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	a := vertexFromByte(2)
++	b := vertexFromByte(3)
++	c := vertexFromByte(4)
++	dest := vertexFromByte(5)
++
++	graph.addNode(source, onionFeatures())
++	graph.addNode(a, onionFeatures())
++	graph.addNode(b, onionFeatures())
++	graph.addNode(c, onionFeatures())
++	graph.addNode(dest, onionFeatures())
++
++	// Create a cycle: source -> a -> b -> c -> a
++	graph.addEdge(source, a)
++	graph.addEdge(a, b)
++	graph.addEdge(b, c)
++	graph.addEdge(c, a)
++
++	// Path to dest through b.
++	graph.addEdge(b, dest)
++
++	path, err := FindPath(t.Context(), graph, source, dest, 20)
++	require.NoError(t, err)
++	require.Len(t, path, 3)
++	require.Equal(t, a, path[0])
++	require.Equal(t, b, path[1])
++	require.Equal(t, dest, path[2])
++}
++
++// TestFindPathShortestPath tests that BFS finds the shortest path when
++// multiple paths of different lengths exist.
++func TestFindPathShortestPath(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	source := vertexFromByte(1)
++	a := vertexFromByte(2)
++	b := vertexFromByte(3)
++	c := vertexFromByte(4)
++	dest := vertexFromByte(5)
++
++	graph.addNode(source, onionFeatures())
++	graph.addNode(a, onionFeatures())
++	graph.addNode(b, onionFeatures())
++	graph.addNode(c, onionFeatures())
++	graph.addNode(dest, onionFeatures())
++
++	// Long path: source -> a -> b -> c -> dest (4 hops).
++	graph.addEdge(source, a)
++	graph.addEdge(a, b)
++	graph.addEdge(b, c)
++	graph.addEdge(c, dest)
++
++	// Short path: source -> b -> dest (2 hops).
++	graph.addEdge(source, b)
++	graph.addEdge(b, dest)
++
++	path, err := FindPath(t.Context(), graph, source, dest, 20)
++	require.NoError(t, err)
++	require.Len(t, path, 2)
++	require.Equal(t, b, path[0])
++	require.Equal(t, dest, path[1])
++}
++
++// TestFindPathSameSourceAndDest tests that finding a path from a node to
++// itself returns an empty path.
++func TestFindPathSameSourceAndDest(t *testing.T) {
++	t.Parallel()
++
++	graph := newMockNodeTraverser()
++
++	node := vertexFromByte(1)
++	graph.addNode(node, onionFeatures())
++
++	path, err := FindPath(t.Context(), graph, node, node, 20)
++	require.NoError(t, err)
++	require.Len(t, path, 0)
++}
+diff --git a/onionmsg/invoice_error.go b/onionmsg/invoice_error.go
+new file mode 100644
+index 000000000..88c4bfe84
+--- /dev/null
++++ b/onionmsg/invoice_error.go
+@@ -0,0 +1,143 @@
++package onionmsg
++
++import (
++	"bytes"
++	"fmt"
++	"unicode/utf8"
++
++	"github.com/lightningnetwork/lnd/tlv"
++)
++
++const (
++	// Onion message payload TLV types for BOLT 12 messages, from BOLT 4's
++	// onionmsg_tlv.
++	TypeInvoiceRequest tlv.Type = 64
++	TypeInvoice        tlv.Type = 66
++	TypeInvoiceError   tlv.Type = 68
++
++	// invoice_error's own TLV types, from BOLT 12.
++	typeErroneousField tlv.Type = 1
++	typeSuggestedValue tlv.Type = 3
++	typeErrorText      tlv.Type = 5
++
++	// MaxInvoiceErrorBytes bounds the text of an invoice_error we accept
++	// or send.
++	MaxInvoiceErrorBytes = 1024
++)
++
++// InvoiceError is BOLT 12's invoice_error: the reply to a request or an
++// invoice that could not be honoured.
++type InvoiceError struct {
++	// ErroneousField is the TLV type of the field the error is about,
++	// when the sender named one.
++	ErroneousField *uint64
++
++	// SuggestedValue is what the sender would accept for that field, when
++	// it said.
++	SuggestedValue []byte
++
++	// Message is the human-readable error, UTF-8.
++	Message string
++}
++
++// Encode serialises the error as the value of an invoice_error TLV.
++func (e *InvoiceError) Encode() ([]byte, error) {
++	if e.Message == "" {
++		return nil, fmt.Errorf("invoice_error needs a message")
++	}
++	if !utf8.ValidString(e.Message) {
++		return nil, fmt.Errorf("invoice_error text is not UTF-8")
++	}
++	if len(e.Message) > MaxInvoiceErrorBytes {
++		return nil, fmt.Errorf("invoice_error text over %d bytes",
++			MaxInvoiceErrorBytes)
++	}
++	if e.SuggestedValue != nil && e.ErroneousField == nil {
++		return nil, fmt.Errorf("invoice_error suggests a value for " +
++			"no field")
++	}
++	var records []tlv.Record
++	if e.ErroneousField != nil {
++		field := *e.ErroneousField
++		records = append(records, tlv.MakeDynamicRecord(
++			typeErroneousField, &field, func() uint64 {
++				return tlv.SizeTUint64(field)
++			}, tlv.ETUint64, tlv.DTUint64,
++		))
++	}
++	if e.SuggestedValue != nil {
++		value := e.SuggestedValue
++		records = append(records, tlv.MakePrimitiveRecord(
++			typeSuggestedValue, &value,
++		))
++	}
++	msg := []byte(e.Message)
++	records = append(records, tlv.MakePrimitiveRecord(typeErrorText, &msg))
++
++	stream, err := tlv.NewStream(records...)
++	if err != nil {
++		return nil, err
++	}
++	var b bytes.Buffer
++	if err := stream.Encode(&b); err != nil {
++		return nil, err
++	}
++
++	return b.Bytes(), nil
++}
++
++// DecodeInvoiceError parses the value of an invoice_error TLV.
++func DecodeInvoiceError(data []byte) (*InvoiceError, error) {
++	var (
++		field    uint64
++		value    []byte
++		text     []byte
++		hasField bool
++	)
++	stream, err := tlv.NewStream(
++		tlv.MakeDynamicRecord(
++			typeErroneousField, &field, func() uint64 {
++				return tlv.SizeTUint64(field)
++			}, tlv.ETUint64, tlv.DTUint64,
++		),
++		tlv.MakePrimitiveRecord(typeSuggestedValue, &value),
++		tlv.MakePrimitiveRecord(typeErrorText, &text),
++	)
++	if err != nil {
++		return nil, err
++	}
++	parsed, err := stream.DecodeWithParsedTypes(bytes.NewReader(data))
++	if err != nil {
++		return nil, fmt.Errorf("invoice_error: %w", err)
++	}
++	if _, ok := parsed[typeErrorText]; !ok {
++		return nil, fmt.Errorf("invoice_error without error text")
++	}
++	if !utf8.Valid(text) {
++		return nil, fmt.Errorf("invoice_error text is not UTF-8")
++	}
++	if len(text) > MaxInvoiceErrorBytes {
++		// Cut on a rune boundary, so the text stays UTF-8.
++		cut := MaxInvoiceErrorBytes
++		for cut > 0 && !utf8.RuneStart(text[cut]) {
++			cut--
++		}
++		text = text[:cut]
++	}
++	_, hasField = parsed[typeErroneousField]
++	_, hasValue := parsed[typeSuggestedValue]
++	if hasValue && !hasField {
++		return nil, fmt.Errorf("invoice_error suggests a value for " +
++			"no field")
++	}
++
++	out := &InvoiceError{Message: string(text)}
++	if hasField {
++		out.ErroneousField = &field
++	}
++	if hasValue {
++		out.SuggestedValue = value
++	}
++
++	return out, nil
++}
+diff --git a/onionmsg/log.go b/onionmsg/log.go
+new file mode 100644
+index 000000000..9e157e55c
+--- /dev/null
++++ b/onionmsg/log.go
+@@ -0,0 +1,32 @@
++package onionmsg
++
++import (
++	"github.com/btcsuite/btclog/v2"
++	"github.com/lightningnetwork/lnd/build"
++)
++
++// Subsystem defines the logging code for this subsystem.
++const Subsystem = "OMSG"
++
++// log is a logger that is initialized with no output filters. This means the
++// package will not perform any logging by default until the caller requests
++// it.
++var log btclog.Logger
++
++// The default amount of logging is none.
++func init() {
++	UseLogger(build.NewSubLogger(Subsystem, nil))
++}
++
++// DisableLog disables all library log output. Logging output is disabled by
++// default until UseLogger is called.
++func DisableLog() {
++	UseLogger(btclog.Disabled)
++}
++
++// UseLogger uses a specified Logger to output package logging info. This
++// should be used in preference to SetLogWriter if the caller is also using
++// btclog.
++func UseLogger(logger btclog.Logger) {
++	log = logger
++}
+diff --git a/onionmsg/messenger.go b/onionmsg/messenger.go
+new file mode 100644
+index 000000000..fcb7b21bf
+--- /dev/null
++++ b/onionmsg/messenger.go
+@@ -0,0 +1,1179 @@
++// Package onionmsg carries BOLT 12 messages over onion messages. It builds
++// blinded paths to this node, sends a payload to a node or to a blinded path
++// by finding a route through the graph, and turns delivered onion messages
++// into typed invoice requests, invoices and invoice errors. It sits on the
++// upstream onionmessage package, which relays and delivers the raw messages.
++package onionmsg
++
++import (
++	"bytes"
++	"context"
++	"encoding/binary"
++	"errors"
++	"fmt"
++	"net"
++	"sync"
++	"time"
++
++	"github.com/btcsuite/btcd/btcec/v2"
++	sphinx "github.com/lightningnetwork/lightning-onion"
++	"github.com/lightningnetwork/lnd/bolt12"
++	"github.com/lightningnetwork/lnd/fn/v2"
++	graphdb "github.com/lightningnetwork/lnd/graph/db"
++	"github.com/lightningnetwork/lnd/graph/db/models"
++	"github.com/lightningnetwork/lnd/lnwire"
++	"github.com/lightningnetwork/lnd/onionmessage"
++	"github.com/lightningnetwork/lnd/record"
++	"github.com/lightningnetwork/lnd/routing/route"
++	"github.com/lightningnetwork/lnd/subscribe"
++	"github.com/lightningnetwork/lnd/tlv"
++)
++
++const (
++	// DefaultMaxHops bounds the graph search for a route to an
++	// introduction node or a destination.
++	DefaultMaxHops = 4
++
++	// DefaultMaxPaths is how many blinded paths an offer gets, each
++	// through a different introduction peer.
++	DefaultMaxPaths = 2
++
++	// maxConcurrentHandlers bounds how many delivered messages are being
++	// handled at once. Past it, messages are dropped rather than queued,
++	// so a flood cannot stall delivery.
++	maxConcurrentHandlers = 16
++
++	// maxConcurrentDials bounds how many outbound connections a send may
++	// be making at once.
++	maxConcurrentDials = 2
++
++	// ConnectTimeout bounds a connection made to deliver a message.
++	ConnectTimeout = 30 * time.Second
++)
++
++var (
++	// ErrNoPeers is returned when no connected peer can be an
++	// introduction node.
++	ErrNoPeers = errors.New("no connected peer supports onion messages")
++
++	// ErrDestinationIsSelf is returned when a message would be sent to
++	// this node.
++	ErrDestinationIsSelf = errors.New("destination is this node")
++
++	// ErrUnreachable is returned when no route to the destination or its
++	// introduction node exists and it cannot, or may not, be connected
++	// to directly.
++	ErrUnreachable = errors.New("destination is unreachable")
++
++	// ErrBadDestination is returned for a destination that names neither
++	// a node nor a path, or a path that is malformed.
++	ErrBadDestination = errors.New("destination names no node or path")
++
++	// ErrTooBusy is returned to no one; it is logged when a delivered
++	// message is dropped because every handler slot is taken.
++	ErrTooBusy = errors.New("all handler slots are busy")
++)
++
++// Peer describes a connected peer as far as onion messaging cares.
++type Peer struct {
++	// Pub is the peer's node id.
++	Pub *btcec.PublicKey
++
++	// OnionMessages is whether the peer advertises onion messages.
++	OnionMessages bool
++
++	// HasChannel is whether we have an open channel with the peer, which
++	// is what lets it relay to and from us under the usual relay policy,
++	// and what makes it likely to stay connected.
++	HasChannel bool
++}
++
++// Config holds what the messenger needs from the node.
++type Config struct {
++	// NodeKey is this node's id.
++	NodeKey *btcec.PublicKey
++
++	// Graph is searched for routes to introduction nodes.
++	Graph graphdb.NodeTraverser
++
++	// FetchChannelEdge returns the channel a short channel id names, for
++	// resolving an introduction node given as a channel and direction.
++	FetchChannelEdge func(ctx context.Context,
++		scid uint64) (*models.ChannelEdgeInfo, error)
++
++	// FetchNodeAddrs returns a node's announced addresses, for connecting
++	// to an introduction node no route leads to.
++	FetchNodeAddrs func(ctx context.Context,
++		node route.Vertex) ([]net.Addr, error)
++
++	// Peers lists the connected peers whose features are known.
++	Peers func() []Peer
++
++	// ConnectPeer connects to a node at one of its addresses and returns
++	// once the peer is active and its features are known, so that Peers
++	// lists it, or when ctx ends. A node that is already a peer is not
++	// an error.
++	ConnectPeer func(ctx context.Context, pub *btcec.PublicKey,
++		addrs []net.Addr) error
++
++	// SendToPeer sends an onion message to a connected peer.
++	SendToPeer func(ctx context.Context, peer [33]byte,
++		pathKey *btcec.PublicKey, onion []byte) error
++
++	// Subscribe returns a client for delivered onion messages.
++	Subscribe func() (*subscribe.Client, error)
++
++	// DecryptBlindedData decrypts the encrypted data a blinded path put
++	// on our hop, with our node key and the message's path key.
++	DecryptBlindedData func(pathKey *btcec.PublicKey,
++		data []byte) ([]byte, error)
++
++	// NextPathKey derives the path key for the hop after ours from the
++	// one at ours, for sending over a path whose introduction node we
++	// are.
++	NextPathKey func(pathKey *btcec.PublicKey) (*btcec.PublicKey, error)
++
++	// MaxHops bounds the route search; zero means DefaultMaxHops.
++	MaxHops int
++
++	// MaxPaths is how many paths an offer gets; zero means
++	// DefaultMaxPaths.
++	MaxPaths int
++}
++
++// Destination is where a message goes: a node by id, or a blinded path.
++type Destination struct {
++	// NodeID reaches a node by its id. The node has to be a peer or in
++	// the graph.
++	NodeID *btcec.PublicKey
++
++	// Path reaches whoever built the path, through its introduction node.
++	Path *lnwire.BlindedPath
++}
++
++// SendOption adjusts a send.
++type SendOption func(*sendOptions)
++
++type sendOptions struct {
++	allowConnect bool
++}
++
++// AllowConnect lets the send open a connection to the first hop or the
++// destination when no route through connected peers exists. It is for
++// sends this node initiates; a reply to an inbound message must not make
++// the node dial out, since the reply path is the sender's to choose.
++func AllowConnect() SendOption {
++	return func(o *sendOptions) { o.allowConnect = true }
++}
++
++// Inbound is a delivered BOLT 12 message.
++type Inbound struct {
++	// Peer is the peer the onion message came in from.
++	Peer [33]byte
++
++	// PathKey is the message's path key at our hop.
++	PathKey *btcec.PublicKey
++
++	// PathID is the path_id of the blinded path the message arrived
++	// over, if it arrived over one of ours and carried one.
++	PathID []byte
++
++	// ReplyPath is where a reply goes, if the sender gave one.
++	ReplyPath *lnwire.BlindedPath
++
++	// Exactly one of these is set, by the message's type.
++	InvoiceRequest *bolt12.InvoiceRequest
++	Invoice        *bolt12.Invoice
++	InvoiceError   *InvoiceError
++
++	// Records is every payload record with a type of 64 or above, raw.
++	Records record.CustomSet
++}
++
++// Handler receives delivered messages of one kind.
++type Handler func(ctx context.Context, msg *Inbound)
++
++// Messenger sends and receives BOLT 12 messages over onion messages.
++type Messenger struct {
++	cfg Config
++
++	handlersMu      sync.RWMutex
++	requestHandlers []Handler
++	invoiceHandlers []Handler
++	errorHandlers   []Handler
++
++	mu      sync.Mutex
++	started bool
++	client  *subscribe.Client
++	quit    chan struct{}
++	wg      sync.WaitGroup
++
++	sem     chan struct{}
++	dialSem chan struct{}
++}
++
++// New returns a messenger.
++func New(cfg Config) (*Messenger, error) {
++	switch {
++	case cfg.NodeKey == nil:
++		return nil, errors.New("onionmsg: node key required")
++	case cfg.Peers == nil, cfg.SendToPeer == nil, cfg.Subscribe == nil,
++		cfg.DecryptBlindedData == nil, cfg.NextPathKey == nil:
++
++		return nil, errors.New("onionmsg: peers, send, subscribe, " +
++			"decrypt and next-path-key hooks required")
++	}
++	if cfg.MaxHops <= 0 {
++		cfg.MaxHops = DefaultMaxHops
++	}
++	if cfg.MaxPaths <= 0 {
++		cfg.MaxPaths = DefaultMaxPaths
++	}
++
++	return &Messenger{
++		cfg:     cfg,
++		sem:     make(chan struct{}, maxConcurrentHandlers),
++		dialSem: make(chan struct{}, maxConcurrentDials),
++	}, nil
++}
++
++// Start subscribes to delivered onion messages.
++func (m *Messenger) Start() error {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++
++	if m.started {
++		return nil
++	}
++	client, err := m.cfg.Subscribe()
++	if err != nil {
++		return fmt.Errorf("subscribe to onion messages: %w", err)
++	}
++	m.client = client
++	m.quit = make(chan struct{})
++	m.started = true
++	m.wg.Add(1)
++	go m.receive(client, m.quit)
++
++	return nil
++}
++
++// Stop ends the subscription and waits for handlers. The messenger can be
++// started again afterwards.
++func (m *Messenger) Stop() error {
++	m.mu.Lock()
++	if !m.started {
++		m.mu.Unlock()
++		return nil
++	}
++	m.started = false
++	close(m.quit)
++	m.client.Cancel()
++	m.mu.Unlock()
++
++	m.wg.Wait()
++
++	return nil
++}
++
++// OnInvoiceRequest registers a handler for delivered invoice requests.
++func (m *Messenger) OnInvoiceRequest(h Handler) {
++	m.handlersMu.Lock()
++	defer m.handlersMu.Unlock()
++
++	m.requestHandlers = append(m.requestHandlers, h)
++}
++
++// OnInvoice registers a handler for delivered invoices.
++func (m *Messenger) OnInvoice(h Handler) {
++	m.handlersMu.Lock()
++	defer m.handlersMu.Unlock()
++
++	m.invoiceHandlers = append(m.invoiceHandlers, h)
++}
++
++// OnInvoiceError registers a handler for delivered invoice errors.
++func (m *Messenger) OnInvoiceError(h Handler) {
++	m.handlersMu.Lock()
++	defer m.handlersMu.Unlock()
++
++	m.errorHandlers = append(m.errorHandlers, h)
++}
++
++// receive turns delivered onion messages into Inbound messages and hands
++// them to the handlers. The handlers' context ends when the messenger
++// stops.
++func (m *Messenger) receive(client *subscribe.Client, quit chan struct{}) {
++	defer m.wg.Done()
++
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++
++	for {
++		select {
++		case update, ok := <-client.Updates():
++			if !ok {
++				return
++			}
++			oMsg, ok := update.(*onionmessage.OnionMessageUpdate)
++			if !ok {
++				log.Warnf("Onion message update of type %T",
++					update)
++				continue
++			}
++			inbound, handlers, err := m.parse(oMsg)
++			if err != nil {
++				log.Debugf("Dropping onion message from %x: %v",
++					oMsg.Peer, err)
++				continue
++			}
++			if inbound == nil {
++				// Not a BOLT 12 message; not ours to handle.
++				continue
++			}
++			m.dispatch(ctx, inbound, handlers, quit)
++
++		case <-client.Quit():
++			return
++
++		case <-quit:
++			return
++		}
++	}
++}
++
++// parse decodes the BOLT 12 content of a delivered onion message. It returns
++// nil without error for a message that carries none.
++func (m *Messenger) parse(oMsg *onionmessage.OnionMessageUpdate) (*Inbound,
++	[]Handler, error) {
++
++	pathKey, err := btcec.ParsePubKey(oMsg.PathKey[:])
++	if err != nil {
++		return nil, nil, fmt.Errorf("path key: %w", err)
++	}
++	inbound := &Inbound{
++		Peer:      oMsg.Peer,
++		PathKey:   pathKey,
++		ReplyPath: oMsg.ReplyPath,
++		Records:   oMsg.CustomRecords,
++	}
++
++	var (
++		handlers []Handler
++		kinds    int
++	)
++	if raw, ok := oMsg.CustomRecords[uint64(TypeInvoiceRequest)]; ok {
++		ir, err := bolt12.DecodeInvoiceRequest(raw)
++		if err != nil {
++			return nil, nil, fmt.Errorf("invoice_request: %w", err)
++		}
++		inbound.InvoiceRequest = ir
++		handlers = m.handlers(&m.requestHandlers)
++		kinds++
++	}
++	if raw, ok := oMsg.CustomRecords[uint64(TypeInvoice)]; ok {
++		inv, err := bolt12.DecodeInvoice(raw)
++		if err != nil {
++			return nil, nil, fmt.Errorf("invoice: %w", err)
++		}
++		inbound.Invoice = inv
++		handlers = m.handlers(&m.invoiceHandlers)
++		kinds++
++	}
++	if raw, ok := oMsg.CustomRecords[uint64(TypeInvoiceError)]; ok {
++		ie, err := DecodeInvoiceError(raw)
++		if err != nil {
++			return nil, nil, fmt.Errorf("invoice_error: %w", err)
++		}
++		inbound.InvoiceError = ie
++		handlers = m.handlers(&m.errorHandlers)
++		kinds++
++	}
++	switch kinds {
++	case 0:
++		return nil, nil, nil
++	case 1:
++	default:
++		return nil, nil, errors.New("more than one BOLT 12 message " +
++			"in one onion message")
++	}
++
++	// The path_id, if the message came over one of our blinded paths.
++	// The decryption writes over its input, and the update is shared
++	// with every other subscriber, so it works on a copy.
++	if len(oMsg.EncryptedRecipientData) > 0 {
++		plain, err := m.cfg.DecryptBlindedData(
++			pathKey, bytes.Clone(oMsg.EncryptedRecipientData),
++		)
++		if err != nil {
++			return nil, nil, fmt.Errorf("recipient data: %w", err)
++		}
++		data, err := record.DecodeBlindedRouteData(bytes.NewReader(plain))
++		if err != nil {
++			return nil, nil, fmt.Errorf("recipient data: %w", err)
++		}
++		data.PathID.WhenSome(
++			func(r tlv.RecordT[tlv.TlvType6, []byte]) {
++				inbound.PathID = r.Val
++			},
++		)
++	}
++
++	return inbound, handlers, nil
++}
++
++func (m *Messenger) handlers(list *[]Handler) []Handler {
++	m.handlersMu.RLock()
++	defer m.handlersMu.RUnlock()
++
++	out := make([]Handler, len(*list))
++	copy(out, *list)
++
++	return out
++}
++
++// dispatch runs the handlers for a message, each in its own goroutine.
++// When every slot is taken the message is dropped, so a flood of messages
++// cannot back up delivery.
++func (m *Messenger) dispatch(ctx context.Context, msg *Inbound,
++	handlers []Handler, quit chan struct{}) {
++
++	for _, h := range handlers {
++		select {
++		case m.sem <- struct{}{}:
++		case <-quit:
++			return
++		default:
++			log.Warnf("Dropping message from peer %x: %v", msg.Peer,
++				ErrTooBusy)
++
++			return
++		}
++		m.wg.Add(1)
++		go func(h Handler) {
++			defer m.wg.Done()
++			defer func() { <-m.sem }()
++
++			h(ctx, msg)
++		}(h)
++	}
++}
++
++// BuildOfferPaths builds blinded paths to this node for an offer, each
++// through a different connected peer that has a channel with us and speaks
++// onion messages, carrying the secret as path_id. Without such a peer it
++// returns none, and the offer names the node id instead. Offer paths are
++// long-lived, which is why a peer with no channel, whose connection is
++// likely to go, is not used for them.
++//
++// This implements offers.PathBuilder.
++func (m *Messenger) BuildOfferPaths(_ context.Context,
++	pathSecret [32]byte) ([]lnwire.BlindedPath, error) {
++
++	intros, _ := m.introPeers(m.cfg.Peers())
++	if len(intros) == 0 {
++		return nil, nil
++	}
++	if len(intros) > m.cfg.MaxPaths {
++		intros = intros[:m.cfg.MaxPaths]
++	}
++	var paths []lnwire.BlindedPath
++	for _, intro := range intros {
++		path, err := m.buildPathToSelf(intro, pathSecret[:])
++		if err != nil {
++			return nil, err
++		}
++		paths = append(paths, *path)
++	}
++
++	return paths, nil
++}
++
++// BuildReplyPath builds one blinded path to this node for a reply_path,
++// carrying pathID. It goes through an introduction peer when one is
++// available, a channel peer first, and is otherwise a single-hop path
++// naming this node.
++func (m *Messenger) BuildReplyPath(_ context.Context,
++	pathID []byte) (*lnwire.BlindedPath, error) {
++
++	withChannel, without := m.introPeers(m.cfg.Peers())
++	switch {
++	case len(withChannel) > 0:
++		return m.buildPathToSelf(withChannel[0], pathID)
++	case len(without) > 0:
++		return m.buildPathToSelf(without[0], pathID)
++	default:
++		return m.buildPathToSelf(nil, pathID)
++	}
++}
++
++// introPeers splits the peers that can be introduction nodes into those
++// with a channel and those without.
++func (m *Messenger) introPeers(peers []Peer) ([]*btcec.PublicKey,
++	[]*btcec.PublicKey) {
++
++	var withChannel, without []*btcec.PublicKey
++	for _, p := range peers {
++		if p.Pub == nil || !p.OnionMessages {
++			continue
++		}
++		if p.HasChannel {
++			withChannel = append(withChannel, p.Pub)
++		} else {
++			without = append(without, p.Pub)
++		}
++	}
++
++	return withChannel, without
++}
++
++// buildPathToSelf builds a blinded path ending at this node, through intro
++// when it is not nil, with pathID in the final hop's data.
++func (m *Messenger) buildPathToSelf(intro *btcec.PublicKey,
++	pathID []byte) (*lnwire.BlindedPath, error) {
++
++	var (
++		nodes []*btcec.PublicKey
++		datas []*record.BlindedRouteData
++	)
++	if intro != nil {
++		nodes = append(nodes, intro)
++		datas = append(datas, record.NewNonFinalBlindedRouteDataOnionMessage(
++			fn.NewLeft[*btcec.PublicKey, lnwire.ShortChannelID](
++				m.cfg.NodeKey,
++			), nil, nil,
++		))
++	}
++	nodes = append(nodes, m.cfg.NodeKey)
++	datas = append(datas, record.NewFinalHopBlindedRouteData(nil, pathID))
++
++	info, err := buildBlindedPath(nodes, datas)
++	if err != nil {
++		return nil, err
++	}
++
++	return fromSphinxPath(info.Path)
++}
++
++// buildBlindedPath blinds a path through nodes with their hop data, padded
++// so that every hop's encrypted data has the same length, under a fresh
++// session key.
++func buildBlindedPath(nodes []*btcec.PublicKey,
++	datas []*record.BlindedRouteData) (*sphinx.BlindedPathInfo, error) {
++
++	plains, err := encodePadded(datas)
++	if err != nil {
++		return nil, err
++	}
++	hops := make([]*sphinx.HopInfo, len(nodes))
++	for i := range nodes {
++		hops[i] = &sphinx.HopInfo{NodePub: nodes[i], PlainText: plains[i]}
++	}
++	sessionKey, err := btcec.NewPrivateKey()
++	if err != nil {
++		return nil, err
++	}
++	info, err := sphinx.BuildBlindedPath(sessionKey, hops)
++	if err != nil {
++		return nil, fmt.Errorf("build blinded path: %w", err)
++	}
++
++	return info, nil
++}
++
++// encodePadded encodes hop data, padding every hop to the same length so a
++// hop cannot tell its position from the length. Each hop gets a padding
++// record, sized so the encodings come out equal; the record's own length
++// prefix can shift the total, so the sizing is repeated until they match.
++func encodePadded(datas []*record.BlindedRouteData) ([][]byte, error) {
++	encode := func() ([][]byte, int, bool, error) {
++		plains := make([][]byte, len(datas))
++		longest, equal := 0, true
++		for i, d := range datas {
++			plain, err := record.EncodeBlindedRouteData(d)
++			if err != nil {
++				return nil, 0, false, fmt.Errorf("hop data: %w",
++					err)
++			}
++			plains[i] = plain
++			if i > 0 && len(plain) != len(plains[0]) {
++				equal = false
++			}
++			if len(plain) > longest {
++				longest = len(plain)
++			}
++		}
++
++		return plains, longest, equal, nil
++	}
++	pads := make([]int, len(datas))
++	for i, d := range datas {
++		d.Padding = tlv.SomeRecordT(
++			tlv.NewPrimitiveRecord[tlv.TlvType1](make([]byte, 0)),
++		)
++		pads[i] = 0
++	}
++	for attempt := 0; attempt < 4; attempt++ {
++		plains, longest, equal, err := encode()
++		if err != nil {
++			return nil, err
++		}
++		if equal {
++			return plains, nil
++		}
++		for i, d := range datas {
++			pads[i] += longest - len(plains[i])
++			d.Padding = tlv.SomeRecordT(
++				tlv.NewPrimitiveRecord[tlv.TlvType1](
++					make([]byte, pads[i]),
++				),
++			)
++		}
++	}
++	plains, _, _, err := encode()
++
++	return plains, err
++}
++
++// fromSphinxPath converts a built blinded path to its wire form.
++func fromSphinxPath(p *sphinx.BlindedPath) (*lnwire.BlindedPath, error) {
++	intro, err := lnwire.NewPubkeyIntro(p.IntroductionPoint)
++	if err != nil {
++		return nil, err
++	}
++	out := &lnwire.BlindedPath{
++		IntroductionNode: intro,
++		BlindingPoint:    p.BlindingPoint,
++	}
++	for _, h := range p.BlindedHops {
++		out.Hops = append(out.Hops, lnwire.BlindedHop{
++			BlindedNodeID: h.BlindedNodePub,
++			EncryptedData: h.CipherText,
++		})
++	}
++
++	return out, nil
++}
++
++// checkDestination refuses a destination that would break the onion
++// builder or the wire encoder further down.
++func checkDestination(dest Destination) error {
++	switch {
++	case dest.Path != nil && dest.NodeID != nil:
++		return ErrBadDestination
++	case dest.NodeID != nil:
++		return nil
++	case dest.Path == nil:
++		return ErrBadDestination
++	}
++	p := dest.Path
++	if p.BlindingPoint == nil || p.IntroductionNode == nil ||
++		len(p.Hops) == 0 {
++
++		return fmt.Errorf("%w: path is incomplete", ErrBadDestination)
++	}
++	if pk, ok := p.IntroductionNode.(lnwire.PubkeyIntro); ok &&
++		pk.Pubkey == nil {
++
++		return fmt.Errorf("%w: path has no introduction node",
++			ErrBadDestination)
++	}
++	for i, h := range p.Hops {
++		if h.BlindedNodeID == nil {
++			return fmt.Errorf("%w: hop %d has no node id",
++				ErrBadDestination, i)
++		}
++	}
++
++	return nil
++}
++
++// Send delivers a payload to a destination, with an optional reply path
++// for the recipient to answer over. The payload records must have types of
++// 64 or above; the BOLT 12 ones are TypeInvoiceRequest, TypeInvoice and
++// TypeInvoiceError. Without AllowConnect, only connected peers and routes
++// through them are used.
++func (m *Messenger) Send(ctx context.Context, dest Destination,
++	payload []*lnwire.FinalHopTLV, replyPath *lnwire.BlindedPath,
++	opts ...SendOption) error {
++
++	if err := checkDestination(dest); err != nil {
++		return err
++	}
++	var options sendOptions
++	for _, opt := range opts {
++		opt(&options)
++	}
++	s := &sender{m: m, peers: m.cfg.Peers(), allowConnect: options.allowConnect}
++
++	var (
++		// full is the whole blinded path the onion is built over,
++		// from our first peer to the recipient.
++		full *sphinx.BlindedPath
++		// first is the peer the onion message is handed to.
++		first *btcec.PublicKey
++		err   error
++	)
++	if dest.Path != nil {
++		full, first, err = s.pathToBlindedPath(ctx, dest.Path)
++	} else {
++		full, first, err = s.pathToNode(ctx, dest.NodeID)
++	}
++	if err != nil {
++		return err
++	}
++
++	sphinxPath, err := route.OnionMessageBlindedPathToSphinxPath(
++		full, replyPath, payload,
++	)
++	if err != nil {
++		return fmt.Errorf("onion path: %w", err)
++	}
++	onion, err := buildOnion(sphinxPath)
++	if err != nil {
++		return err
++	}
++
++	var peer [33]byte
++	copy(peer[:], first.SerializeCompressed())
++
++	return m.cfg.SendToPeer(ctx, peer, full.BlindingPoint, onion)
++}
++
++// buildOnion wraps a path into an onion packet, at the regular size when
++// the payload fits and at the large onion-message size otherwise.
++func buildOnion(path *sphinx.PaymentPath) ([]byte, error) {
++	sessionKey, err := btcec.NewPrivateKey()
++	if err != nil {
++		return nil, err
++	}
++	var pkt *sphinx.OnionPacket
++	for _, size := range []int{
++		sphinx.MaxRoutingPayloadSize, sphinx.MaxOnionMessagePayloadSize,
++	} {
++		pkt, err = sphinx.NewOnionPacket(
++			path, sessionKey, nil, sphinx.DeterministicPacketFiller,
++			sphinx.WithMaxPayloadSize(size),
++		)
++		if err == nil {
++			break
++		}
++	}
++	if err != nil {
++		return nil, fmt.Errorf("onion packet: %w", err)
++	}
++	var b bytes.Buffer
++	if err := pkt.Encode(&b); err != nil {
++		return nil, fmt.Errorf("encode onion: %w", err)
++	}
++
++	return b.Bytes(), nil
++}
++
++// sender is the state of one send: the peers as of its start, and whether
++// it may dial out.
++type sender struct {
++	m            *Messenger
++	peers        []Peer
++	allowConnect bool
++}
++
++// pathToNode builds the blinded path for a message to a node by id: a
++// route to it through the graph, or the node itself when it is a peer.
++func (s *sender) pathToNode(ctx context.Context,
++	dest *btcec.PublicKey) (*sphinx.BlindedPath, *btcec.PublicKey, error) {
++
++	if dest.IsEqual(s.m.cfg.NodeKey) {
++		return nil, nil, ErrDestinationIsSelf
++	}
++	hops, err := s.routeTo(ctx, dest)
++	if err != nil {
++		return nil, nil, err
++	}
++
++	datas := make([]*record.BlindedRouteData, len(hops))
++	for i := range hops {
++		if i < len(hops)-1 {
++			datas[i] = record.NewNonFinalBlindedRouteDataOnionMessage(
++				fn.NewLeft[*btcec.PublicKey, lnwire.ShortChannelID](
++					hops[i+1],
++				), nil, nil,
++			)
++		} else {
++			datas[i] = record.NewFinalHopBlindedRouteData(nil, nil)
++		}
++	}
++	info, err := buildBlindedPath(hops, datas)
++	if err != nil {
++		return nil, nil, err
++	}
++
++	return info.Path, hops[0], nil
++}
++
++// pathToBlindedPath builds the full blinded path for a message to a
++// recipient's blinded path: our own hops up to its introduction node, with
++// the last of them switching to the recipient's blinding point, followed
++// by the recipient's hops.
++func (s *sender) pathToBlindedPath(ctx context.Context,
++	path *lnwire.BlindedPath) (*sphinx.BlindedPath, *btcec.PublicKey,
++	error) {
++
++	intro, err := s.m.resolveIntro(ctx, path.IntroductionNode)
++	if err != nil {
++		return nil, nil, err
++	}
++	recv := &sphinx.BlindedPath{
++		IntroductionPoint: intro,
++		BlindingPoint:     path.BlindingPoint,
++	}
++	for _, h := range path.Hops {
++		recv.BlindedHops = append(recv.BlindedHops, &sphinx.BlindedHopInfo{
++			BlindedNodePub: h.BlindedNodeID,
++			CipherText:     h.EncryptedData,
++		})
++	}
++
++	// When we are the path's introduction node, the recipient is a peer
++	// of ours who built the path through us: process our own hop and
++	// send from the next one.
++	if intro.IsEqual(s.m.cfg.NodeKey) {
++		recv, err = s.m.peelOwnHop(ctx, recv)
++		if err != nil {
++			return nil, nil, err
++		}
++		intro = recv.IntroductionPoint
++		if intro.IsEqual(s.m.cfg.NodeKey) {
++			return nil, nil, ErrDestinationIsSelf
++		}
++	}
++	hops, err := s.routeTo(ctx, intro)
++	if err != nil {
++		return nil, nil, err
++	}
++
++	// The introduction node is a peer: the recipient's path is the whole
++	// path.
++	if len(hops) == 1 {
++		return recv, intro, nil
++	}
++
++	// Our hops lead to the introduction node; the last of them is told
++	// to forward to it under the recipient's first path key, which is
++	// the path's blinding point, or the key after our own hop when we
++	// peeled it.
++	ours := hops[:len(hops)-1]
++	datas := make([]*record.BlindedRouteData, len(ours))
++	for i := range ours {
++		var override *btcec.PublicKey
++		if i == len(ours)-1 {
++			override = recv.BlindingPoint
++		}
++		datas[i] = record.NewNonFinalBlindedRouteDataOnionMessage(
++			fn.NewLeft[*btcec.PublicKey, lnwire.ShortChannelID](
++				hops[i+1],
++			), override, nil,
++		)
++	}
++	info, err := buildBlindedPath(ours, datas)
++	if err != nil {
++		return nil, nil, err
++	}
++	full := &sphinx.BlindedPath{
++		IntroductionPoint: info.Path.IntroductionPoint,
++		BlindingPoint:     info.Path.BlindingPoint,
++		BlindedHops: append(
++			info.Path.BlindedHops, recv.BlindedHops...,
++		),
++	}
++
++	return full, hops[0], nil
++}
++
++// peelOwnHop processes the first hop of a blinded path that starts at this
++// node, and returns the path from the next hop on, under the path key that
++// hop expects.
++func (m *Messenger) peelOwnHop(ctx context.Context,
++	path *sphinx.BlindedPath) (*sphinx.BlindedPath, error) {
++
++	if len(path.BlindedHops) < 2 {
++		return nil, ErrDestinationIsSelf
++	}
++	plain, err := m.cfg.DecryptBlindedData(
++		path.BlindingPoint, bytes.Clone(path.BlindedHops[0].CipherText),
++	)
++	if err != nil {
++		return nil, fmt.Errorf("own hop of path: %w", err)
++	}
++	data, err := record.DecodeBlindedRouteData(bytes.NewReader(plain))
++	if err != nil {
++		return nil, fmt.Errorf("own hop of path: %w", err)
++	}
++
++	var next *btcec.PublicKey
++	data.NextNodeID.WhenSome(
++		func(r tlv.RecordT[tlv.TlvType4, *btcec.PublicKey]) {
++			next = r.Val
++		},
++	)
++	if next == nil {
++		var scid lnwire.ShortChannelID
++		data.ShortChannelID.WhenSome(
++			func(r tlv.RecordT[tlv.TlvType2, lnwire.ShortChannelID]) {
++				scid = r.Val
++			},
++		)
++		if scid.ToUint64() == 0 || m.cfg.FetchChannelEdge == nil {
++			return nil, errors.New("own hop of path names no " +
++				"next node")
++		}
++		edge, err := m.cfg.FetchChannelEdge(ctx, scid.ToUint64())
++		if err != nil {
++			return nil, fmt.Errorf("own hop's next channel: %w", err)
++		}
++		other, err := edge.OtherNodeKeyBytes(
++			m.cfg.NodeKey.SerializeCompressed(),
++		)
++		if err != nil {
++			return nil, fmt.Errorf("own hop's next channel: %w", err)
++		}
++		next, err = btcec.ParsePubKey(other[:])
++		if err != nil {
++			return nil, err
++		}
++	}
++
++	nextKey, err := m.cfg.NextPathKey(path.BlindingPoint)
++	if err != nil {
++		return nil, fmt.Errorf("next path key: %w", err)
++	}
++	data.NextBlindingOverride.WhenSome(
++		func(r tlv.RecordT[tlv.TlvType8, *btcec.PublicKey]) {
++			nextKey = r.Val
++		},
++	)
++
++	return &sphinx.BlindedPath{
++		IntroductionPoint: next,
++		BlindingPoint:     nextKey,
++		BlindedHops:       path.BlindedHops[1:],
++	}, nil
++}
++
++// resolveIntro turns an introduction node into a node id, looking a channel
++// and direction up in the graph.
++func (m *Messenger) resolveIntro(ctx context.Context,
++	node lnwire.IntroductionNode) (*btcec.PublicKey, error) {
++
++	switch n := node.(type) {
++	case lnwire.PubkeyIntro:
++		return n.Pubkey, nil
++
++	case lnwire.SciddirIntro:
++		if m.cfg.FetchChannelEdge == nil {
++			return nil, errors.New("cannot resolve a channel " +
++				"introduction node without a graph")
++		}
++		scid := lnwire.NewShortChanIDFromInt(
++			binary.BigEndian.Uint64(n.SCID[:]),
++		)
++		edge, err := m.cfg.FetchChannelEdge(ctx, scid.ToUint64())
++		if err != nil {
++			return nil, fmt.Errorf("introduction channel %v: %w",
++				scid, err)
++		}
++		key := edge.NodeKey1Bytes
++		if n.Direction == 1 {
++			key = edge.NodeKey2Bytes
++		}
++		pub, err := btcec.ParsePubKey(key[:])
++		if err != nil {
++			return nil, fmt.Errorf("introduction node: %w", err)
++		}
++
++		return pub, nil
++
++	default:
++		return nil, fmt.Errorf("introduction node of type %T", node)
++	}
++}
++
++// routeTo finds the nodes a message passes through to reach dest, dest
++// last. A peer is reached directly. Otherwise the graph is searched for
++// the shortest route whose first hop is a connected peer. When there is
++// none and dialling is allowed, the first hop of the shortest route, or
++// the node itself, is connected to at its announced addresses.
++func (s *sender) routeTo(ctx context.Context,
++	dest *btcec.PublicKey) ([]*btcec.PublicKey, error) {
++
++	if s.isPeer(dest) {
++		return []*btcec.PublicKey{dest}, nil
++	}
++	if s.m.cfg.Graph == nil {
++		return s.dial(ctx, dest, nil)
++	}
++
++	// The shortest route from us, whatever its first hop.
++	direct, err := s.findPath(ctx, s.m.cfg.NodeKey, dest)
++	if err != nil {
++		return nil, err
++	}
++	if len(direct) > 0 && s.isPeer(direct[0]) {
++		return direct, nil
++	}
++
++	// Its first hop is not a connected peer: the shortest route that
++	// starts at one, within the same hop limit, and not back through
++	// us.
++	var best []*btcec.PublicKey
++	for _, p := range s.peers {
++		if p.Pub == nil || !p.OnionMessages || p.Pub.IsEqual(dest) {
++			continue
++		}
++		rest, err := s.findPathFrom(ctx, p.Pub, dest, s.m.cfg.MaxHops-1)
++		if err != nil {
++			return nil, err
++		}
++		if len(rest) == 0 || s.passesThroughUs(rest) {
++			continue
++		}
++		candidate := append([]*btcec.PublicKey{p.Pub}, rest...)
++		if best == nil || len(candidate) < len(best) {
++			best = candidate
++		}
++	}
++	if best != nil {
++		return best, nil
++	}
++
++	return s.dial(ctx, dest, direct)
++}
++
++// passesThroughUs reports whether a route has this node on it.
++func (s *sender) passesThroughUs(hops []*btcec.PublicKey) bool {
++	for _, h := range hops {
++		if h.IsEqual(s.m.cfg.NodeKey) {
++			return true
++		}
++	}
++
++	return false
++}
++
++// findPath searches the graph for a route from source to dest within the
++// hop limit, returning the nodes after source with dest last, or nothing
++// when there is none.
++func (s *sender) findPath(ctx context.Context, source,
++	dest *btcec.PublicKey) ([]*btcec.PublicKey, error) {
++
++	return s.findPathFrom(ctx, source, dest, s.m.cfg.MaxHops)
++}
++
++func (s *sender) findPathFrom(ctx context.Context, source,
++	dest *btcec.PublicKey, maxHops int) ([]*btcec.PublicKey, error) {
++
++	if maxHops < 1 {
++		return nil, nil
++	}
++	path, err := onionmessage.FindPath(
++		ctx, s.m.cfg.Graph, route.NewVertex(source),
++		route.NewVertex(dest), maxHops,
++	)
++	switch {
++	case err == nil:
++	case errors.Is(err, onionmessage.ErrNoPathFound),
++		errors.Is(err, onionmessage.ErrNodeNotFound),
++		errors.Is(err, onionmessage.ErrDestinationNoOnionSupport):
++
++		return nil, nil
++
++	default:
++		return nil, fmt.Errorf("route search: %w", err)
++	}
++	hops := make([]*btcec.PublicKey, 0, len(path))
++	for _, v := range path {
++		pub, err := btcec.ParsePubKey(v[:])
++		if err != nil {
++			return nil, err
++		}
++		hops = append(hops, pub)
++	}
++
++	return hops, nil
++}
++
++// dial connects to the first hop of a route, or to the destination, when
++// the send may open connections.
++func (s *sender) dial(ctx context.Context, dest *btcec.PublicKey,
++	direct []*btcec.PublicKey) ([]*btcec.PublicKey, error) {
++
++	if !s.allowConnect {
++		return nil, fmt.Errorf("%w: no route through a connected peer",
++			ErrUnreachable)
++	}
++	if len(direct) > 0 {
++		if err := s.connect(ctx, direct[0]); err == nil {
++			return direct, nil
++		} else {
++			log.Debugf("First hop %x of the route to %x cannot "+
++				"be connected: %v", direct[0].SerializeCompressed(),
++				dest.SerializeCompressed(), err)
++		}
++	}
++	if err := s.connect(ctx, dest); err != nil {
++		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
++	}
++
++	return []*btcec.PublicKey{dest}, nil
++}
++
++// isPeer reports whether a node is a connected peer that speaks onion
++// messages.
++func (s *sender) isPeer(pub *btcec.PublicKey) bool {
++	for _, p := range s.peers {
++		if p.Pub != nil && p.Pub.IsEqual(pub) {
++			return p.OnionMessages
++		}
++	}
++
++	return false
++}
++
++// connect connects to a node at its announced addresses and waits for it
++// to become a usable peer.
++func (s *sender) connect(ctx context.Context, pub *btcec.PublicKey) error {
++	if s.m.cfg.FetchNodeAddrs == nil || s.m.cfg.ConnectPeer == nil {
++		return errors.New("no way to connect")
++	}
++	addrs, err := s.m.cfg.FetchNodeAddrs(ctx, route.NewVertex(pub))
++	if err != nil {
++		return fmt.Errorf("addresses of %x: %w",
++			pub.SerializeCompressed(), err)
++	}
++	if len(addrs) == 0 {
++		return fmt.Errorf("%x announces no address",
++			pub.SerializeCompressed())
++	}
++
++	select {
++	case s.m.dialSem <- struct{}{}:
++	case <-ctx.Done():
++		return ctx.Err()
++	}
++	defer func() { <-s.m.dialSem }()
++
++	ctx, cancel := context.WithTimeout(ctx, ConnectTimeout)
++	defer cancel()
++	if err := s.m.cfg.ConnectPeer(ctx, pub, addrs); err != nil {
++		return err
++	}
++
++	// The peers as of now, with the new one in them.
++	s.peers = s.m.cfg.Peers()
++	if !s.isPeer(pub) {
++		return fmt.Errorf("%x connected but does not support onion "+
++			"messages", pub.SerializeCompressed())
++	}
++
++	return nil
++}
+diff --git a/onionmsg/messenger_test.go b/onionmsg/messenger_test.go
+new file mode 100644
+index 000000000..fc941ebc5
+--- /dev/null
++++ b/onionmsg/messenger_test.go
+@@ -0,0 +1,1118 @@
++package onionmsg
++
++import (
++	"bytes"
++	"context"
++	"encoding/binary"
++	"errors"
++	"net"
++	"sync"
++	"testing"
++	"time"
++	"unicode/utf8"
++
++	"github.com/btcsuite/btcd/btcec/v2"
++	sphinx "github.com/lightningnetwork/lightning-onion"
++	"github.com/lightningnetwork/lnd/bolt12"
++	graphdb "github.com/lightningnetwork/lnd/graph/db"
++	"github.com/lightningnetwork/lnd/graph/db/models"
++	"github.com/lightningnetwork/lnd/lnwire"
++	"github.com/lightningnetwork/lnd/onionmessage"
++	"github.com/lightningnetwork/lnd/record"
++	"github.com/lightningnetwork/lnd/routing/route"
++	"github.com/lightningnetwork/lnd/subscribe"
++	"github.com/lightningnetwork/lnd/tlv"
++	"github.com/stretchr/testify/require"
++)
++
++// node is a party on the fake network, with the sphinx router a real node
++// would process onion messages with.
++type node struct {
++	key    *btcec.PrivateKey
++	router *sphinx.Router
++}
++
++func (n *node) pub() *btcec.PublicKey { return n.key.PubKey() }
++
++func (n *node) id() [33]byte {
++	var id [33]byte
++	copy(id[:], n.key.PubKey().SerializeCompressed())
++
++	return id
++}
++
++// sent is one onion message handed to a peer.
++type sent struct {
++	from    [33]byte
++	to      [33]byte
++	pathKey *btcec.PublicKey
++	onion   []byte
++}
++
++// network is a fake network: nodes, who is connected to whom, a graph for
++// route finding, announced addresses, and a log of every send.
++type network struct {
++	t     *testing.T
++	nodes map[[33]byte]*node
++
++	mu      sync.Mutex
++	peers   map[[33]byte][]Peer
++	edges   map[route.Vertex][]route.Vertex
++	feats   map[route.Vertex]*lnwire.FeatureVector
++	addrs   map[route.Vertex][]net.Addr
++	chans   map[uint64]*models.ChannelEdgeInfo
++	sent    []sent
++	connect []route.Vertex
++
++	// deafOnConnect makes the next connected node not speak onion
++	// messages.
++	deafOnConnect bool
++}
++
++func newNetwork(t *testing.T) *network {
++	return &network{
++		t:     t,
++		nodes: make(map[[33]byte]*node),
++		peers: make(map[[33]byte][]Peer),
++		edges: make(map[route.Vertex][]route.Vertex),
++		feats: make(map[route.Vertex]*lnwire.FeatureVector),
++		addrs: make(map[route.Vertex][]net.Addr),
++		chans: make(map[uint64]*models.ChannelEdgeInfo),
++	}
++}
++
++func (n *network) newNode() *node {
++	key, err := btcec.NewPrivateKey()
++	require.NoError(n.t, err)
++	router := sphinx.NewRouter(
++		&sphinx.PrivKeyECDH{PrivKey: key}, sphinx.NewNoOpReplayLog(),
++	)
++	require.NoError(n.t, router.Start())
++	n.t.Cleanup(router.Stop)
++	nd := &node{key: key, router: router}
++	n.nodes[nd.id()] = nd
++
++	return nd
++}
++
++// peer connects a and b, both speaking onion messages, with or without a
++// channel between them. A channel also becomes a graph edge.
++func (n *network) peer(a, b *node, channel bool) {
++	n.mu.Lock()
++	defer n.mu.Unlock()
++
++	n.peers[a.id()] = append(n.peers[a.id()], Peer{
++		Pub: b.pub(), OnionMessages: true, HasChannel: channel,
++	})
++	n.peers[b.id()] = append(n.peers[b.id()], Peer{
++		Pub: a.pub(), OnionMessages: true, HasChannel: channel,
++	})
++	if channel {
++		n.edgeLocked(a, b)
++	}
++}
++
++// edge adds a graph edge between a and b, both advertising onion messages,
++// without connecting them.
++func (n *network) edge(a, b *node) {
++	n.mu.Lock()
++	defer n.mu.Unlock()
++
++	n.edgeLocked(a, b)
++}
++
++func (n *network) edgeLocked(a, b *node) {
++	va, vb := route.NewVertex(a.pub()), route.NewVertex(b.pub())
++	n.edges[va] = append(n.edges[va], vb)
++	n.edges[vb] = append(n.edges[vb], va)
++	onion := lnwire.NewFeatureVector(
++		lnwire.NewRawFeatureVector(lnwire.OnionMessagesOptional),
++		lnwire.Features,
++	)
++	n.feats[va] = onion
++	n.feats[vb] = onion
++}
++
++// graph implements graphdb.NodeTraverser over the network's edges.
++type graph struct{ n *network }
++
++func (g graph) ForEachNodeDirectedChannel(_ context.Context,
++	nodePub route.Vertex, cb func(channel *graphdb.DirectedChannel) error,
++	_ func()) error {
++
++	g.n.mu.Lock()
++	neighbours := append([]route.Vertex{}, g.n.edges[nodePub]...)
++	g.n.mu.Unlock()
++	for _, other := range neighbours {
++		err := cb(&graphdb.DirectedChannel{OtherNode: other})
++		if err != nil {
++			return err
++		}
++	}
++
++	return nil
++}
++
++func (g graph) FetchNodeFeatures(_ context.Context,
++	nodePub route.Vertex) (*lnwire.FeatureVector, error) {
++
++	g.n.mu.Lock()
++	defer g.n.mu.Unlock()
++	if f, ok := g.n.feats[nodePub]; ok {
++		return f, nil
++	}
++
++	return lnwire.EmptyFeatureVector(), nil
++}
++
++// messenger builds a Messenger for a node on the network, receiving through
++// a subscribe server the test feeds.
++func (n *network) messenger(nd *node, opts ...func(*Config)) (*Messenger,
++	*subscribe.Server) {
++
++	server := subscribe.NewServer()
++	require.NoError(n.t, server.Start())
++	n.t.Cleanup(func() { _ = server.Stop() })
++
++	cfg := Config{
++		NodeKey: nd.pub(),
++		Graph:   graph{n},
++		FetchChannelEdge: func(_ context.Context,
++			scid uint64) (*models.ChannelEdgeInfo, error) {
++
++			n.mu.Lock()
++			defer n.mu.Unlock()
++			if e, ok := n.chans[scid]; ok {
++				return e, nil
++			}
++
++			return nil, errors.New("no such channel")
++		},
++		FetchNodeAddrs: func(_ context.Context,
++			v route.Vertex) ([]net.Addr, error) {
++
++			n.mu.Lock()
++			defer n.mu.Unlock()
++
++			return n.addrs[v], nil
++		},
++		Peers: func() []Peer {
++			n.mu.Lock()
++			defer n.mu.Unlock()
++
++			return append([]Peer{}, n.peers[nd.id()]...)
++		},
++		ConnectPeer: func(_ context.Context, pub *btcec.PublicKey,
++			addrs []net.Addr) error {
++
++			n.mu.Lock()
++			defer n.mu.Unlock()
++			n.connect = append(n.connect, route.NewVertex(pub))
++			var to [33]byte
++			copy(to[:], pub.SerializeCompressed())
++			other, ok := n.nodes[to]
++			if !ok {
++				return errors.New("no such node")
++			}
++			n.peers[nd.id()] = append(n.peers[nd.id()], Peer{
++				Pub: other.pub(), OnionMessages: !n.deafOnConnect,
++			})
++			n.peers[to] = append(n.peers[to], Peer{
++				Pub: nd.pub(), OnionMessages: true,
++			})
++
++			return nil
++		},
++		SendToPeer: func(_ context.Context, peer [33]byte,
++			pathKey *btcec.PublicKey, onion []byte) error {
++
++			n.mu.Lock()
++			defer n.mu.Unlock()
++			for _, p := range n.peers[nd.id()] {
++				var id [33]byte
++				copy(id[:], p.Pub.SerializeCompressed())
++				if id == peer {
++					n.sent = append(n.sent, sent{
++						from: nd.id(), to: peer,
++						pathKey: pathKey, onion: onion,
++					})
++
++					return nil
++				}
++			}
++
++			return errors.New("not a peer")
++		},
++		Subscribe: server.Subscribe,
++		DecryptBlindedData: func(pathKey *btcec.PublicKey,
++			data []byte) ([]byte, error) {
++
++			return nd.router.DecryptBlindedHopData(pathKey, data)
++		},
++		NextPathKey: nd.router.NextEphemeral,
++	}
++	for _, opt := range opts {
++		opt(&cfg)
++	}
++	m, err := New(cfg)
++	require.NoError(n.t, err)
++
++	return m, server
++}
++
++// delivered is what the final node of an onion message sees.
++type delivered struct {
++	at      [33]byte
++	from    [33]byte
++	pathKey *btcec.PublicKey
++	payload *lnwire.OnionMessagePayload
++	hops    [][33]byte
++}
++
++// route processes the last sent onion message through the network the way
++// real nodes would, hop by hop, and returns what the final node sees.
++func (n *network) route() *delivered {
++	n.mu.Lock()
++	require.NotEmpty(n.t, n.sent, "nothing was sent")
++	s := n.sent[len(n.sent)-1]
++	n.sent = n.sent[:len(n.sent)-1]
++	n.mu.Unlock()
++
++	var pkt sphinx.OnionPacket
++	require.NoError(n.t, pkt.Decode(bytes.NewReader(s.onion)))
++	pathKey := s.pathKey
++	from, at := s.from, s.to
++	var hops [][33]byte
++	for i := 0; i < 10; i++ {
++		nd, ok := n.nodes[at]
++		require.True(n.t, ok, "message sent to unknown node")
++		hops = append(hops, at)
++
++		processed, err := nd.router.ProcessOnionPacket(
++			&pkt, nil, 10, sphinx.WithBlindingPoint(pathKey),
++		)
++		require.NoError(n.t, err, "hop %d cannot process the onion", i)
++		payload := lnwire.NewOnionMessagePayload()
++		_, err = payload.Decode(
++			bytes.NewReader(processed.Payload.Payload),
++		)
++		require.NoError(n.t, err)
++		encrypted := bytes.Clone(payload.EncryptedData)
++		if processed.Action == sphinx.ExitNode {
++			payload.EncryptedData = encrypted
++
++			return &delivered{
++				at: at, from: from, pathKey: pathKey,
++				payload: payload, hops: hops,
++			}
++		}
++
++		plain, err := nd.router.DecryptBlindedHopData(
++			pathKey, payload.EncryptedData,
++		)
++		require.NoError(n.t, err)
++		data, err := record.DecodeBlindedRouteData(bytes.NewReader(plain))
++		require.NoError(n.t, err)
++		require.True(n.t, data.NextNodeID.IsSome(), "next node id")
++		var next *btcec.PublicKey
++		data.NextNodeID.WhenSome(
++			func(r tlv.RecordT[tlv.TlvType4, *btcec.PublicKey]) {
++				next = r.Val
++			},
++		)
++		nextKey, err := nd.router.NextEphemeral(pathKey)
++		require.NoError(n.t, err)
++		data.NextBlindingOverride.WhenSome(
++			func(r tlv.RecordT[tlv.TlvType8, *btcec.PublicKey]) {
++				nextKey = r.Val
++			},
++		)
++
++		// A real node only forwards to a connected peer.
++		n.mu.Lock()
++		connected := false
++		for _, p := range n.peers[at] {
++			if p.Pub.IsEqual(next) {
++				connected = true
++			}
++		}
++		n.mu.Unlock()
++		require.True(n.t, connected, "hop %x forwards to %x which "+
++			"is not its peer", at, next.SerializeCompressed())
++
++		pkt = *processed.NextPacket
++		pathKey = nextKey
++		from = at
++		copy(at[:], next.SerializeCompressed())
++	}
++	n.t.Fatal("onion message did not terminate")
++
++	return nil
++}
++
++// update turns a delivery into the update the recipient's messenger sees.
++func (d *delivered) update() *onionmessage.OnionMessageUpdate {
++	var pathKey [33]byte
++	copy(pathKey[:], d.pathKey.SerializeCompressed())
++	records := make(record.CustomSet)
++	for _, r := range d.payload.FinalHopTLVs {
++		records[uint64(r.TLVType)] = r.Value
++	}
++
++	return &onionmessage.OnionMessageUpdate{
++		Peer:                   d.from,
++		PathKey:                pathKey,
++		CustomRecords:          records,
++		ReplyPath:              d.payload.ReplyPath,
++		EncryptedRecipientData: d.payload.EncryptedData,
++	}
++}
++
++// pathID reads the path_id the recipient node sees in its hop data.
++func (d *delivered) pathID(t *testing.T, nd *node) []byte {
++	if len(d.payload.EncryptedData) == 0 {
++		return nil
++	}
++	plain, err := nd.router.DecryptBlindedHopData(
++		d.pathKey, d.payload.EncryptedData,
++	)
++	require.NoError(t, err)
++	data, err := record.DecodeBlindedRouteData(bytes.NewReader(plain))
++	require.NoError(t, err)
++	var id []byte
++	data.PathID.WhenSome(func(r tlv.RecordT[tlv.TlvType6, []byte]) {
++		id = r.Val
++	})
++
++	return id
++}
++
++func payload(t tlv.Type, value []byte) []*lnwire.FinalHopTLV {
++	return []*lnwire.FinalHopTLV{{TLVType: t, Value: value}}
++}
++
++// TestInvoiceErrorCodec round-trips invoice_error and refuses bad ones.
++func TestInvoiceErrorCodec(t *testing.T) {
++	t.Parallel()
++
++	field := uint64(82)
++	full := &InvoiceError{
++		ErroneousField: &field,
++		SuggestedValue: []byte{1, 2, 3},
++		Message:        "amount too low ✓",
++	}
++	b, err := full.Encode()
++	require.NoError(t, err)
++	got, err := DecodeInvoiceError(b)
++	require.NoError(t, err)
++	require.Equal(t, full, got)
++
++	plain := &InvoiceError{Message: "no"}
++	b, err = plain.Encode()
++	require.NoError(t, err)
++	got, err = DecodeInvoiceError(b)
++	require.NoError(t, err)
++	require.Equal(t, plain, got)
++	require.Nil(t, got.ErroneousField)
++	require.Nil(t, got.SuggestedValue)
++
++	_, err = (&InvoiceError{Message: "bad\xff"}).Encode()
++	require.Error(t, err)
++	_, err = DecodeInvoiceError([]byte{5, 2, 0xff, 0xfe})
++	require.Error(t, err, "not UTF-8")
++	_, err = DecodeInvoiceError([]byte{1, 1, 5})
++	require.Error(t, err, "no text")
++	_, err = DecodeInvoiceError([]byte{5})
++	require.Error(t, err, "truncated")
++	_, err = DecodeInvoiceError(nil)
++	require.Error(t, err, "empty")
++	_, err = (&InvoiceError{}).Encode()
++	require.Error(t, err, "no message")
++	_, err = (&InvoiceError{
++		Message: "x", SuggestedValue: []byte{1},
++	}).Encode()
++	require.Error(t, err, "a value for no field")
++	_, err = DecodeInvoiceError([]byte{3, 1, 1, 5, 1, 'x'})
++	require.Error(t, err, "a value for no field")
++
++	// Over-long text is cut on a rune boundary: three-byte runes do not
++	// divide the limit, so the cut lands a byte short of it.
++	long := bytes.Repeat([]byte("€"), MaxInvoiceErrorBytes)
++	got, err = DecodeInvoiceError(append(
++		[]byte{5, 0xfd, byte(len(long) >> 8), byte(len(long))}, long...,
++	))
++	require.NoError(t, err)
++	require.True(t, utf8.ValidString(got.Message))
++	require.Equal(t, MaxInvoiceErrorBytes-1, len(got.Message))
++}
++
++// TestBuildPathsToSelf builds offer and reply paths and sends over them.
++func TestBuildPathsToSelf(t *testing.T) {
++	t.Parallel()
++
++	nw := newNetwork(t)
++	recipient := nw.newNode()
++	intro1, intro2, noChan := nw.newNode(), nw.newNode(), nw.newNode()
++	deaf := nw.newNode()
++	nw.peer(recipient, intro1, true)
++	nw.peer(recipient, intro2, true)
++	nw.peer(recipient, noChan, false)
++	nw.peer(recipient, deaf, true)
++	nw.mu.Lock()
++	peers := nw.peers[recipient.id()]
++	peers[len(peers)-1].OnionMessages = false
++	nw.mu.Unlock()
++
++	m, _ := nw.messenger(recipient)
++	secret := [32]byte{7, 7, 7}
++	paths, err := m.BuildOfferPaths(context.Background(), secret)
++	require.NoError(t, err)
++	require.Len(t, paths, 2, "one per channel peer, capped")
++	for _, p := range paths {
++		require.Equal(t, len(p.Hops[0].EncryptedData),
++			len(p.Hops[1].EncryptedData), "hop data padded alike")
++	}
++	intros := map[[33]byte]bool{}
++	for _, p := range paths {
++		pk, ok := p.IntroductionNode.(lnwire.PubkeyIntro)
++		require.True(t, ok)
++		var id [33]byte
++		copy(id[:], pk.Pubkey.SerializeCompressed())
++		intros[id] = true
++		require.Len(t, p.Hops, 2, "intro and recipient")
++		require.NotNil(t, p.BlindingPoint)
++	}
++	require.True(t, intros[intro1.id()] && intros[intro2.id()],
++		"the peers with channels are the introduction nodes")
++
++	// A sender connected to the first intro sends over the path and the
++	// message arrives with the secret as path_id.
++	sender := nw.newNode()
++	nw.peer(sender, intro1, true)
++	nw.peer(sender, intro2, true)
++	s, _ := nw.messenger(sender)
++	for _, p := range paths {
++		path := p
++		err = s.Send(context.Background(), Destination{Path: &path},
++			payload(TypeInvoiceRequest, []byte{1}), nil)
++		require.NoError(t, err)
++		d := nw.route()
++		require.Equal(t, recipient.id(), d.at)
++		require.Len(t, d.hops, 2)
++		require.Equal(t, secret[:], d.pathID(t, recipient))
++		require.Equal(t, []byte{1}, d.payload.FinalHopTLVs[0].Value)
++	}
++
++	// A reply path goes through a channel peer; without one, through a
++	// peer with no channel, which an offer path never uses; with no
++	// peer at all it names the node itself.
++	reply, err := m.BuildReplyPath(context.Background(), []byte{9})
++	require.NoError(t, err)
++	require.Len(t, reply.Hops, 2)
++	pk, ok := reply.IntroductionNode.(lnwire.PubkeyIntro)
++	require.True(t, ok)
++	require.True(t, pk.Pubkey.IsEqual(intro1.pub()) ||
++		pk.Pubkey.IsEqual(intro2.pub()))
++	chanless := nw.newNode()
++	transient := nw.newNode()
++	nw.peer(chanless, transient, false)
++	c, _ := nw.messenger(chanless)
++	paths, err = c.BuildOfferPaths(context.Background(), secret)
++	require.NoError(t, err)
++	require.Empty(t, paths, "no channel peer: no offer paths")
++	reply, err = c.BuildReplyPath(context.Background(), []byte{9})
++	require.NoError(t, err)
++	require.Len(t, reply.Hops, 2, "a reply path may use it")
++	lonely := nw.newNode()
++	l, _ := nw.messenger(lonely)
++	reply, err = l.BuildReplyPath(context.Background(), []byte{9})
++	require.NoError(t, err)
++	require.Len(t, reply.Hops, 1)
++	pk, ok = reply.IntroductionNode.(lnwire.PubkeyIntro)
++	require.True(t, ok)
++	require.True(t, pk.Pubkey.IsEqual(lonely.pub()))
++	paths, err = l.BuildOfferPaths(context.Background(), secret)
++	require.NoError(t, err)
++	require.Empty(t, paths, "no peer: the offer names the node id")
++
++	// The one-hop reply path is usable by a peer of the lonely node.
++	nw.peer(sender, lonely, false)
++	err = s.Send(context.Background(), Destination{Path: reply},
++		payload(TypeInvoice, []byte{2}), nil)
++	require.NoError(t, err)
++	d := nw.route()
++	require.Equal(t, lonely.id(), d.at)
++	require.Equal(t, []byte{9}, d.pathID(t, lonely))
++}
++
++// TestSendToNode reaches a node by id: as a peer, through the graph, or by
++// connecting to it.
++func TestSendToNode(t *testing.T) {
++	t.Parallel()
++
++	nw := newNetwork(t)
++	sender, peer, far, x := nw.newNode(), nw.newNode(), nw.newNode(),
++		nw.newNode()
++	nw.peer(sender, peer, true)
++	nw.peer(peer, x, true)
++	nw.peer(x, far, true)
++	s, _ := nw.messenger(sender)
++	ctx := context.Background()
++
++	// A peer.
++	err := s.Send(ctx, Destination{NodeID: peer.pub()},
++		payload(TypeInvoiceRequest, []byte{1}), nil)
++	require.NoError(t, err)
++	d := nw.route()
++	require.Equal(t, peer.id(), d.at)
++	require.Equal(t, [][33]byte{peer.id()}, d.hops)
++	require.Nil(t, d.pathID(t, peer))
++
++	// Three hops through the graph.
++	reply, err := s.BuildReplyPath(ctx, []byte{5})
++	require.NoError(t, err)
++	err = s.Send(ctx, Destination{NodeID: far.pub()},
++		payload(TypeInvoiceRequest, []byte{2}), reply)
++	require.NoError(t, err)
++	d = nw.route()
++	require.Equal(t, far.id(), d.at)
++	require.Equal(t, [][33]byte{peer.id(), x.id(), far.id()}, d.hops)
++	require.NotNil(t, d.payload.ReplyPath, "the reply path rides along")
++	require.Equal(t, reply.BlindingPoint, d.payload.ReplyPath.BlindingPoint)
++
++	// The reply path leads back to the sender.
++	f, _ := nw.messenger(far)
++	err = f.Send(ctx, Destination{Path: d.payload.ReplyPath},
++		payload(TypeInvoice, []byte{3}), nil)
++	require.NoError(t, err)
++	d = nw.route()
++	require.Equal(t, sender.id(), d.at)
++	require.Equal(t, []byte{5}, d.pathID(t, sender))
++
++	// Too far for the hop limit: unreachable, no addresses.
++	limited, _ := nw.messenger(sender, func(c *Config) { c.MaxHops = 2 })
++	err = limited.Send(ctx, Destination{NodeID: far.pub()},
++		payload(TypeInvoiceRequest, []byte{4}), nil)
++	require.ErrorIs(t, err, ErrUnreachable)
++
++	// Not in the graph, but with an address: connect and send directly,
++	// but only when the send may dial out.
++	island := nw.newNode()
++	nw.mu.Lock()
++	nw.addrs[route.NewVertex(island.pub())] = []net.Addr{
++		&net.TCPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 9735},
++	}
++	nw.mu.Unlock()
++	err = s.Send(ctx, Destination{NodeID: island.pub()},
++		payload(TypeInvoiceRequest, []byte{5}), nil)
++	require.ErrorIs(t, err, ErrUnreachable, "no dialling by default")
++	require.Empty(t, nw.connect)
++	err = s.Send(ctx, Destination{NodeID: island.pub()},
++		payload(TypeInvoiceRequest, []byte{5}), nil, AllowConnect())
++	require.NoError(t, err)
++	require.Equal(t, []route.Vertex{route.NewVertex(island.pub())},
++		nw.connect)
++	d = nw.route()
++	require.Equal(t, island.id(), d.at)
++
++	// Nothing known about the node at all.
++	ghost := nw.newNode()
++	err = s.Send(ctx, Destination{NodeID: ghost.pub()},
++		payload(TypeInvoiceRequest, []byte{6}), nil, AllowConnect())
++	require.ErrorIs(t, err, ErrUnreachable)
++
++	// A node that connects but does not speak onion messages.
++	deaf := nw.newNode()
++	nw.mu.Lock()
++	nw.addrs[route.NewVertex(deaf.pub())] = []net.Addr{
++		&net.TCPAddr{IP: net.IPv4(10, 0, 0, 2), Port: 9735},
++	}
++	nw.deafOnConnect = true
++	nw.mu.Unlock()
++	err = s.Send(ctx, Destination{NodeID: deaf.pub()},
++		payload(TypeInvoiceRequest, []byte{7}), nil, AllowConnect())
++	require.ErrorIs(t, err, ErrUnreachable)
++	require.ErrorContains(t, err, "onion messages")
++	nw.mu.Lock()
++	nw.deafOnConnect = false
++	nw.mu.Unlock()
++
++	// Ourselves, and malformed destinations.
++	err = s.Send(ctx, Destination{NodeID: sender.pub()}, nil, nil)
++	require.ErrorIs(t, err, ErrDestinationIsSelf)
++	err = s.Send(ctx, Destination{}, nil, nil)
++	require.ErrorIs(t, err, ErrBadDestination)
++	err = s.Send(ctx, Destination{NodeID: peer.pub(), Path: reply}, nil,
++		nil)
++	require.ErrorIs(t, err, ErrBadDestination)
++	err = s.Send(ctx, Destination{Path: &lnwire.BlindedPath{}}, nil, nil)
++	require.ErrorIs(t, err, ErrBadDestination)
++	broken := *reply
++	broken.BlindingPoint = nil
++	err = s.Send(ctx, Destination{Path: &broken}, nil, nil)
++	require.ErrorIs(t, err, ErrBadDestination)
++	broken = *reply
++	broken.Hops = []lnwire.BlindedHop{{EncryptedData: []byte{1}}}
++	err = s.Send(ctx, Destination{Path: &broken}, nil, nil)
++	require.ErrorIs(t, err, ErrBadDestination)
++	broken = *reply
++	broken.IntroductionNode = lnwire.PubkeyIntro{}
++	err = s.Send(ctx, Destination{Path: &broken}, nil, nil)
++	require.ErrorIs(t, err, ErrBadDestination)
++
++	// A payload too large for even the large onion fails cleanly.
++	err = s.Send(ctx, Destination{NodeID: peer.pub()},
++		payload(TypeInvoiceRequest, make([]byte, 40_000)), nil)
++	require.Error(t, err)
++	require.NotErrorIs(t, err, ErrUnreachable)
++}
++
++// TestRouteThroughConnectedPeer takes a longer route through a connected
++// peer when the shortest route's first hop is not connected.
++func TestRouteThroughConnectedPeer(t *testing.T) {
++	t.Parallel()
++
++	nw := newNetwork(t)
++	sender, offline, x, dest := nw.newNode(), nw.newNode(), nw.newNode(),
++		nw.newNode()
++	// Graph: sender-offline-dest (2 hops) and sender-x-y-dest (3 hops);
++	// only x is a connected peer of the sender.
++	y := nw.newNode()
++	nw.edge(sender, offline)
++	nw.edge(offline, dest)
++	nw.peer(sender, x, true)
++	nw.peer(x, y, true)
++	nw.peer(y, dest, true)
++	s, _ := nw.messenger(sender)
++	ctx := context.Background()
++
++	err := s.Send(ctx, Destination{NodeID: dest.pub()},
++		payload(TypeInvoiceRequest, []byte{1}), nil)
++	require.NoError(t, err)
++	d := nw.route()
++	require.Equal(t, dest.id(), d.at)
++	require.Equal(t, [][33]byte{x.id(), y.id(), dest.id()}, d.hops)
++	require.Empty(t, nw.connect, "no dialling was needed")
++
++	// With no such route and dialling allowed, the shortest route's
++	// first hop is connected to.
++	nw.mu.Lock()
++	delete(nw.edges, route.NewVertex(y.pub()))
++	nw.edges[route.NewVertex(x.pub())] = []route.Vertex{
++		route.NewVertex(sender.pub()),
++	}
++	nw.addrs[route.NewVertex(offline.pub())] = []net.Addr{
++		&net.TCPAddr{IP: net.IPv4(10, 0, 0, 3), Port: 9735},
++	}
++	nw.mu.Unlock()
++	err = s.Send(ctx, Destination{NodeID: dest.pub()},
++		payload(TypeInvoiceRequest, []byte{2}), nil)
++	require.ErrorIs(t, err, ErrUnreachable)
++	err = s.Send(ctx, Destination{NodeID: dest.pub()},
++		payload(TypeInvoiceRequest, []byte{2}), nil, AllowConnect())
++	require.NoError(t, err)
++	require.Equal(t, []route.Vertex{route.NewVertex(offline.pub())},
++		nw.connect)
++	nw.peer(offline, dest, true)
++	d = nw.route()
++	require.Equal(t, dest.id(), d.at)
++	require.Equal(t, [][33]byte{offline.id(), dest.id()}, d.hops)
++}
++
++// TestSendToBlindedPath reaches a recipient's path with the introduction
++// node as a peer, some hops away, or named by channel and direction.
++func TestSendToBlindedPath(t *testing.T) {
++	t.Parallel()
++
++	nw := newNetwork(t)
++	sender, x, intro, recipient := nw.newNode(), nw.newNode(),
++		nw.newNode(), nw.newNode()
++	nw.peer(sender, x, true)
++	nw.peer(x, intro, true)
++	nw.peer(intro, recipient, true)
++	r, _ := nw.messenger(recipient)
++	s, _ := nw.messenger(sender)
++	ctx := context.Background()
++
++	path, err := r.BuildReplyPath(ctx, []byte{0xaa})
++	require.NoError(t, err)
++
++	// Two of our hops, then the recipient's two.
++	big := bytes.Repeat([]byte{0xbb}, 2000)
++	err = s.Send(ctx, Destination{Path: path},
++		payload(TypeInvoiceRequest, big), nil)
++	require.NoError(t, err)
++	d := nw.route()
++	require.Equal(t, recipient.id(), d.at)
++	require.Equal(t, [][33]byte{x.id(), intro.id(), recipient.id()},
++		d.hops)
++	require.Equal(t, []byte{0xaa}, d.pathID(t, recipient))
++	require.Equal(t, big, d.payload.FinalHopTLVs[0].Value,
++		"a large payload rides in a large onion")
++
++	// The introduction node as a direct peer of the sender.
++	nw.peer(sender, intro, false)
++	err = s.Send(ctx, Destination{Path: path},
++		payload(TypeInvoiceRequest, []byte{1}), nil)
++	require.NoError(t, err)
++	d = nw.route()
++	require.Equal(t, recipient.id(), d.at)
++	require.Equal(t, [][33]byte{intro.id(), recipient.id()}, d.hops)
++	require.Equal(t, []byte{0xaa}, d.pathID(t, recipient))
++
++	// The introduction node named by channel and direction.
++	scid := uint64(0x0102030405060708)
++	edge := &models.ChannelEdgeInfo{
++		NodeKey1Bytes: route.NewVertex(intro.pub()),
++		NodeKey2Bytes: route.NewVertex(recipient.pub()),
++	}
++	nw.mu.Lock()
++	nw.chans[scid] = edge
++	nw.mu.Unlock()
++	var raw [8]byte
++	binary.BigEndian.PutUint64(raw[:], scid)
++	sciddir, err := lnwire.NewSciddirIntro(0, raw)
++	require.NoError(t, err)
++	byChan := *path
++	byChan.IntroductionNode = sciddir
++	err = s.Send(ctx, Destination{Path: &byChan},
++		payload(TypeInvoiceRequest, []byte{2}), nil)
++	require.NoError(t, err)
++	d = nw.route()
++	require.Equal(t, recipient.id(), d.at)
++	require.Equal(t, []byte{0xaa}, d.pathID(t, recipient))
++
++	// Direction 1 names the other node, which is the recipient itself:
++	// the message is then sent to it as the introduction node, and its
++	// own path data does not decrypt at the wrong hop.
++	sciddir, err = lnwire.NewSciddirIntro(1, raw)
++	require.NoError(t, err)
++	byChan.IntroductionNode = sciddir
++	nw.peer(sender, recipient, false)
++	err = s.Send(ctx, Destination{Path: &byChan},
++		payload(TypeInvoiceRequest, []byte{3}), nil)
++	require.NoError(t, err)
++	nw.mu.Lock()
++	last := nw.sent[len(nw.sent)-1]
++	nw.sent = nw.sent[:len(nw.sent)-1]
++	nw.mu.Unlock()
++	require.Equal(t, recipient.id(), last.to)
++
++	// An unknown channel.
++	var unknown [8]byte
++	sciddir, err = lnwire.NewSciddirIntro(0, unknown)
++	require.NoError(t, err)
++	byChan.IntroductionNode = sciddir
++	err = s.Send(ctx, Destination{Path: &byChan}, nil, nil)
++	require.Error(t, err)
++
++	// A path that starts at us: the recipient built it through us as
++	// its introduction node. We process our own hop and send on.
++	viaSender := nw.newNode()
++	nw.peer(viaSender, sender, true)
++	v, _ := nw.messenger(viaSender)
++	throughUs, err := v.BuildReplyPath(ctx, []byte{0xcc})
++	require.NoError(t, err)
++	pk, ok := throughUs.IntroductionNode.(lnwire.PubkeyIntro)
++	require.True(t, ok)
++	require.True(t, pk.Pubkey.IsEqual(sender.pub()))
++	err = s.Send(ctx, Destination{Path: throughUs},
++		payload(TypeInvoice, []byte{4}), nil)
++	require.NoError(t, err)
++	d = nw.route()
++	require.Equal(t, viaSender.id(), d.at)
++	require.Equal(t, [][33]byte{viaSender.id()}, d.hops)
++	require.Equal(t, []byte{0xcc}, d.pathID(t, viaSender))
++	require.Equal(t, []byte{4}, d.payload.FinalHopTLVs[0].Value)
++
++	// The same, but the recipient is not our peer any more and is
++	// reached through the graph: our last hop must switch to the key
++	// the recipient's hop expects after ours, not the path's first key.
++	far := nw.newNode()
++	relay := nw.newNode()
++	nw.peer(far, sender, true)
++	f, _ := nw.messenger(far)
++	viaUsFar, err := f.BuildReplyPath(ctx, []byte{0xdd})
++	require.NoError(t, err)
++	nw.mu.Lock()
++	// Drop the direct connection, keep the graph edge, add a relay.
++	nw.peers[sender.id()] = nw.peers[sender.id()][:len(nw.peers[sender.id()])-1]
++	nw.peers[far.id()] = nil
++	nw.mu.Unlock()
++	nw.peer(sender, relay, true)
++	nw.peer(relay, far, true)
++	err = s.Send(ctx, Destination{Path: viaUsFar},
++		payload(TypeInvoice, []byte{5}), nil)
++	require.NoError(t, err)
++	d = nw.route()
++	require.Equal(t, far.id(), d.at)
++	require.Equal(t, [][33]byte{relay.id(), far.id()}, d.hops)
++	require.Equal(t, []byte{0xdd}, d.pathID(t, far))
++
++	// A one-hop path to ourselves is not a destination.
++	mine, err := s.BuildReplyPath(ctx, []byte{1})
++	require.NoError(t, err)
++	require.Len(t, mine.Hops, 2)
++	lonely := nw.newNode()
++	l, _ := nw.messenger(lonely)
++	own, err := l.BuildReplyPath(ctx, []byte{1})
++	require.NoError(t, err)
++	err = l.Send(ctx, Destination{Path: own}, nil, nil)
++	require.ErrorIs(t, err, ErrDestinationIsSelf)
++}
++
++// TestReceive feeds delivered onion messages through the subscription and
++// checks what the handlers get.
++func TestReceive(t *testing.T) {
++	t.Parallel()
++
++	nw := newNetwork(t)
++	recipient, sender := nw.newNode(), nw.newNode()
++	nw.peer(recipient, sender, true)
++	r, server := nw.messenger(recipient)
++	s, _ := nw.messenger(sender)
++	ctx := context.Background()
++
++	got := make(chan *Inbound, 8)
++	r.OnInvoiceRequest(func(_ context.Context, msg *Inbound) { got <- msg })
++	r.OnInvoice(func(_ context.Context, msg *Inbound) { got <- msg })
++	r.OnInvoiceError(func(_ context.Context, msg *Inbound) { got <- msg })
++	require.NoError(t, r.Start())
++	require.NoError(t, r.Start(), "idempotent")
++	t.Cleanup(func() { require.NoError(t, r.Stop()) })
++
++	wait := func() *Inbound {
++		select {
++		case msg := <-got:
++			return msg
++		case <-time.After(5 * time.Second):
++			t.Fatal("no message delivered")
++		}
++
++		return nil
++	}
++	none := func() {
++		select {
++		case msg := <-got:
++			t.Fatalf("unexpected message %+v", msg)
++		case <-time.After(200 * time.Millisecond):
++		}
++	}
++
++	// A signed invoice request over one of our paths, with a reply path.
++	path, err := r.BuildReplyPath(ctx, []byte("offer-path"))
++	require.NoError(t, err)
++	issuer, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	chain := [32]byte{1}
++	offer := &bolt12.Offer{
++		OfferChains: tlv.SomeRecordT(
++			tlv.NewRecordT[tlv.TlvType2](bolt12.ChainsRecord{
++				Chains: [][32]byte{chain},
++			}),
++		),
++		OfferDescription: tlv.SomeRecordT(
++			tlv.NewPrimitiveRecord[tlv.TlvType10](tlv.Blob("x")),
++		),
++		OfferIssuerID: tlv.SomeRecordT(
++			tlv.NewPrimitiveRecord[tlv.TlvType22](issuer.PubKey()),
++		),
++	}
++	ir, err := bolt12.NewInvoiceRequestFromOffer(
++		offer, sender.pub(), []byte{1, 2}, chain,
++	)
++	require.NoError(t, err)
++	ir.InvreqAmount = tlv.SomeRecordT(
++		tlv.NewPrimitiveRecord[tlv.TlvType82](bolt12.TUint64(1000)),
++	)
++	sig, err := bolt12.SignInvoiceRequest(ir, sender.key)
++	require.NoError(t, err)
++	ir.Signature = tlv.SomeRecordT(
++		tlv.NewPrimitiveRecord[tlv.TlvType240](sig),
++	)
++	irBytes, err := ir.Encode()
++	require.NoError(t, err)
++	reply, err := s.BuildReplyPath(ctx, []byte("reply"))
++	require.NoError(t, err)
++	err = s.Send(ctx, Destination{Path: path},
++		payload(TypeInvoiceRequest, irBytes), reply)
++	require.NoError(t, err)
++	d := nw.route()
++	require.Equal(t, recipient.id(), d.at)
++	require.NoError(t, server.SendUpdate(d.update()))
++	msg := wait()
++	require.NotNil(t, msg.InvoiceRequest)
++	require.Nil(t, msg.Invoice)
++	require.Nil(t, msg.InvoiceError)
++	require.Equal(t, []byte("offer-path"), msg.PathID)
++	require.Equal(t, sender.id(), msg.Peer)
++	require.NotNil(t, msg.ReplyPath)
++	require.Equal(t, reply.BlindingPoint, msg.ReplyPath.BlindingPoint)
++	require.NoError(t, bolt12.VerifyInvoiceRequest(msg.InvoiceRequest))
++	require.Equal(t, irBytes, msg.Records[uint64(TypeInvoiceRequest)])
++
++	// An invoice error to our node id: no path, no path_id.
++	ieBytes, err := (&InvoiceError{Message: "no"}).Encode()
++	require.NoError(t, err)
++	err = s.Send(ctx, Destination{NodeID: recipient.pub()},
++		payload(TypeInvoiceError, ieBytes), nil)
++	require.NoError(t, err)
++	d = nw.route()
++	require.NoError(t, server.SendUpdate(d.update()))
++	msg = wait()
++	require.NotNil(t, msg.InvoiceError)
++	require.Equal(t, "no", msg.InvoiceError.Message)
++	require.Nil(t, msg.PathID)
++	require.Nil(t, msg.ReplyPath)
++
++	// Things that are dropped: no BOLT 12 record, two kinds at once, a
++	// record that does not decode, recipient data that is not ours.
++	u := d.update()
++	u.CustomRecords = record.CustomSet{100: []byte{1}}
++	require.NoError(t, server.SendUpdate(u))
++	none()
++	u = d.update()
++	u.CustomRecords[uint64(TypeInvoiceRequest)] = irBytes
++	require.NoError(t, server.SendUpdate(u))
++	none()
++	u = d.update()
++	u.CustomRecords = record.CustomSet{
++		uint64(TypeInvoice): []byte{0xff, 0xff},
++	}
++	require.NoError(t, server.SendUpdate(u))
++	none()
++	u = d.update()
++	u.EncryptedRecipientData = []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
++		12, 13, 14, 15, 16, 17, 18}
++	require.NoError(t, server.SendUpdate(u))
++	none()
++	require.NoError(t, server.SendUpdate("not an onion message"))
++	none()
++
++	// Stop waits for handlers and stops delivery; the messenger can be
++	// started again and stopped again.
++	require.NoError(t, r.Stop())
++	require.NoError(t, r.Stop(), "idempotent")
++	require.NoError(t, r.Start())
++	err = s.Send(ctx, Destination{NodeID: recipient.pub()},
++		payload(TypeInvoiceError, ieBytes), nil)
++	require.NoError(t, err)
++	d = nw.route()
++	require.NoError(t, server.SendUpdate(d.update()))
++	msg = wait()
++	require.NotNil(t, msg.InvoiceError)
++	require.NoError(t, r.Stop())
++	require.NoError(t, r.Stop())
++}
++
++// TestDispatchDropsWhenBusy drops messages once every handler slot is
++// taken, instead of queueing them.
++func TestDispatchDropsWhenBusy(t *testing.T) {
++	t.Parallel()
++
++	nw := newNetwork(t)
++	recipient, sender := nw.newNode(), nw.newNode()
++	nw.peer(recipient, sender, true)
++	r, server := nw.messenger(recipient)
++	s, _ := nw.messenger(sender)
++	ctx := context.Background()
++
++	release := make(chan struct{})
++	started := make(chan struct{}, maxConcurrentHandlers+1)
++	r.OnInvoiceError(func(ctx context.Context, _ *Inbound) {
++		started <- struct{}{}
++		select {
++		case <-release:
++		case <-ctx.Done():
++		}
++	})
++	require.NoError(t, r.Start())
++
++	ieBytes, err := (&InvoiceError{Message: "busy"}).Encode()
++	require.NoError(t, err)
++	err = s.Send(ctx, Destination{NodeID: recipient.pub()},
++		payload(TypeInvoiceError, ieBytes), nil)
++	require.NoError(t, err)
++	u := nw.route().update()
++	for i := 0; i < maxConcurrentHandlers; i++ {
++		require.NoError(t, server.SendUpdate(u))
++	}
++	for i := 0; i < maxConcurrentHandlers; i++ {
++		select {
++		case <-started:
++		case <-time.After(5 * time.Second):
++			t.Fatal("handler did not start")
++		}
++	}
++	// One more is dropped, not queued.
++	require.NoError(t, server.SendUpdate(u))
++	select {
++	case <-started:
++		t.Fatal("message over the cap was handled")
++	case <-time.After(200 * time.Millisecond):
++	}
++	close(release)
++	require.Eventually(t, func() bool {
++		return len(r.sem) == 0
++	}, 5*time.Second, 10*time.Millisecond)
++
++	// Stop ends the handlers' context.
++	blocked := make(chan struct{})
++	r.OnInvoiceError(func(ctx context.Context, _ *Inbound) {
++		<-ctx.Done()
++		close(blocked)
++	})
++	require.NoError(t, server.SendUpdate(u))
++	require.Eventually(t, func() bool { return len(r.sem) > 0 },
++		5*time.Second, 10*time.Millisecond)
++	require.NoError(t, r.Stop())
++	select {
++	case <-blocked:
++	case <-time.After(5 * time.Second):
++		t.Fatal("handler context was not cancelled by Stop")
++	}
++}
++
++// TestNewRequirements checks the configuration checks and defaults.
++func TestNewRequirements(t *testing.T) {
++	t.Parallel()
++
++	key, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	full := Config{
++		NodeKey: key.PubKey(),
++		Peers:   func() []Peer { return nil },
++		SendToPeer: func(context.Context, [33]byte, *btcec.PublicKey,
++			[]byte) error {
++
++			return nil
++		},
++		Subscribe: func() (*subscribe.Client, error) { return nil, nil },
++		DecryptBlindedData: func(*btcec.PublicKey, []byte) ([]byte,
++			error) {
++
++			return nil, nil
++		},
++		NextPathKey: func(*btcec.PublicKey) (*btcec.PublicKey, error) {
++			return nil, nil
++		},
++	}
++	m, err := New(full)
++	require.NoError(t, err)
++	require.Equal(t, DefaultMaxHops, m.cfg.MaxHops)
++	require.Equal(t, DefaultMaxPaths, m.cfg.MaxPaths)
++
++	for _, strip := range []func(c *Config){
++		func(c *Config) { c.NodeKey = nil },
++		func(c *Config) { c.Peers = nil },
++		func(c *Config) { c.SendToPeer = nil },
++		func(c *Config) { c.Subscribe = nil },
++		func(c *Config) { c.DecryptBlindedData = nil },
++		func(c *Config) { c.NextPathKey = nil },
++	} {
++		c := full
++		strip(&c)
++		_, err := New(c)
++		require.Error(t, err)
++	}
++}
+diff --git a/routing/route/blindedroute.go b/routing/route/blindedroute.go
+index 2b8120ad6..35ad07031 100644
+--- a/routing/route/blindedroute.go
++++ b/routing/route/blindedroute.go
+@@ -13,7 +13,7 @@ import (
+ // payloads used to encoding the routing data for each hop in the route. This
+ // method also accepts final hop payloads.
+ func OnionMessageBlindedPathToSphinxPath(blindedPath *sphinx.BlindedPath,
+-	replyPath *sphinx.BlindedPath, finalHopTLVs []*lnwire.FinalHopTLV) (
++	replyPath *lnwire.BlindedPath, finalHopTLVs []*lnwire.FinalHopTLV) (
+ 	*sphinx.PaymentPath, error) {
+ 
+ 	var path sphinx.PaymentPath
+diff --git a/rpcserver.go b/rpcserver.go
+index cf8c35988..b2b3adfe6 100644
+--- a/rpcserver.go
++++ b/rpcserver.go
+@@ -8795,21 +8795,8 @@ func (r *rpcServer) SubscribeOnionMessages(
+ 					"failed type assertion: %T", update)
+ 			}
+ 
+-			bp := &lnrpc.BlindedPath{}
+-
+-			//nolint:ll
+-			if oMsg.ReplyPath != nil {
+-				bp.IntroductionNode = oMsg.ReplyPath.IntroductionPoint.SerializeCompressed()
+-				bp.BlindingPoint = oMsg.ReplyPath.BlindingPoint.SerializeCompressed()
+-
+-				for _, hop := range oMsg.ReplyPath.BlindedHops {
+-					rpcHop := &lnrpc.BlindedHop{
+-						BlindedNode:   hop.BlindedNodePub.SerializeCompressed(),
+-						EncryptedData: hop.CipherText,
+-					}
+-					bp.BlindedHops = append(bp.BlindedHops, rpcHop)
+-				}
+-			}
++			// Perform a verbatim pass-through of any reply path.
++			bp := marshallBlindedPath(oMsg.ReplyPath)
+ 
+ 			//nolint:ll
+ 			err := server.Send(&lnrpc.OnionMessageUpdate{
+@@ -8827,6 +8814,34 @@ func (r *rpcServer) SubscribeOnionMessages(
+ 	}
+ }
+ 
++// marshallBlindedPath converts a wire-form blinded path into its RPC
++// counterpart. If the input is nil, nil is returned.
++func marshallBlindedPath(p *lnwire.BlindedPath) *lnrpc.BlindedPath {
++	if p == nil {
++		return nil
++	}
++
++	bp := &lnrpc.BlindedPath{
++		// The introduction node may be a short-channel-id direction
++		// rather than a node public key. We pass it through verbatim
++		// instead of resolving it, which would need a graph db query.
++		IntroductionNode: p.IntroductionNode.Bytes(),
++		BlindingPoint:    p.BlindingPoint.SerializeCompressed(),
++	}
++
++	for _, hop := range p.Hops {
++		blindedNode := hop.BlindedNodeID.SerializeCompressed()
++		bp.BlindedHops = append(
++			bp.BlindedHops, &lnrpc.BlindedHop{
++				BlindedNode:   blindedNode,
++				EncryptedData: hop.EncryptedData,
++			},
++		)
++	}
++
++	return bp
++}
++
+ // ListAliases returns the set of all aliases we have ever allocated along with
+ // their base SCIDs and possibly a separate confirmed SCID in the case of
+ // zero-conf.
+diff --git a/server.go b/server.go
+index 4bdf0c769..6d9c63717 100644
+--- a/server.go
++++ b/server.go
+@@ -70,6 +70,7 @@ import (
+ 	"github.com/lightningnetwork/lnd/netann"
+ 	"github.com/lightningnetwork/lnd/offers"
+ 	"github.com/lightningnetwork/lnd/onionmessage"
++	"github.com/lightningnetwork/lnd/onionmsg"
+ 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
+ 	"github.com/lightningnetwork/lnd/peer"
+ 	"github.com/lightningnetwork/lnd/peernotifier"
+@@ -345,6 +346,9 @@ type server struct {
+ 	// offersManager mints and serves BOLT 12 offers.
+ 	offersManager *offers.Manager
+ 
++	// onionMessenger carries BOLT 12 messages over onion messages.
++	onionMessenger *onionmsg.Messenger
++
+ 	htlcSwitch *htlcswitch.Switch
+ 
+ 	interceptableSwitch *htlcswitch.InterceptableSwitch
+@@ -893,12 +897,62 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	s.onionMessenger, err = onionmsg.New(onionmsg.Config{
++		NodeKey: nodeKeyDesc.PubKey,
++		Graph:   s.graphDB,
++		FetchChannelEdge: func(ctx context.Context,
++			scid uint64) (*models.ChannelEdgeInfo, error) {
++
++			info, _, _, err := s.graphDB.FetchChannelEdgesByID(
++				ctx, scid,
++			)
++
++			return info, err
++		},
++		FetchNodeAddrs: func(ctx context.Context,
++			node route.Vertex) ([]net.Addr, error) {
++
++			n, err := graphdb.NewVersionedGraph(
++				s.graphDB, lnwire.GossipVersion1,
++			).FetchNode(ctx, node)
++			if err != nil {
++				return nil, err
++			}
++
++			return n.Addresses, nil
++		},
++		Peers: func() []onionmsg.Peer {
++			var out []onionmsg.Peer
++			for _, p := range s.Peers() {
++				features := p.RemoteFeatures()
++				out = append(out, onionmsg.Peer{
++					Pub: p.IdentityKey(),
++					OnionMessages: features != nil &&
++						features.HasFeature(
++							lnwire.OnionMessagesOptional,
++						),
++					HasChannel: len(p.ChannelSnapshots()) > 0,
++				})
++			}
++
++			return out
++		},
++		ConnectPeer:        s.connectForOnionMessage,
++		SendToPeer:         s.SendOnionMessage,
++		Subscribe:          s.SubscribeOnionMessages,
++		DecryptBlindedData: sphinxOnionMsg.DecryptBlindedHopData,
++		NextPathKey:        sphinxOnionMsg.NextEphemeral,
++	})
++	if err != nil {
++		return nil, err
++	}
+ 	s.offersManager, err = offers.NewManager(offers.Config{
+-		ChainHash: [32]byte(*cfg.ActiveNetParams.GenesisHash),
+-		IssuerKey: *nodeKeyDesc,
+-		Secret:    offersSecret,
+-		Store:     offersStore,
+-		Clock:     clock.NewDefaultClock(),
++		ChainHash:   [32]byte(*cfg.ActiveNetParams.GenesisHash),
++		IssuerKey:   *nodeKeyDesc,
++		Secret:      offersSecret,
++		Store:       offersStore,
++		Clock:       clock.NewDefaultClock(),
++		PathBuilder: s.onionMessenger,
+ 		NodeReachable: func() bool {
+ 			return len(s.getNodeAnnouncement().Addresses) > 0
+ 		},
+@@ -2309,6 +2363,19 @@ func (s *server) Start(ctx context.Context) error {
+ 			return
+ 		}
+ 
++		// BOLT 12 messages ride on onion messages; without them the
++		// node can still mint offers but cannot serve or pay them.
++		if !s.cfg.ProtocolOptions.NoOnionMessages() {
++			cleanup = cleanup.add(s.onionMessenger.Stop)
++			if err := s.onionMessenger.Start(); err != nil {
++				startErr = err
++				return
++			}
++		} else {
++			srvrLog.Warnf("Onion messages are disabled: BOLT 12 " +
++				"offers cannot be served or paid")
++		}
++
+ 		if s.hostAnn != nil {
+ 			cleanup = cleanup.add(s.hostAnn.Stop)
+ 			if err := s.hostAnn.Start(); err != nil {
+@@ -2792,6 +2859,11 @@ func (s *server) Stop() error {
+ 	s.stop.Do(func() {
+ 		atomic.StoreInt32(&s.stopping, 1)
+ 
++		// Stop taking BOLT 12 messages before the peers go away.
++		if err := s.onionMessenger.Stop(); err != nil {
++			srvrLog.Warnf("failed to stop onion messenger: %v", err)
++		}
++
+ 		ctx := context.Background()
+ 
+ 		close(s.quit)
+@@ -5565,6 +5637,60 @@ func (s *server) SendOnionMessage(ctx context.Context, peerPub [33]byte,
+ 	return peer.SendMessageLazy(true, msg)
+ }
+ 
++// connectForOnionMessage connects to a node at one of its addresses so an
++// onion message can be handed to it, and returns once the peer is active
++// with its features known, or when ctx ends. A node that is already a peer
++// is waited for the same way. The dial itself runs on its own goroutine,
++// so a slow dial does not hold the caller past its context.
++func (s *server) connectForOnionMessage(ctx context.Context,
++	pub *btcec.PublicKey, addrs []net.Addr) error {
++
++	var peerKey [33]byte
++	copy(peerKey[:], pub.SerializeCompressed())
++
++	dialErr := make(chan error, 1)
++	go func() {
++		var lastErr error
++		for _, addr := range addrs {
++			err := s.ConnectToPeer(&lnwire.NetAddress{
++				IdentityKey: pub,
++				Address:     addr,
++				ChainNet:    s.cfg.ActiveNetParams.Net,
++			}, false, onionmsg.ConnectTimeout)
++			var already *errPeerAlreadyConnected
++			if err == nil || errors.As(err, &already) {
++				dialErr <- nil
++				return
++			}
++			lastErr = err
++		}
++		dialErr <- lastErr
++	}()
++	select {
++	case err := <-dialErr:
++		if err != nil {
++			return err
++		}
++	case <-ctx.Done():
++		return ctx.Err()
++	case <-s.quit:
++		return ErrServerShuttingDown
++	}
++
++	// Connected: wait for the handshake to finish, which is when the
++	// peer's features are known and it is listed by Peers.
++	online := make(chan lnpeer.Peer, 1)
++	s.NotifyWhenOnline(peerKey, online)
++	select {
++	case <-online:
++		return nil
++	case <-ctx.Done():
++		return ctx.Err()
++	case <-s.quit:
++		return ErrServerShuttingDown
++	}
++}
++
+ // SendToPeer sends an onion message to the peer identified by the given
+ // compressed public key. This implements the onionmessage.PeerMessageSender
+ // interface and is used by the onion peer actor when forwarding messages.
+-- 
+2.43.0
+
