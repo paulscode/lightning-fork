@@ -1,0 +1,174 @@
+From e47fcdc039f34b97e50cb4899b07e18c7b293404 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 15 Sep 2026 13:47:25 -0500
+Subject: [PATCH 9/9] wallet: a dedicated flag for the case the wallet cannot
+ answer
+
+The history check only settles a wallet that recorded the activation
+block. A wallet created after the fork never saw that height, and a
+Bitcoin wallet and one of ours created afterwards cannot be told apart
+from their block tables alone, so that case fell back to
+--database-upgrade=true and straight back into the hole kwsantiago
+found: cln-startos passes it unconditionally.
+
+Completing it with the chain rather than the wallet would mean asking the
+backend, and the backend is not up yet. wallet_sanity_check runs at
+lightningd.c:1332 and setup_topology, which does its own io_loop to talk
+to bitcoind, is fourteen lines later. Moving the restamp after it is a
+real restructure and not obviously right, since the gossip store removal
+wants to happen before gossipd is reading it.
+
+So the remaining case gets its own flag instead, which was kwsantiago's
+first suggestion and which I had passed over. It is better than
+--database-upgrade for exactly the reason that one failed: a flag can
+only be set carelessly by something that knows its name, and nothing sets
+this one. Combined with the history check, all three cases are now
+covered without a backend: matched, restamp; mismatched, refuse and no
+flag overrides it; silent, ask for a flag that means this and nothing
+else.
+---
+ doc/lightningd-config.5.md   |  9 +++++++++
+ doc/schemas/listconfigs.json | 26 ++++++++++++++++++++++++++
+ lightningd/lightningd.h      |  4 ++++
+ lightningd/options.c         |  5 +++++
+ wallet/wallet.c              | 11 +++++------
+ 5 files changed, 49 insertions(+), 6 deletions(-)
+
+diff --git a/doc/lightningd-config.5.md b/doc/lightningd-config.5.md
+index 82b5aee27..10e32a780 100644
+--- a/doc/lightningd-config.5.md
++++ b/doc/lightningd-config.5.md
+@@ -721,6 +721,15 @@ all DNS lookups, to avoid leaking information.
+ 
+   Disable the DNS bootstrapping mechanism to find a node by its node ID.
+ 
++* **restamp-wallet-for-this-chain**
++
++  Allow a wallet stamped with block 0 to be restamped with this chain's
++`chain_hash`. One way, and only needed where the wallet's own history cannot
++say which chain it followed: a wallet that recorded the activation block is
++restamped or refused on that evidence without any flag. This is deliberately
++not `--database-upgrade`, which some distributions pass unconditionally and
++which therefore cannot carry a decision about which chain a wallet belongs to.
++
+ * **drop-peers-without-networks**
+ 
+   Drop a peer whose `init` message names no `networks`. Off by default. On a
+diff --git a/doc/schemas/listconfigs.json b/doc/schemas/listconfigs.json
+index 47a83a38d..1fd1e5f94 100644
+--- a/doc/schemas/listconfigs.json
++++ b/doc/schemas/listconfigs.json
+@@ -1202,6 +1202,28 @@
+               }
+             }
+           },
++          "restamp-wallet-for-this-chain": {
++            "type": "object",
++            "additionalProperties": false,
++            "required": [
++              "set",
++              "source"
++            ],
++            "properties": {
++              "set": {
++                "type": "boolean",
++                "description": [
++                  "`true` if set in config or cmdline."
++                ]
++              },
++              "source": {
++                "type": "string",
++                "description": [
++                  "Source of configuration setting."
++                ]
++              }
++            }
++          },
+           "drop-peers-without-networks": {
+             "type": "object",
+             "additionalProperties": false,
+@@ -1948,6 +1970,10 @@
+             "set": true,
+             "source": "cmdline"
+           },
++          "restamp-wallet-for-this-chain": {
++            "set": false,
++            "source": "default"
++          },
+           "drop-peers-without-networks": {
+             "set": false,
+             "source": "default"
+diff --git a/lightningd/lightningd.h b/lightningd/lightningd.h
+index 6ad749237..09b948de3 100644
+--- a/lightningd/lightningd.h
++++ b/lightningd/lightningd.h
+@@ -62,6 +62,10 @@ struct config {
+ 
+ 	/* Keep peers whose init names no networks (see connectd). */
+ 	bool drop_peers_without_networks;
++	/* Allow restamping a wallet whose own history cannot say which chain
++	 * it followed.  Its own option rather than --database-upgrade, which
++	 * some distributions pass unconditionally. */
++	bool restamp_wallet_for_this_chain;
+ 
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	enum opt_autobool ip_discovery;
+diff --git a/lightningd/options.c b/lightningd/options.c
+index 868dbeedf..81a5066d6 100644
+--- a/lightningd/options.c
++++ b/lightningd/options.c
+@@ -1005,6 +1005,7 @@ static const struct config testnet_config = {
+ 
+ 	.use_dns = true,
+ 	.drop_peers_without_networks = false,
++	.restamp_wallet_for_this_chain = false,
+ 
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	.ip_discovery = OPT_AUTOBOOL_AUTO,
+@@ -1084,6 +1085,7 @@ static const struct config mainnet_config = {
+ 
+ 	.use_dns = true,
+ 	.drop_peers_without_networks = false,
++	.restamp_wallet_for_this_chain = false,
+ 
+ 	/* Excplicitly turns 'on' or 'off' IP discovery feature. */
+ 	.ip_discovery = OPT_AUTOBOOL_AUTO,
+@@ -1602,6 +1604,9 @@ static void register_opts(struct lightningd *ld)
+ 		       &ld->accept_extra_tlv_types,
+ 		       "HTLC TLV type to accept (can be used multiple times)");
+ 
++	opt_register_early_noarg("--restamp-wallet-for-this-chain", opt_set_bool,
++				 &ld->config.restamp_wallet_for_this_chain,
++				 "Allow a wallet stamped with block 0 to be restamped for this chain, where the wallet's own history cannot say which chain it followed. One way. Deliberately not --database-upgrade, which some distributions pass unconditionally");
+ 	opt_register_early_noarg("--drop-peers-without-networks", opt_set_bool,
+ 				 &ld->config.drop_peers_without_networks,
+ 				 "Drop peers whose init names no networks. Off by default: on a chain that shares its genesis with another such a peer may be a node of the other one, but it may equally be a client application reaching this node's RPC, and chain_hash refuses the former at open_channel anyway");
+diff --git a/wallet/wallet.c b/wallet/wallet.c
+index 690f09a66..2fa796100 100644
+--- a/wallet/wallet.c
++++ b/wallet/wallet.c
+@@ -4871,16 +4871,15 @@ bool wallet_sanity_check(struct wallet *w)
+ 			 * Only reached where the wallet could not say,
+ 			 * since one that followed this chain is restamped
+ 			 * below without needing to be asked. */
+-			if (!followed
+-			    && (!w->ld->db_upgrade_ok || !*w->ld->db_upgrade_ok)) {
++			if (!followed && !w->ld->config.restamp_wallet_for_this_chain) {
+ 				log_broken(w->log, "Wallet is stamped with "
+ 					   "block 0 (%s) and this chain's "
+ 					   "chain_hash is %s: a wallet from "
+ 					   "before the chain identity, or a "
+-					   "Bitcoin wallet. Start once with "
+-					   "--database-upgrade=true to restamp "
+-					   "it for this chain; there is no "
+-					   "way back.",
++					   "Bitcoin wallet, and its own history "
++					   "cannot say which. Start once with "
++					   "--restamp-wallet-for-this-chain to "
++					   "restamp it; there is no way back.",
+ 					   fmt_bitcoin_blkid(tmpctx, &chainhash),
+ 					   fmt_bitcoin_blkid(tmpctx,
+ 							     &chainparams->genesis_blockhash));
+-- 
+2.43.0
+
