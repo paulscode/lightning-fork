@@ -33,8 +33,8 @@ block id in its internal (wire) order, which is the reverse of what
 that same internal order, so the table above shows it reversed. On the
 wire (`init`, `open_channel`, gossip, BOLT 12) every `chain_hash` is sent
 in internal order, exactly like Bitcoin's genesis hash is. For regtest:
-`TaggedHash("Lightning Fork chain_hash", reverse(0f9188f1…2206))` gives the
-digest `1aab09d9…9425`, which is the wire value, printed as `2594d57b…ab1a`.
+`TaggedHash("Lightning Fork chain_hash", reverse(0f9188f1...2206))` gives the
+digest `1aab09d9...9425`, which is the wire value, printed as `2594d57b...ab1a`.
 Mainnet uses the activation block's id
 rather than a tagged hash so that the value is a fact about the chain
 itself, checkable against any node with `getblockhash 961640`; the test
@@ -62,10 +62,10 @@ chain:
 
 | Network | Prefix | Example |
 | --- | --- | --- |
-| mainnet | `blake` | `lnblake10n1…` |
-| testnet4 | `tblake` | `lntblake…` |
-| signet | `tbsblake` | `lntbsblake…` |
-| regtest | `blakert` | `lnblakert…` |
+| mainnet | `blake` | `lnblake10n1...` |
+| testnet4 | `tblake` | `lntblake...` |
+| signet | `tbsblake` | `lntbsblake...` |
+| regtest | `blakert` | `lnblakert...` |
 
 An invoice with Bitcoin's prefix (`lnbc`, `lntb`, `lntbs`, `lnbcrt`) is
 refused, and a Bitcoin wallet refuses these, which is intended: an invoice
@@ -100,10 +100,39 @@ from coins received after the fork.
 
 For the future channel type in which both sides sign commitment and HTLC
 transactions with `SIGHASH_UNIFIED`, the feature bit pair
-**2100 (required) / 2101 (optional)** is reserved, in the experimental
-range above BOLT 9's assigned bits. It is not set by any implementation
-yet; it is written down so that two implementations do not pick different
-bits for the same thing.
+**32769 (optional) / 32768 (required)** is reserved. A node that supports
+the channel type sets the odd bit; the even bit stays unused until the
+whole network has it. No implementation sets either yet.
+
+This replaces the 2100/2101 pair reserved in earlier revisions of this
+document. Nothing set those bits, so nothing breaks, and the higher pair is
+the more conservative choice: it sits well clear of the numbers BOLT 9 is
+still handing out, and it matches the range implementations already treat
+as custom.
+
+Odd rather than even, and high rather than low, for two reasons.
+
+BOLT 9 says a feature is introduced as an optional odd bit and upgraded to
+a compulsory even one later, "which will be refused by outdated nodes".
+Starting at the compulsory end runs that backwards: it refuses peers before
+there is anything to be compatible with, and it refuses more than intended.
+An even bit in `init` drops any peer that does not set it, which includes
+client applications that speak the wire protocol to reach a node's RPC and
+have no reason to know what chain they are on. It also leaves a pre-fork
+channel with an unpatched counterparty with no cooperative close, only a
+force close.
+
+And this bit is not what keeps the two chains apart. `chain_hash` does
+that, in the `init` networks list, in `open_channel` and in
+`channel_announcement`. A node on the SHA256d chain cannot open a channel
+here or have its gossip accepted here whatever feature bits it sets. What
+the bit says is narrower: that this node can sign a commitment with
+`SIGHASH_UNIFIED`. That is a capability, negotiated per channel through
+`channel_type`, and capabilities are what odd bits are for.
+
+Low numbers are worth avoiding for a simpler reason. The highest pair BOLT
+9 has assigned is 66/67 (`option_onion_messages_only_channels`), so 68 and
+70 are the next numbers the spec will hand out, not spare ones.
 
 ## 6. Block header
 
@@ -116,7 +145,7 @@ Knots definition; Lightning Fork's is in the btcd fork's `wire` package.
 
 ## 7. What is deliberately unchanged
 
-- Address formats (`bc1…`, `1…`, `3…`) and the derivation paths, so a
+- Address formats (`bc1...`, `1...`, `3...`) and the derivation paths, so a
   seed restores the same wallet.
 - The genesis hash as the wallet backend's notion of "which network is this
   node on": the chain-identity check (reading the header at the activation
