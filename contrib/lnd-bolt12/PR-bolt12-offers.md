@@ -1,6 +1,6 @@
 # BOLT 12 offers for `lnd`
 
-Seven commits against `v0.21.3-beta` that let a node mint BOLT 12 offers,
+Eight commits against `v0.21.3-beta` that let a node mint BOLT 12 offers,
 answer invoice requests for them over onion messages, and fetch and pay other
 nodes' offers. No side-car, no external daemon: the offer manager, the onion
 messenger and the RPC live in `lnd`.
@@ -44,8 +44,8 @@ close that gap.
    the first hop as already reached.
 
 6. **Issue an offer invoice with a path from this node when no peer can start
-   one.** Where no peer can act as an introduction node — every peer's only
-   channel is the one to this node, or none signals route blinding — the
+   one.** Where no peer can act as an introduction node, because every peer's
+   only channel is the one to this node or none signals route blinding, the
    invoice would otherwise be unissuable. It falls back to a path starting
    here, which always exists, and reports that it did.
 
@@ -56,13 +56,17 @@ close that gap.
    (`protocol.onion-msg-channel-gate`) and global and per-peer rate limiters
    bound what any peer can send.
 
+8. **`offerserve`: answer a rate-limited request instead of dropping it.**
+   See the note below; the first over-limit request from a peer gets an
+   `invoice_error` and the rest of the window stays silent.
+
 ## Provenance and testing
 
 These were developed in a fork of `lnd` that follows a different chain, and are
 in production use there. **Nothing chain-specific is included here**: the BOLT
 12 code touches no chain hashing and no chain identity, and the series was
 rebased onto `v0.21.3-beta` and de-forked for review. The one adaptation needed
-was mechanical — the fork distinguishes a chain hash from a genesis hash
+was mechanical: the fork distinguishes a chain hash from a genesis hash
 because its chain shares Bitcoin's genesis block, and on Bitcoin the two are
 the same value, so `cfg.ActiveNetParams.GenesisHash` is used directly.
 
