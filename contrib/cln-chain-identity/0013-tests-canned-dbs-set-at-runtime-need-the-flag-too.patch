@@ -1,7 +1,7 @@
 From 4919b71353c42c55ad1c6addd179ffb87ccdb654 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:46:09 -0500
-Subject: [PATCH 13/13] tests: canned dbs set at runtime need the flag too
+Subject: [PATCH 13/14] tests: canned dbs set at runtime need the flag too
 
 Two tests set database-upgrade on daemon.opts after the node is made
 rather than through get_node, so the earlier sweep missed them and

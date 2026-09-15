@@ -1,7 +1,7 @@
 From d8d69effc3a2ffba72ce933d3d944bd86f11f044 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:08:11 -0500
-Subject: [PATCH 07/13] connectd: keep peers that name no networks by default
+Subject: [PATCH 07/14] connectd: keep peers that name no networks by default
 
 cln-application sends no networks TLV, so dropping silent peers dropped
 every StartOS and Umbrel dashboard. Reported by kwsantiago in review, and

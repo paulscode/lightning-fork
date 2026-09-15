@@ -1,7 +1,7 @@
 From 4a1364bfbde52138bd43af5551c975e5d0c2ac23 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:08:11 -0500
-Subject: [PATCH 06/13] wallet: gate the restamp on the wallet's own history,
+Subject: [PATCH 06/14] wallet: gate the restamp on the wallet's own history,
  not on a flag
 
 --database-upgrade=true cannot carry this decision. cln-startos passes it

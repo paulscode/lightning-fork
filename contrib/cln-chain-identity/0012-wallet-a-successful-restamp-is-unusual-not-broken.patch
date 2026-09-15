@@ -1,7 +1,7 @@
 From fa42c13311655f91d62e3a76b0f0ecf8b3f439ea Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:34:09 -0500
-Subject: [PATCH 12/13] wallet: a successful restamp is unusual, not broken
+Subject: [PATCH 12/14] wallet: a successful restamp is unusual, not broken
 
 log_broken prints **BROKEN** in the log. An operator reading that after
 doing exactly what they were told to do has every reason to think
