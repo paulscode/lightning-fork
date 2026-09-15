@@ -800,3 +800,51 @@ func TestNewRequirements(t *testing.T) {
 		s.cfg.RequestsPerSecond)
 	require.Equal(t, DefaultRequestBurst, s.cfg.RequestBurst)
 }
+
+// TestRateLimitedRequestIsToldOnce is the behaviour that turns a silent
+// timeout into a fast failure.
+//
+// Found by measurement rather than by reading: a fetch loop in the lab failed
+// one request in six, which looked like message loss for a while. It was the
+// per-peer limiter doing its job and saying nothing, so the requester waited
+// out its whole timeout for something decided here in microseconds. Telling it
+// costs one onion message; telling a flooder once per dropped request would
+// make the limiter an amplifier for the traffic it exists to shed, so the
+// notice is itself limited and only the first one in the window is answered.
+func TestRateLimitedRequestIsToldOnce(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	ctx := context.Background()
+	rec, _, err := e.manager.CreateOffer(ctx, offers.CreateParams{
+		Description: "x", NoPaths: true,
+	})
+	require.NoError(t, err)
+	offer := e.decodeOffer(rec)
+
+	cfg := e.server.cfg
+	cfg.PeerRequestsPerSecond = 0.001
+	cfg.PeerRequestBurst = 1
+	limited, err := New(cfg)
+	require.NoError(t, err)
+
+	// One gets through, and the two after it are refused.
+	var errors int
+	for i := 0; i < 3; i++ {
+		before := len(e.msgr.sent)
+		ir, _ := e.request(offer, uint64(4000+i), nil)
+		limited.Handle(ctx, e.inbound(ir, nil, true))
+		for _, m := range e.msgr.sent[before:] {
+			if len(m.payload) == 1 &&
+				m.payload[0].TLVType == onionmsg.TypeInvoiceError {
+
+				errors++
+			}
+		}
+	}
+
+	require.Len(t, e.added, 1, "one invoice, the rest refused")
+	require.Equal(t, 1, errors,
+		"the first refusal is answered and the second is not: "+
+			"a requester learns why, a flood gets silence")
+}

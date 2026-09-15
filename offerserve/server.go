@@ -41,6 +41,11 @@ const (
 	DefaultPeerRequestsPerSecond = 1
 	DefaultPeerRequestBurst      = 5
 
+	// noticeInterval is how often a peer is told that it is being rate
+	// limited. Much slower than the limit itself: the point is to convert
+	// a silent timeout into a fast failure, not to narrate every drop.
+	noticeInterval = 10 * time.Second
+
 	// peerLimiters is how many peers' limiters are remembered.
 	peerLimiters = 1000
 
@@ -174,9 +179,18 @@ type Server struct {
 	wg      sync.WaitGroup
 }
 
-// peerLimiter is one peer's rate limiter.
+// peerLimiter is one peer's rate limiter, and a much tighter one governing
+// how often we are willing to tell that peer it has been limited.
 type peerLimiter struct {
 	limiter *rate.Limiter
+
+	// notices bounds the invoice_errors sent to this peer about its own
+	// rate limiting. Telling a requester why it got nothing is worth an
+	// onion message; telling a flooder, once per request, would make the
+	// limiter into an amplifier for exactly the traffic it exists to
+	// shed. So the first one over the limit is answered and the rest are
+	// dropped as before.
+	notices *rate.Limiter
 }
 
 // Size implements lru.CacheableValue.
@@ -263,13 +277,29 @@ func (s *Server) Stop() error {
 }
 
 // allowPeer applies the per-peer limit.
+// noticeRateLimited reports whether this peer should be told, this time, that
+// its request was dropped for rate limiting.
+func (s *Server) noticeRateLimited(peer [33]byte) bool {
+	l, err := s.peers.Get(peer)
+	if err != nil || l.notices == nil {
+		return false
+	}
+
+	return l.notices.Allow()
+}
+
 func (s *Server) allowPeer(peer [33]byte) bool {
 	l, err := s.peers.Get(peer)
 	if err != nil {
-		l = &peerLimiter{limiter: rate.NewLimiter(
-			rate.Limit(s.cfg.PeerRequestsPerSecond),
-			s.cfg.PeerRequestBurst,
-		)}
+		l = &peerLimiter{
+			limiter: rate.NewLimiter(
+				rate.Limit(s.cfg.PeerRequestsPerSecond),
+				s.cfg.PeerRequestBurst,
+			),
+			notices: rate.NewLimiter(
+				rate.Every(noticeInterval), 1,
+			),
+		}
 		_, _ = s.peers.Put(peer, l)
 	}
 
@@ -340,6 +370,18 @@ func (s *Server) Handle(ctx context.Context, msg *onionmsg.Inbound) {
 	if !s.allowPeer(msg.Peer) || !s.limiter.Allow() {
 		log.Warnf("Dropping invoice request from peer %x: rate limit",
 			msg.Peer)
+
+		// Say so, occasionally. A requester that gets nothing back
+		// cannot tell being rate limited from the issuer being gone,
+		// the message being lost, or its own reply path being broken,
+		// so it waits out its whole timeout for something decided
+		// here in microseconds. One invoice_error turns that into an
+		// immediate, legible failure. The notice limiter keeps this
+		// from answering a flood.
+		if s.noticeRateLimited(msg.Peer) {
+			s.sendError(ctx, msg, "rate limited: too many invoice "+
+				"requests, try again shortly")
+		}
 
 		return
 	}
