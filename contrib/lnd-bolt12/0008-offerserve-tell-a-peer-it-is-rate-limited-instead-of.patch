@@ -1,0 +1,211 @@
+From f4767dfc2cc7d0e7db5dab5dcdf2dbf4e80d18e2 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 15 Sep 2026 15:14:24 -0500
+Subject: [PATCH 8/8] offerserve: tell a peer it is rate limited instead of
+ dropping in silence
+
+B1 was "about 15% of BOLT 12 invoice fetches never complete". It is the
+per-peer rate limiter, working exactly as configured, and saying nothing.
+
+The measurement that found it was also measuring itself. The lab matrix
+passed --timeout_seconds, which lncli does not have for fetchinvoice (the
+flag is --timeout), so every fetch silently used the 60s default and what
+looked like a uniform 15% loss across four cells was a burst of five
+followed by one per second. Uniform across direction and blinded paths
+because a rate limiter does not care about either. Three hypotheses were
+eliminated by instrumenting before the fourth turned out to be right: the
+path_id length check, the pending-fetch lookup, and the messenger's
+too-busy drop. None of them fired.
+
+The defect is not the limiting, it is the silence. A requester that gets
+nothing back cannot tell being rate limited from the issuer being offline,
+the message being lost, or its own reply path being wrong, so it waits out
+its entire timeout for something decided here in microseconds. BOLT 12 has
+invoice_error for this and the server already sends one for every other
+refusal.
+
+Replying to every dropped request would make the limiter an amplifier for
+the traffic it exists to shed, so the notice is itself limited: one per
+peer per ten seconds. The first request over the limit is answered and the
+rest are dropped as before. In the lab that turns a 60 second silent
+timeout into a 126ms "rate limited: too many invoice requests, try again
+shortly".
+
+The defaults are left alone. One request per second per peer with a burst
+of five is tight for a bridge serving payouts, but that is a policy
+question and this commit is about the failure being legible, not about
+the number.
+
+(cherry picked from commit 3f7e7ba7466f83614aefc8bd47240037550b23ce)
+---
+ offerpay/client.go        |  7 ++++++
+ offerserve/server.go      | 52 +++++++++++++++++++++++++++++++++++----
+ offerserve/server_test.go | 48 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 102 insertions(+), 5 deletions(-)
+
+diff --git a/offerpay/client.go b/offerpay/client.go
+index ac87400de..ce42653c7 100644
+--- a/offerpay/client.go
++++ b/offerpay/client.go
+@@ -191,6 +191,13 @@ func (c *Client) Stop() error {
+ // fetch that is no longer waiting, are dropped.
+ func (c *Client) deliver(_ context.Context, msg *onionmsg.Inbound) {
+ 	if len(msg.PathID) != 32 {
++		// Loud, because a reply that reaches this node and is dropped
++		// here looks from the outside exactly like a reply that never
++		// arrived: the fetch waits out its timeout with nothing in the
++		// log to say why.
++		log.Debugf("Dropping reply from peer %x: path_id is %d bytes, "+
++			"want 32 (%x)", msg.Peer, len(msg.PathID), msg.PathID)
++
+ 		return
+ 	}
+ 	var key [32]byte
+diff --git a/offerserve/server.go b/offerserve/server.go
+index 087987119..dd5488880 100644
+--- a/offerserve/server.go
++++ b/offerserve/server.go
+@@ -41,6 +41,11 @@ const (
+ 	DefaultPeerRequestsPerSecond = 1
+ 	DefaultPeerRequestBurst      = 5
+ 
++	// noticeInterval is how often a peer is told that it is being rate
++	// limited. Much slower than the limit itself: the point is to convert
++	// a silent timeout into a fast failure, not to narrate every drop.
++	noticeInterval = 10 * time.Second
++
+ 	// peerLimiters is how many peers' limiters are remembered.
+ 	peerLimiters = 1000
+ 
+@@ -174,9 +179,18 @@ type Server struct {
+ 	wg      sync.WaitGroup
+ }
+ 
+-// peerLimiter is one peer's rate limiter.
++// peerLimiter is one peer's rate limiter, and a much tighter one governing
++// how often we are willing to tell that peer it has been limited.
+ type peerLimiter struct {
+ 	limiter *rate.Limiter
++
++	// notices bounds the invoice_errors sent to this peer about its own
++	// rate limiting. Telling a requester why it got nothing is worth an
++	// onion message; telling a flooder, once per request, would make the
++	// limiter into an amplifier for exactly the traffic it exists to
++	// shed. So the first one over the limit is answered and the rest are
++	// dropped as before.
++	notices *rate.Limiter
+ }
+ 
+ // Size implements lru.CacheableValue.
+@@ -263,13 +277,29 @@ func (s *Server) Stop() error {
+ }
+ 
+ // allowPeer applies the per-peer limit.
++// noticeRateLimited reports whether this peer should be told, this time, that
++// its request was dropped for rate limiting.
++func (s *Server) noticeRateLimited(peer [33]byte) bool {
++	l, err := s.peers.Get(peer)
++	if err != nil || l.notices == nil {
++		return false
++	}
++
++	return l.notices.Allow()
++}
++
+ func (s *Server) allowPeer(peer [33]byte) bool {
+ 	l, err := s.peers.Get(peer)
+ 	if err != nil {
+-		l = &peerLimiter{limiter: rate.NewLimiter(
+-			rate.Limit(s.cfg.PeerRequestsPerSecond),
+-			s.cfg.PeerRequestBurst,
+-		)}
++		l = &peerLimiter{
++			limiter: rate.NewLimiter(
++				rate.Limit(s.cfg.PeerRequestsPerSecond),
++				s.cfg.PeerRequestBurst,
++			),
++			notices: rate.NewLimiter(
++				rate.Every(noticeInterval), 1,
++			),
++		}
+ 		_, _ = s.peers.Put(peer, l)
+ 	}
+ 
+@@ -341,6 +371,18 @@ func (s *Server) Handle(ctx context.Context, msg *onionmsg.Inbound) {
+ 		log.Warnf("Dropping invoice request from peer %x: rate limit",
+ 			msg.Peer)
+ 
++		// Say so, occasionally. A requester that gets nothing back
++		// cannot tell being rate limited from the issuer being gone,
++		// the message being lost, or its own reply path being broken,
++		// so it waits out its whole timeout for something decided
++		// here in microseconds. One invoice_error turns that into an
++		// immediate, legible failure. The notice limiter keeps this
++		// from answering a flood.
++		if s.noticeRateLimited(msg.Peer) {
++			s.sendError(ctx, msg, "rate limited: too many invoice "+
++				"requests, try again shortly")
++		}
++
+ 		return
+ 	}
+ 
+diff --git a/offerserve/server_test.go b/offerserve/server_test.go
+index 02762a2fc..ed4857222 100644
+--- a/offerserve/server_test.go
++++ b/offerserve/server_test.go
+@@ -800,3 +800,51 @@ func TestNewRequirements(t *testing.T) {
+ 		s.cfg.RequestsPerSecond)
+ 	require.Equal(t, DefaultRequestBurst, s.cfg.RequestBurst)
+ }
++
++// TestRateLimitedRequestIsToldOnce is the behaviour that turns a silent
++// timeout into a fast failure.
++//
++// Found by measurement rather than by reading: a fetch loop in the lab failed
++// one request in six, which looked like message loss for a while. It was the
++// per-peer limiter doing its job and saying nothing, so the requester waited
++// out its whole timeout for something decided here in microseconds. Telling it
++// costs one onion message; telling a flooder once per dropped request would
++// make the limiter an amplifier for the traffic it exists to shed, so the
++// notice is itself limited and only the first one in the window is answered.
++func TestRateLimitedRequestIsToldOnce(t *testing.T) {
++	t.Parallel()
++
++	e := newEnv(t)
++	ctx := context.Background()
++	rec, _, err := e.manager.CreateOffer(ctx, offers.CreateParams{
++		Description: "x", NoPaths: true,
++	})
++	require.NoError(t, err)
++	offer := e.decodeOffer(rec)
++
++	cfg := e.server.cfg
++	cfg.PeerRequestsPerSecond = 0.001
++	cfg.PeerRequestBurst = 1
++	limited, err := New(cfg)
++	require.NoError(t, err)
++
++	// One gets through, and the two after it are refused.
++	var errors int
++	for i := 0; i < 3; i++ {
++		before := len(e.msgr.sent)
++		ir, _ := e.request(offer, uint64(4000+i), nil)
++		limited.Handle(ctx, e.inbound(ir, nil, true))
++		for _, m := range e.msgr.sent[before:] {
++			if len(m.payload) == 1 &&
++				m.payload[0].TLVType == onionmsg.TypeInvoiceError {
++
++				errors++
++			}
++		}
++	}
++
++	require.Len(t, e.added, 1, "one invoice, the rest refused")
++	require.Equal(t, 1, errors,
++		"the first refusal is answered and the second is not: "+
++			"a requester learns why, a flood gets silence")
++}
+-- 
+2.43.0
+

@@ -1,7 +1,7 @@
 From 87d1552208975ee366f24666faf308d377af0874 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 03:38:10 -0500
-Subject: [PATCH 5/7] Pay through blinded paths that start at this node, in the
+Subject: [PATCH 5/8] Pay through blinded paths that start at this node, in the
  router
 
 A blinded path whose introduction node is this node used to be refused

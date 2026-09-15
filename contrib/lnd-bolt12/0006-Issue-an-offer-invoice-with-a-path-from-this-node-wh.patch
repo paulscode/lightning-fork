@@ -1,7 +1,7 @@
 From 7aa2ec350cedd0427a19cd7b17526fb8d0468669 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 04:36:09 -0500
-Subject: [PATCH 6/7] Issue an offer invoice with a path from this node when no
+Subject: [PATCH 6/8] Issue an offer invoice with a path from this node when no
  peer can start one
 
 An invoice's blinded payment paths are found through the node's peers, and

@@ -1,7 +1,7 @@
 From d4ad36b1bd43cf91d08c011297e0aaba0a816e32 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 13:03:05 -0500
-Subject: [PATCH 7/7] Take onion messages from peers without channels, and
+Subject: [PATCH 7/8] Take onion messages from peers without channels, and
  reply where the request went
 
 The onion messages a node on this chain exists to receive, a pool's

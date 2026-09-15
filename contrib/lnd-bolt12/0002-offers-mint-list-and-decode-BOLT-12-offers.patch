@@ -1,7 +1,7 @@
 From 9598f9811985d63c0546cdc4a3e0f6378184a211 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 19:48:26 -0500
-Subject: [PATCH 2/7] offers: mint, list and decode BOLT 12 offers
+Subject: [PATCH 2/8] offers: mint, list and decode BOLT 12 offers
 
 A new offers package and an offersrpc sub-server (build tag offersrpc,
 in the release and testing tags) let the node mint offers for its own

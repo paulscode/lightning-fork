@@ -1,7 +1,7 @@
 From aa629b1e47cd87f1cfe55c723d347069ea202413 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 20:31:09 -0500
-Subject: [PATCH 3/7] onionmsg: carry BOLT 12 messages over onion messages
+Subject: [PATCH 3/8] onionmsg: carry BOLT 12 messages over onion messages
 
 A new onionmsg package builds blinded paths to this node, sends a
 payload to a node id or to a blinded path, and turns delivered onion

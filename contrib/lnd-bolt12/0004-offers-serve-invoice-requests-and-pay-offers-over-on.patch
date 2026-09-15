@@ -1,7 +1,7 @@
 From 81fa5e498fd7ce28ca6cb6b1e06635580e092a55 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 21:23:59 -0500
-Subject: [PATCH 4/7] offers: serve invoice requests and pay offers over onion
+Subject: [PATCH 4/8] offers: serve invoice requests and pay offers over onion
  messages
 
 The node now answers invoice requests for its offers, which is how a

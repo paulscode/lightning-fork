@@ -76,6 +76,28 @@ Interoperability has been exercised against Core Lightning in a regtest
 harness: the two peer both ways, open channels from each side, and pay each
 other's BOLT 12 offers.
 
+## A note on the rate limiter
+
+Commit 8 exists because of a measurement that went wrong in an instructive
+way. A fetch loop failed about one request in six, which looked like message
+loss and was chased as such through three wrong hypotheses. It was the
+per-peer limiter in commit 4, working exactly as configured, and saying
+nothing.
+
+The limiting was right. The silence was not: a requester that gets nothing
+back cannot tell rate limiting from the issuer being offline or its own reply
+path being broken, so it waits out its whole timeout for something decided in
+microseconds. The server now answers the first over-limit request with an
+`invoice_error` and stays quiet for the rest of a ten second window, which
+keeps the limiter from becoming an amplifier for the traffic it exists to
+shed. In testing that turns a sixty second silent timeout into a 126ms
+refusal with a reason.
+
+The defaults are unchanged and are deliberately low, since every answered
+request creates an invoice: one per second per peer after a burst of five.
+Whether that is the right number for a busy node is a separate question from
+whether the refusal should be legible.
+
 ## Known gaps
 
 - Offers are served and paid; **recurrence** (BOLT 12's `offer_recurrence`) is

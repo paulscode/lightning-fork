@@ -1,7 +1,7 @@
 From 4d5a05f0b3aebabb8066e13524415773ee7cb87e Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 19:00:15 -0500
-Subject: [PATCH 1/7] bolt12: port the BOLT 12 codecs from LND master
+Subject: [PATCH 1/8] bolt12: port the BOLT 12 codecs from LND master
 
 LND v0.21.3-beta has onion messages, blinded-path invoices and the RPCs
 to send and receive onion messages, but no BOLT 12 codecs; those exist
