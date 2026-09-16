@@ -1,4 +1,4 @@
-From 400fc0b88d72acfeda5f5d347baaf614a68ac9fc Mon Sep 17 00:00:00 2001
+From edd3e5fe90e690b32cf95f2c346dc57e6bbf9a1f Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:23:41 -0500
 Subject: [PATCH 11/14] tests: name the chain in canned dbs, fix invoice-prefix

@@ -111,6 +111,13 @@ Core Lightning's port of this chain assigned both and ships them. A number
 already on the wire is the number, whatever it should have been, so
 interoperating with it beats being right about it alone.
 
+**Both are provisional and both implementations say so.** The
+`v26.06.7-blake2b.4` release notes are explicit that bits 68 and 70 "are not
+registered BOLT allocations and are expected to move", and that channels opened
+under them may have to be closed and reopened once the numbers settle. This
+document takes the same position. What is written here is what is on the wire
+today, not a claim that it is right.
+
 Where each form is set differs, and the difference is the point:
 
 - **Odd (69, 71) in `init` and `node_announcement`.** A peer that does not
@@ -142,10 +149,11 @@ treat as custom, such as **32769 / 32768**, sits clear of that and is the
 conservative choice. An earlier revision of this document reserved 32769/32768
 on exactly that reasoning, and before that 2100/2101, which was no better.
 
-They have not moved because one implementation shipped first and a second one
-that used different numbers would simply not interoperate. If the pair does
-move, this document and both implementations move with it, and the cost of
-moving rises with every channel opened under the current numbers.
+They have not moved yet because a second implementation that picked different
+numbers would simply not interoperate, and interoperating today is worth more
+than holding out for the better pair. When they do move, this document and both
+implementations move together, and the cost rises with every channel opened
+under the current numbers.
 
 An even bit in `init` also runs BOLT 9 backwards. The spec introduces a feature
 as an optional odd bit and upgrades it to a compulsory even one later, "which
