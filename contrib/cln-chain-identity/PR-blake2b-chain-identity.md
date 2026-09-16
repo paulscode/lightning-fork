@@ -5,7 +5,7 @@ which is where `v26.06.7-blake2b.4` and the unified-sigs work live. Retargeted
 from `v26.06.7-blake2b`, which is still at `893f767e8` and is not where the
 next release will come from. The series rebases onto `blake2b-unified` with no
 conflicts.
-Patch series: `0001`-`0014` in this directory (`git am *.patch`); the
+Patch series: `0001`-`0015` in this directory (`git am *.patch`); the
 lightning-fork-lab repository builds and tests it (`make cln`,
 `make cln-interop`).
 
@@ -179,6 +179,17 @@ separate, which is the point of raising it here rather than folding it in.
     `listinvoices` was discarding the decoder's reason while `pay.c` had
     always kept it.
 
+15. **wallet: ask the chain which chain the wallet followed, not the wallet.**
+    Added after review showed the previous check asked for the one block such a
+    wallet is least likely to hold. A node that lived through the activation
+    stopped where the pre-fork build could not parse the header, and this build
+    resumes from the highest block it has rather than backfilling, so the
+    `blocks` table has a hole across the fork. `wallet_sanity_check()` keeps the
+    two answers that need no backend and defers the rest to
+    `settle_deferred_restamp()`, which runs between `setup_topology()` and
+    `begin_topology()` and asks the chain about the highest block the wallet
+    holds above the fork. Only a wallet holding no such block still needs
+    `--restamp-wallet-for-this-chain`.
 ## What it deliberately does not change
 
 - Address formats, derivation paths, `bip70_name` (`main`, so `bitcoin-cli`

@@ -1,4 +1,4 @@
-From b1ac5818a5bc058a25d05f3498ca587fa56b99de Mon Sep 17 00:00:00 2001
+From 350509098e98a08a57291fdd740f55af2d7977ad Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Wed, 16 Sep 2026 06:34:48 -0500
 Subject: [PATCH 15/15] wallet: ask the chain which chain the wallet followed,
@@ -45,18 +45,18 @@ saw **BROKEN** once per store file. It moves with the rest of the
 restamp into wallet_restamp(), which this commit extracts so the
 deferred path can call it too.
 ---
- lightningd/chaintopology.c | 137 ++++++++++++++++++++++++++++++++
+ lightningd/chaintopology.c | 150 ++++++++++++++++++++++++++++++++++
  lightningd/chaintopology.h |   5 ++
  lightningd/lightningd.c    |   6 ++
  wallet/wallet.c            | 159 ++++++++++++++++++++++---------------
  wallet/wallet.h            |  25 ++++++
- 5 files changed, 269 insertions(+), 63 deletions(-)
+ 5 files changed, 282 insertions(+), 63 deletions(-)
 
 diff --git a/lightningd/chaintopology.c b/lightningd/chaintopology.c
-index 59cc19922..a9af4216a 100644
+index 59cc19922..19bd7611b 100644
 --- a/lightningd/chaintopology.c
 +++ b/lightningd/chaintopology.c
-@@ -1624,6 +1624,143 @@ static void fixup_scan(struct chain_topology *topo)
+@@ -1624,6 +1624,156 @@ static void fixup_scan(struct chain_topology *topo)
  				     fixup_scan_block, topo);
  }
  
@@ -104,7 +104,7 @@ index 59cc19922..a9af4216a 100644
 +	struct restamp_query *q;
 +	struct bitcoin_blkid theirs, ours;
 +	u32 height = 0;
-+	bool have_block = false, found;
++	bool have_block = false, found, answered;
 +	const tal_t *local_ctx;
 +	void *ret;
 +
@@ -114,7 +114,11 @@ index 59cc19922..a9af4216a 100644
 +
 +	/* Read the wallet inside a transaction, and let go of it before the
 +	 * io_loop below: holding one across that would block every other
-+	 * db user for as long as the backend takes to answer. */
++	 * db user for as long as the backend takes to answer.
++	 *
++	 * setup_topology() has just rolled the wallet back to blockscan_start
++	 * and waited for the backend to reach it, so the highest block left
++	 * here is one the backend has, and asking about it is answerable. */
 +	if (chainparams->chain_hash_block_height != 0) {
 +		db_begin_transaction(w->db);
 +		have_block = wallet_highest_block_from(
@@ -162,14 +166,23 @@ index 59cc19922..a9af4216a 100644
 +		ret = io_loop_with_timers(topo->ld);
 +		assert(ret == topo);
 +	}
++	answered = q->done;
 +	found = q->have;
 +	ours = q->ours;
 +	tal_free(local_ctx);
 +
 +	/* Cannot decide without an answer, and guessing either way is worse
 +	 * than saying so: adopting could restamp another chain's wallet, and
-+	 * refusing could strand a good one behind a backend that is merely
-+	 * behind. */
++	 * refusing could strand a good one. Neither of these should happen:
++	 * setup_topology() has already waited for the backend to reach
++	 * blockscan_start and rolled the wallet back to it, so the height we
++	 * just asked about is one the backend has. Say which it was rather
++	 * than reporting a timeout as a missing block. */
++	if (!answered)
++		fatal("Gave up waiting for this chain's backend to answer for "
++		      "block height %u, so it cannot say whether this wallet "
++		      "followed this chain. Start again.", height);
++
 +	if (!found)
 +		fatal("Wallet holds block %s at height %u, but this chain's "
 +		      "backend has no block at that height, so it cannot say "
