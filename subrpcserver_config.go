@@ -18,6 +18,7 @@ import (
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc/autopilotrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/bridgerpc"
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/devrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
@@ -68,6 +69,10 @@ type subRPCServerConfigs struct {
 	// InvoicesRPC is a sub-RPC server that exposes invoice related methods
 	// as a gRPC service.
 	InvoicesRPC *invoicesrpc.Config `group:"invoicesrpc" namespace:"invoicesrpc"`
+
+	// BridgeRPC is a sub-RPC server that swaps between this chain and
+	// Bitcoin. It is off unless an operator enables it.
+	BridgeRPC *bridgerpc.Config `group:"bridgerpc" namespace:"bridgerpc"`
 
 	// OffersRPC is a sub-RPC server that mints, lists and decodes BOLT 12
 	// offers.
@@ -135,7 +140,8 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 	rpcLogger btclog.Logger, aliasMgr *aliasmgr.Manager,
 	auxDataParser fn.Option[AuxDataParser],
 	invoiceHtlcModifier *invoices.HtlcModificationInterceptor,
-	offersDeps *offersrpc.Deps) error {
+	offersDeps *offersrpc.Deps,
+	bridgeDeps *bridgerpc.Deps) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
 	// that allows us to programmatically inspect its fields.
@@ -362,6 +368,13 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 
 			subCfgValue.FieldByName("Switch").Set(
 				reflect.ValueOf(htlcSwitch),
+			)
+
+		case *bridgerpc.Config:
+			subCfgValue := extractReflectValue(subCfg)
+
+			subCfgValue.FieldByName("Deps").Set(
+				reflect.ValueOf(bridgeDeps),
 			)
 
 		case *offersrpc.Config:

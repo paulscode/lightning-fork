@@ -29,6 +29,7 @@ import (
 	"github.com/lightningnetwork/lnd/kvdb/sqlbase"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc/autopilotrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/bridgerpc"
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/devrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
@@ -212,6 +213,7 @@ func SetupLoggers(root *build.SubLoggerManager, interceptor signal.Interceptor) 
 	)
 	AddSubLogger(root, offerpay.Subsystem, interceptor, offerpay.UseLogger)
 	AddSubLogger(root, offersrpc.Subsystem, interceptor, offersrpc.UseLogger)
+	AddSubLogger(root, bridgerpc.Subsystem, interceptor, bridgerpc.UseLogger)
 	AddSubLogger(root, graph.Subsystem, interceptor, graph.UseLogger)
 	AddSubLogger(root, lncfg.Subsystem, interceptor, lncfg.UseLogger)
 	AddSubLogger(
