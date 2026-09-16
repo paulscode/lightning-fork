@@ -1,7 +1,7 @@
 From ffea9e08279a0b5c4846f3ce7dc22507c3a8ffba Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:08:36 -0500
-Subject: [PATCH 08/14] doc: the feature bits this chain uses, and why the
+Subject: [PATCH 08/15] doc: the feature bits this chain uses, and why the
  numbers are wrong
 
 This document reserved 2100/2101 for a unified-signing channel type, and

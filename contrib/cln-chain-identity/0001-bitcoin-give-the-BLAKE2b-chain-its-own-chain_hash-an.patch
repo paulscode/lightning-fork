@@ -1,7 +1,7 @@
 From 8960786293e05e761977aebdeed7311f366977b6 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
-Subject: [PATCH 01/14] bitcoin: give the BLAKE2b chain its own chain_hash and
+Subject: [PATCH 01/15] bitcoin: give the BLAKE2b chain its own chain_hash and
  invoice prefix
 
 The BLAKE2b hard fork shares Bitcoin's genesis block, and BOLT 1, 2, 7

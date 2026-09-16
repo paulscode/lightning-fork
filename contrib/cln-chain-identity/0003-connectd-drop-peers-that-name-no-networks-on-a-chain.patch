@@ -1,7 +1,7 @@
 From 3d4d7eeb4b02a87ef3345611add28768edf0d9e7 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
-Subject: [PATCH 03/14] connectd: drop peers that name no networks on a chain
+Subject: [PATCH 03/15] connectd: drop peers that name no networks on a chain
  that shares its genesis
 
 A peer whose init names a network we do not share is dropped already.

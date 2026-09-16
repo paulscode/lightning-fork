@@ -1,7 +1,7 @@
 From b53d34546375e84b7ef950abe712ba6415febf87 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 12:11:03 -0500
-Subject: [PATCH 02/14] offers: name the chain in offers and requests; the
+Subject: [PATCH 02/15] offers: name the chain in offers and requests; the
  implicit chain stays Bitcoin
 
 BOLT 12 lets an offer omit offer_chains to mean Bitcoin mainnet, and

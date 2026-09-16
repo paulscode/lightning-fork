@@ -1,7 +1,7 @@
 From 548fbbc1b4adaf991a22b59c1a532c618e59cb96 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:09:16 -0500
-Subject: [PATCH 10/14] tests: skip the five that carry foreign-chain BOLT 11
+Subject: [PATCH 10/15] tests: skip the five that carry foreign-chain BOLT 11
  fixtures
 
 The PR said the pytest suite was not run and that files still assert

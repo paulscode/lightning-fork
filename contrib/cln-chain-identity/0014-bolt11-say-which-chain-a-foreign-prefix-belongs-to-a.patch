@@ -1,7 +1,7 @@
 From 00c7b33cf2bf5f965cd0d9e1a1ee3c3fa6370ab2 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 15:17:50 -0500
-Subject: [PATCH 14/14] bolt11: say which chain a foreign prefix belongs to,
+Subject: [PATCH 14/15] bolt11: say which chain a foreign prefix belongs to,
  and keep the reason
 
 Running the python suite turned up four different errors for one
