@@ -5,7 +5,7 @@ which is where `v26.06.7-blake2b.4` and the unified-sigs work live. Retargeted
 from `v26.06.7-blake2b`, which is still at `893f767e8` and is not where the
 next release will come from. The series rebases onto `blake2b-unified` with no
 conflicts.
-Patch series: `0001`-`0005` in this directory (`git am *.patch`); the
+Patch series: `0001`-`0014` in this directory (`git am *.patch`); the
 lightning-fork-lab repository builds and tests it (`make cln`,
 `make cln-interop`).
 
@@ -31,10 +31,10 @@ has mainnet channels.
 
 ## Why the node needs this
 
-With the values as released, tested in a regtest lab against Lightning Fork
-on the same BLAKE2b chain (`v0.21.3-beta-blake2b.8` when the released build
-was tried, `.9` for the series; the `init` check did not change between
-them):
+Measured in a regtest lab against Lightning Fork on the same BLAKE2b chain.
+**These rows were taken on the `v26.06.7-blake2b` base** (`v0.21.3-beta-blake2b.8`
+for the released build, `.9` for the series; the `init` check did not change
+between them), which is what the series was first written against:
 
 | What | Released `v26.06.7-blake2b.3` | With this series |
 | --- | --- | --- |
@@ -48,6 +48,23 @@ them):
 
 Nothing in the protocol changes: only the constants, and one rule for a
 peer that sends no `networks` list.
+
+**On `blake2b-unified` those last four rows do not reproduce, and not because
+of anything in this series.** That branch signals `option_blake2b` as
+compulsory bit 68, which an lnd that does not know the bit must refuse, so the
+two do not peer at all; and it requires `option_unified_sigs` in the channel
+type, so even once they peer, an lnd that cannot negotiate it is told `Did not
+support channel_type [12,22]`. Both are independent of `chain_hash` and of this
+series. I mention it because applying these patches to `blake2b-unified` and
+pointing the result at a released Lightning Fork will show no peering, and that
+should not be mistaken for a regression here.
+
+Lightning Fork now names bit 68 and negotiates the channel type, which closes
+both from that side. With those changes, `blake2b-unified` plus this series
+peers, opens `channel_type [12,22,70]`, pays both ways, and closes both
+cooperatively and by force. That work is in Lightning Fork rather than in this
+PR, and it is not a prerequisite for merging this one: the two questions are
+separate, which is the point of raising it here rather than folding it in.
 
 ## What each commit does
 
@@ -119,10 +136,15 @@ peer that sends no `networks` list.
    `channel_announcement` both carry `chain_hash`, so it is now opt-in and
    renamed `--drop-peers-without-networks` for the action it takes.
 
-8. **doc: reserve an odd, high feature bit.** 32769 odd in `init` and
-   `node_announcement`, 32768 even in invoices and offers, adopting Chris
-   Guida's asymmetry and range and conceding the 2100/2101 this document
-   reserved before.
+8. **doc: the feature bits this chain uses, and why the numbers are wrong.**
+   `.4` shipped `option_blake2b` as bit 68 and `option_unified_sigs` as bit
+   70, so the document now describes 68/69 and 70/71 rather than the
+   32769/32768 an earlier revision reserved, or the 2100/2101 before that. A
+   number already on the wire is the number. It keeps the argument that 68 and
+   70 are the next pairs BOLT 9 will hand out, as an argument rather than as a
+   competing assignment, and it adopts Chris Guida's asymmetry, which matters
+   more than the range: odd in `init` and `node_announcement`, even inside
+   `channel_type`, neither in invoices or offers.
 
 9. **wallet: a dedicated flag for the case the wallet cannot answer.**
    `--restamp-wallet-for-this-chain`, because a wallet created after the fork

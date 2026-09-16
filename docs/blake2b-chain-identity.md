@@ -96,56 +96,67 @@ transactions until a channel type requiring the opt-in on both sides
 exists; implementations should warn about such channels and prefer funding
 from coins received after the fork.
 
-## 5. Reserved feature bits
+## 5. Feature bits
 
-For the future channel type in which both sides sign commitment and HTLC
-transactions with `SIGHASH_UNIFIED`, the feature bit pair
-**32769 (optional) / 32768 (required)** is reserved, and which of the pair
-is set depends on where it is set:
+Two bits are in use on this chain, and Lightning Fork implements both at the
+numbers they were deployed at rather than at the numbers this document once
+proposed:
 
-- **Odd (32769) in `init` and `node_announcement`.** A peer that does not
-  understand it stays connected, which is what lets a pre-fork channel with
-  an unpatched counterparty still be closed cooperatively.
-- **Even (32768) in invoices and offers.** A payer that does not understand
-  it refuses to pay, which is the safe direction: a wallet on the SHA256d
-  chain must not pay an invoice from this one by accident.
+| Bit | Name | Meaning |
+| --- | --- | --- |
+| 68 / 69 | `option_blake2b` | This node follows the Bitcoin BLAKE2b chain. |
+| 70 / 71 | `option_unified_sigs` | This node can negotiate a channel whose commitment, second-level HTLC and cooperative close signatures opt into `SIGHASH_UNIFIED`. |
 
-This asymmetry is Chris Guida's, from the migration plan, and it is a
-better answer than a single choice for both. Peering wants to be
-permissive, because during a migration you have to be able to talk to
-nodes that have not moved yet. Payment wants to be strict, because the
-failure there costs money rather than a reconnect. No implementation sets
-either bit yet.
+Core Lightning's port of this chain assigned both and ships them. A number
+already on the wire is the number, whatever it should have been, so
+interoperating with it beats being right about it alone.
 
-This replaces the 2100/2101 pair reserved in earlier revisions of this
-document. Nothing set those bits, so nothing breaks, and the higher pair is
-the more conservative choice: it sits well clear of the numbers BOLT 9 is
-still handing out, and it matches the range implementations already treat
-as custom.
+Where each form is set differs, and the difference is the point:
 
-Odd in `init` rather than even, and high rather than low, for two reasons.
+- **Odd (69, 71) in `init` and `node_announcement`.** A peer that does not
+  understand an odd bit ignores it and stays connected, which is what lets a
+  pre-fork channel with an unpatched counterparty still be closed
+  cooperatively. An even bit there refuses more than it means to, including
+  client applications that speak the wire protocol only to reach a node's RPC
+  and have no reason to know what chain they are on.
+- **Even (70) inside `channel_type`.** A channel type is a set of even bits by
+  construction, and there the strictness is right: both sides must agree on
+  the digest they sign, and a peer that does not understand the bit must not
+  end up in such a channel.
+- **Neither, in invoices and offers.** A payer on the SHA256d chain must be
+  refused, and the invoice prefix and `chain_hash` already do that without a
+  feature bit.
 
-BOLT 9 says a feature is introduced as an optional odd bit and upgraded to
-a compulsory even one later, "which will be refused by outdated nodes".
-Starting `init` at the compulsory end runs that backwards: it refuses peers
-before there is anything to be compatible with, and it refuses more than
-intended. An even bit in `init` drops any peer that does not set it, which
-includes client applications that speak the wire protocol to reach a node's
-RPC and have no reason to know what chain they are on. It also leaves a
-pre-fork channel with an unpatched counterparty with no cooperative close,
-only a force close.
+This is Chris Guida's asymmetry, from the migration plan, and it is a better
+answer than one choice for everywhere. Peering wants to be permissive, because
+during a migration you have to be able to talk to nodes that have not moved
+yet. Payment and channel opening want to be strict, because the failure there
+costs money rather than a reconnect.
 
-And this bit is not what keeps the two chains apart. `chain_hash` does
-that, in the `init` networks list, in `open_channel` and in
-`channel_announcement`. A node on the SHA256d chain cannot open a channel
-here or have its gossip accepted here whatever feature bits it sets. What
-the bit says is narrower: that this node can sign a commitment with
-`SIGHASH_UNIFIED`. That is a capability, negotiated per channel through
-`channel_type`, and capabilities are what odd bits are for.
+### The numbers are the wrong ones, and this document still says so
 
-Low numbers are worth avoiding for a simpler reason. The highest pair BOLT
-9 has assigned is 66/67 (`option_onion_messages_only_channels`), so 68 and
-70 are the next numbers the spec will hand out, not spare ones.
+The highest pair BOLT 9 has assigned is 66/67
+(`option_onion_messages_only_channels`), so 68 and 70 are the next numbers the
+spec will hand out, not spare ones. A pair in the range implementations already
+treat as custom, such as **32769 / 32768**, sits clear of that and is the
+conservative choice. An earlier revision of this document reserved 32769/32768
+on exactly that reasoning, and before that 2100/2101, which was no better.
+
+They have not moved because one implementation shipped first and a second one
+that used different numbers would simply not interoperate. If the pair does
+move, this document and both implementations move with it, and the cost of
+moving rises with every channel opened under the current numbers.
+
+An even bit in `init` also runs BOLT 9 backwards. The spec introduces a feature
+as an optional odd bit and upgrades it to a compulsory even one later, "which
+will be refused by outdated nodes". Starting at the compulsory end refuses
+peers before there is anything to be compatible with.
+
+And no feature bit is what keeps the two chains apart. `chain_hash` does that,
+in the `init` networks list, in `open_channel` and in `channel_announcement`. A
+node on the SHA256d chain cannot open a channel here or have its gossip
+accepted here whatever bits it sets. What `option_blake2b` says is narrower:
+that this node knows what the peer is declaring.
 
 ## 6. Block header
 

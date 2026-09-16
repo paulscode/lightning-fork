@@ -1,4 +1,4 @@
-From ccfe0cd59582d809701cc267e73de83ddf45b26c Mon Sep 17 00:00:00 2001
+From a0919eb1b302b1ed69872e88a42860d6d5e5bbd5 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:46:09 -0500
 Subject: [PATCH 13/14] tests: canned dbs set at runtime need the flag too
