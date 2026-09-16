@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+package bridgerpc;
+
+option go_package = "github.com/lightningnetwork/lnd/lnrpc/bridgerpc";
+
+/*
+ * Comments in this file will be directly parsed into the API
+ * Documentation as descriptions of the associated method, message, or field.
+ * These descriptions should go right above the definition of the object, and
+ * can be in either block or // comment format.
+ *
+ * An RPC method can be matched to an lncli command by placing a line in the
+ * beginning of the description in exactly the following format:
+ * lncli: `methodname`
+ *
+ * Failure to specify the exact name of the command will cause documentation
+ * generation to fail.
+ *
+ * More information on how exactly the gRPC documentation is generated from
+ * this proto file can be found here:
+ * https://github.com/lightninglabs/lightning-api
+ */
+
+// Bridge swaps payments between Lightning on this chain and Lightning on
+// Bitcoin, atomically: both legs share one payment hash, so the bridge cannot
+// take the incoming funds without having delivered the outgoing ones.
+//
+// The service is small on purpose. Asking for a quote commits this node's own
+// liquidity, so these methods are for the operator and whoever they choose to
+// expose them to, not for the public.
+service Bridge {
+    /* lncli: `bridge quote`
+    Quote asks what a swap would cost and creates the hold invoice to pay for
+    it. Which direction the swap runs is worked out by asking both nodes to
+    decode the invoice, not by reading its prefix here.
+
+    A quote reserves nothing until the returned hold invoice is paid, but it
+    does fix a rate until expires_at.
+    */
+    rpc Quote (QuoteRequest) returns (QuoteResponse);
+
+    /* lncli: `bridge swap`
+    LookupSwap reports what the bridge believes about a swap it has quoted,
+    including the preimage once there is one, which is the payer's proof that
+    the destination was paid.
+    */
+    rpc LookupSwap (LookupSwapRequest) returns (Swap);
+
+    /* lncli: `bridge status`
+    Status reports whether this node is in a position to serve swaps: which
+    directions are enabled, whether both chains can be measured, whether a
+    usable price is available, and how many swaps are in flight.
+
+    It answers while the bridge is refusing everything, which is the case it
+    exists for.
+    */
+    rpc Status (StatusRequest) returns (StatusResponse);
+}
+
+message QuoteRequest {
+    /*
+    The payment request the payer wants delivered, on whichever chain it is
+    for. It is never rewritten: its payment hash is what the hold invoice is
+    built on, and settling requires that exact preimage.
+    */
+    string invoice = 1;
+}
+
+message QuoteResponse {
+    /*
+    What the payer pays, on the other chain. It is a hold invoice and does not
+    settle until the bridge has delivered, which is the whole mechanism.
+    */
+    string hold_invoice = 1;
+
+    // The payment hash both legs share, and the key to ask about this swap.
+    bytes hash = 2;
+
+    /*
+    What the payer owes. Note that incoming and outgoing are in different
+    units: a millisatoshi on one chain is not a millisatoshi on the other.
+    */
+    uint64 incoming_msat = 3;
+
+    // What the destination receives.
+    uint64 outgoing_msat = 4;
+
+    // Outgoing units per incoming unit.
+    double rate = 5;
+
+    // The fraction charged on top of the rate.
+    double spread = 6;
+
+    /*
+    The incoming leg's required CLTV, in blocks of the incoming chain. It is
+    sized in wall-clock by the margin policy and converted, so it is usually
+    far larger than a same-chain invoice would ask for.
+    */
+    uint32 cltv_delta = 7;
+
+    // Which way this swap runs, for a payer deciding which node to pay from.
+    string direction = 8;
+
+    /*
+    The deadline for paying hold_invoice, as a Unix timestamp in seconds. Pay
+    it before this and the swap proceeds at the quoted rate; leave it and the
+    bridge cancels the hold invoice, after which paying it fails.
+
+    It applies only while the invoice is unpaid. Once the incoming HTLC is
+    locked in the swap is no longer racing a clock in minutes, and cltv_delta
+    is what bounds it.
+    */
+    int64 expires_at = 9;
+}
+
+message LookupSwapRequest {
+    // The payment hash the quote returned.
+    bytes hash = 1;
+}
+
+message Swap {
+    bytes hash = 1;
+
+    // What the bridge believes this swap is doing.
+    string state = 2;
+
+    uint64 incoming_msat = 3;
+    uint64 outgoing_msat = 4;
+
+    /*
+    Present once there is one. It is the payer's proof that the destination was
+    paid, and the value that claims the incoming hold invoice.
+    */
+    bytes preimage = 5;
+}
+
+message StatusRequest {
+}
+
+message StatusResponse {
+    // Whether the operator has turned the bridge on.
+    bool enabled = 1;
+
+    /*
+    The directions this node will currently quote. A direction disappears from
+    here when it is disabled or when the node on that side cannot be reached.
+    */
+    repeated string directions = 2;
+
+    /*
+    Why the bridge is refusing to quote, if it is. Empty when it is serving.
+    This is the field to read first: a bridge with no liquidity, an unsynced
+    node or a stale price refuses every swap, and the reason belongs here
+    rather than in a log.
+    */
+    repeated string refusals = 3;
+
+    // How many swaps are being driven right now.
+    uint32 swaps_in_flight = 4;
+}

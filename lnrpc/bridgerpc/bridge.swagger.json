@@ -1,0 +1,262 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "bridgerpc/bridge.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "Bridge"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v2/bridge/quote": {
+      "post": {
+        "summary": "lncli: `bridge quote`\nQuote asks what a swap would cost and creates the hold invoice to pay for\nit. Which direction the swap runs is worked out by asking both nodes to\ndecode the invoice, not by reading its prefix here.",
+        "description": "A quote reserves nothing until the returned hold invoice is paid, but it\ndoes fix a rate until expires_at.",
+        "operationId": "Bridge_Quote",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/bridgerpcQuoteResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/bridgerpcQuoteRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Bridge"
+        ]
+      }
+    },
+    "/v2/bridge/status": {
+      "get": {
+        "summary": "lncli: `bridge status`\nStatus reports whether this node is in a position to serve swaps: which\ndirections are enabled, whether both chains can be measured, whether a\nusable price is available, and how many swaps are in flight.",
+        "description": "It answers while the bridge is refusing everything, which is the case it\nexists for.",
+        "operationId": "Bridge_Status",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/bridgerpcStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Bridge"
+        ]
+      }
+    },
+    "/v2/bridge/swap": {
+      "post": {
+        "summary": "lncli: `bridge swap`\nLookupSwap reports what the bridge believes about a swap it has quoted,\nincluding the preimage once there is one, which is the payer's proof that\nthe destination was paid.",
+        "operationId": "Bridge_LookupSwap",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/bridgerpcSwap"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/bridgerpcLookupSwapRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Bridge"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "bridgerpcLookupSwapRequest": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment hash the quote returned."
+        }
+      }
+    },
+    "bridgerpcQuoteRequest": {
+      "type": "object",
+      "properties": {
+        "invoice": {
+          "type": "string",
+          "description": "The payment request the payer wants delivered, on whichever chain it is\nfor. It is never rewritten: its payment hash is what the hold invoice is\nbuilt on, and settling requires that exact preimage."
+        }
+      }
+    },
+    "bridgerpcQuoteResponse": {
+      "type": "object",
+      "properties": {
+        "hold_invoice": {
+          "type": "string",
+          "description": "What the payer pays, on the other chain. It is a hold invoice and does not\nsettle until the bridge has delivered, which is the whole mechanism."
+        },
+        "hash": {
+          "type": "string",
+          "format": "byte",
+          "description": "The payment hash both legs share, and the key to ask about this swap."
+        },
+        "incoming_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "What the payer owes. Note that incoming and outgoing are in different\nunits: a millisatoshi on one chain is not a millisatoshi on the other."
+        },
+        "outgoing_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "What the destination receives."
+        },
+        "rate": {
+          "type": "number",
+          "format": "double",
+          "description": "Outgoing units per incoming unit."
+        },
+        "spread": {
+          "type": "number",
+          "format": "double",
+          "description": "The fraction charged on top of the rate."
+        },
+        "cltv_delta": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The incoming leg's required CLTV, in blocks of the incoming chain. It is\nsized in wall-clock by the margin policy and converted, so it is usually\nfar larger than a same-chain invoice would ask for."
+        },
+        "direction": {
+          "type": "string",
+          "description": "Which way this swap runs, for a payer deciding which node to pay from."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "int64",
+          "description": "The deadline for paying hold_invoice, as a Unix timestamp in seconds. Pay\nit before this and the swap proceeds at the quoted rate; leave it and the\nbridge cancels the hold invoice, after which paying it fails.\n\nIt applies only while the invoice is unpaid. Once the incoming HTLC is\nlocked in the swap is no longer racing a clock in minutes, and cltv_delta\nis what bounds it."
+        }
+      }
+    },
+    "bridgerpcStatusResponse": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the operator has turned the bridge on."
+        },
+        "directions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The directions this node will currently quote. A direction disappears from\nhere when it is disabled or when the node on that side cannot be reached."
+        },
+        "refusals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Why the bridge is refusing to quote, if it is. Empty when it is serving.\nThis is the field to read first: a bridge with no liquidity, an unsynced\nnode or a stale price refuses every swap, and the reason belongs here\nrather than in a log."
+        },
+        "swaps_in_flight": {
+          "type": "integer",
+          "format": "int64",
+          "description": "How many swaps are being driven right now."
+        }
+      }
+    },
+    "bridgerpcSwap": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string",
+          "format": "byte"
+        },
+        "state": {
+          "type": "string",
+          "description": "What the bridge believes this swap is doing."
+        },
+        "incoming_msat": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "outgoing_msat": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "preimage": {
+          "type": "string",
+          "format": "byte",
+          "description": "Present once there is one. It is the payer's proof that the destination was\npaid, and the value that claims the incoming hold invoice."
+        }
+      }
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    }
+  }
+}

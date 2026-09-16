@@ -1,0 +1,13 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: bridgerpc.Bridge.Quote
+      post: "/v2/bridge/quote"
+      body: "*"
+    - selector: bridgerpc.Bridge.LookupSwap
+      post: "/v2/bridge/swap"
+      body: "*"
+    - selector: bridgerpc.Bridge.Status
+      get: "/v2/bridge/status"

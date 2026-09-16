@@ -61,7 +61,13 @@ func (f *fakeNode) deps() *Deps {
 
 			return f.cancelErr
 		},
-		DecodeInvoice: nil,
+		// Always present so that ready() passes; the tests that care
+		// about decoding replace it.
+		DecodeInvoice: func(context.Context, string) (*zpay32.Invoice,
+			error) {
+
+			return nil, errors.New("not used in this test")
+		},
 		PayInvoice: func(context.Context, PayRequest) (PaymentStatus,
 			error) {
 
@@ -78,19 +84,9 @@ func (f *fakeNode) deps() *Deps {
 	}
 }
 
-// local builds an adapter over the fake, with a usable decoder stub so that
-// ready() passes for the tests that do not care about decoding.
+// local builds an adapter over the fake.
 func local(f *fakeNode) *Local {
-	d := f.deps()
-	if d.DecodeInvoice == nil {
-		d.DecodeInvoice = func(context.Context, string) (
-			*zpay32.Invoice, error) {
-
-			return nil, errors.New("not used in this test")
-		}
-	}
-
-	return NewLocal(d)
+	return NewLocal(f.deps())
 }
 
 func hash8(b byte) [32]byte {
