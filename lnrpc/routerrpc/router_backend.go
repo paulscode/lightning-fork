@@ -888,6 +888,23 @@ func (r *RouterBackend) UnmarshallRoute(rpcroute *lnrpc.Route) (
 	return route, nil
 }
 
+// ExtractIntent turns a send request into a payment the channel router can
+// dispatch, applying every rule this package applies to an RPC client: the
+// invoice's expiry, its payment address or blinded paths, its amount, and
+// whether it may be split.
+//
+// It is exported for callers inside the daemon that dispatch a payment without
+// going through the gRPC surface, so that they get exactly these rules rather
+// than a second reading of a payment request. The swap bridge is one: it builds
+// a hold invoice on one chain around the payment hash of an invoice on the
+// other, and a decoder that disagreed by one field would have it hold the wrong
+// hash.
+func (r *RouterBackend) ExtractIntent(rpcPayReq *SendPaymentRequest) (
+	*routing.LightningPayment, error) {
+
+	return r.extractIntentFromSendRequest(rpcPayReq)
+}
+
 // extractIntentFromSendRequest attempts to parse the SendRequest details
 // required to dispatch a client from the information presented by an RPC
 // client.

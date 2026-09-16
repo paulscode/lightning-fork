@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/lnrpc/bridgerpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	paymentsdb "github.com/lightningnetwork/lnd/payments/db"
-	"github.com/lightningnetwork/lnd/routing"
-	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -24,7 +24,9 @@ import (
 // supplying a macaroon and a TLS path for their own node, and the sub-server
 // waiting for that server to come up before it could work. Going straight to
 // the registry and the router removes both.
-func (s *server) bridgeDeps() *bridgerpc.Deps {
+func (s *server) bridgeDeps(
+	routerBackend *routerrpc.RouterBackend) *bridgerpc.Deps {
+
 	return &bridgerpc.Deps{
 		AddHoldInvoice: s.addBridgeHoldInvoice,
 
@@ -62,11 +64,10 @@ func (s *server) bridgeDeps() *bridgerpc.Deps {
 			)
 		},
 
-		PayInvoice: func(ctx context.Context,
-			payment *routing.LightningPayment) ([32]byte,
-			*route.Route, error) {
+		PayInvoice: func(ctx context.Context, req bridgerpc.PayRequest) (
+			bridgerpc.PaymentStatus, error) {
 
-			return s.chanRouter.SendPayment(ctx, payment)
+			return s.payBridgeInvoice(ctx, routerBackend, req)
 		},
 
 		LookupPayment: s.lookupBridgePayment,
@@ -145,6 +146,77 @@ func (s *server) addBridgeHoldInvoice(ctx context.Context,
 	}
 
 	return string(dbInvoice.PaymentRequest), nil
+}
+
+// payBridgeInvoice sends a payment and blocks until it resolves.
+//
+// The intent is built by the router backend's own ExtractIntent rather than
+// assembled here, so the bridge gets exactly the rules an RPC client gets: the
+// invoice's expiry is validated, a payment address or blinded paths are
+// required, the amount comes from the invoice, and whether it may be split is
+// decided by the invoice's own features. A second reading of a payment request
+// that disagreed by one field would have the bridge hold one hash while the
+// node paid another, and the whole security of a swap is that those are equal.
+func (s *server) payBridgeInvoice(ctx context.Context,
+	routerBackend *routerrpc.RouterBackend,
+	req bridgerpc.PayRequest) (bridgerpc.PaymentStatus, error) {
+
+	if req.Invoice == "" {
+		return bridgerpc.PaymentStatus{}, errors.New("bridge payment: " +
+			"no invoice to pay")
+	}
+	if req.CLTVLimit == 0 {
+		return bridgerpc.PaymentStatus{}, errors.New("bridge payment: " +
+			"no CLTV limit; the incoming leg is sized against " +
+			"this and an unbounded route could outlive it")
+	}
+	if req.CLTVLimit > math.MaxInt32 {
+		return bridgerpc.PaymentStatus{}, fmt.Errorf("bridge payment: "+
+			"CLTV limit %d does not fit", req.CLTVLimit)
+	}
+	if req.Timeout <= 0 {
+		return bridgerpc.PaymentStatus{}, errors.New("bridge payment: " +
+			"no timeout; an attempt that never gives up holds the " +
+			"incoming HTLC until it expires")
+	}
+
+	intent, err := routerBackend.ExtractIntent(
+		&routerrpc.SendPaymentRequest{
+			PaymentRequest: req.Invoice,
+			TimeoutSeconds: int32(req.Timeout.Seconds()),
+			FeeLimitMsat:   int64(req.MaxFeeMsat),
+			CltvLimit:      int32(req.CLTVLimit),
+		},
+	)
+	if err != nil {
+		return bridgerpc.PaymentStatus{}, err
+	}
+
+	preimage, route, err := s.chanRouter.SendPayment(ctx, intent)
+	if err != nil {
+		// Not a failure, and this is the distinction the whole design
+		// turns on. The router gives up on its own deadline, but an
+		// HTLC it already sent is out there regardless, and concluding
+		// failure here would cancel the incoming claim against a
+		// payment that may still settle. Report what is actually
+		// known: the node has a record and its outcome is not decided.
+		//
+		// The bridge resolves this by looking the payment up, which is
+		// the only thing that can answer it.
+		srvrLog.Debugf("Bridge payment did not resolve in time or "+
+			"failed to dispatch, reporting in flight: %v", err)
+
+		return bridgerpc.PaymentStatus{Known: true, InFlight: true}, nil
+	}
+
+	status := bridgerpc.PaymentStatus{
+		Known: true, Settled: true, Preimage: preimage,
+	}
+	if route != nil {
+		status.FeeMsat = uint64(route.TotalFees())
+	}
+
+	return status, nil
 }
 
 // lookupBridgePayment reports what became of a payment, keeping "never seen"

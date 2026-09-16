@@ -444,6 +444,8 @@ github.com/paulscode/btcd-blake2b v0.25.1-blake2b.4 h1:YlR2FmYuZwPeI2HV2MPesagjA
 github.com/paulscode/btcd-blake2b v0.25.1-blake2b.4/go.mod h1:qbPE+pEiR9643E1s1xu57awsRhlCIm1ZIi6FfeRA4KE=
 github.com/paulscode/btcwallet-blake2b/wallet/txauthor v1.3.5-blake2b.1 h1:uKixyabvwAbbp2xeTzozVoTA6e0eNk69HaI0YLere2o=
 github.com/paulscode/btcwallet-blake2b/wallet/txauthor v1.3.5-blake2b.1/go.mod h1:+tXJ3Ym0nlQc/iHSwW1qzjmPs3ev+UVWMbGgfV1OZqU=
+github.com/paulscode/lightning-fork-bridge v0.1.1 h1:zp9x65VoObrztKnzPauQtRH0Tc/GMUZGlqGVkf6FGHE=
+github.com/paulscode/lightning-fork-bridge v0.1.1/go.mod h1:6fYqFoyd+s8Nx6TwDZEgBs5AHhetgp7ibgjxD3hfCjE=
 github.com/pkg/errors v0.8.0/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=

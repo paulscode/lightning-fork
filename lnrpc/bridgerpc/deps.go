@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/lightningnetwork/lnd/routing"
-	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -53,9 +51,15 @@ type Deps struct {
 		invoice string) (*zpay32.Invoice, error)
 
 	// PayInvoice sends a payment and blocks until it resolves or the
-	// payment's own timeout elapses.
-	PayInvoice func(ctx context.Context,
-		payment *routing.LightningPayment) ([32]byte, *route.Route, error)
+	// request's timeout elapses.
+	//
+	// A timeout is not a failure. An HTLC that has left is out there
+	// whatever this call reports, so running out of time returns an
+	// in-flight status and the caller must look the payment up to learn
+	// its fate. Returning an error here would let the bridge conclude
+	// failure from having stopped listening.
+	PayInvoice func(ctx context.Context, req PayRequest) (PaymentStatus,
+		error)
 
 	// LookupPayment reports what became of a payment made earlier, without
 	// waiting for it.
@@ -118,4 +122,26 @@ type PaymentStatus struct {
 
 	// FeeMsat is what routing cost, for accounting.
 	FeeMsat uint64
+}
+
+// PayRequest is what the bridge asks the local node to send.
+type PayRequest struct {
+	// Invoice is the destination invoice, exactly as the payer supplied
+	// it. The bridge never rewrites it: its payment hash is what the
+	// incoming hold invoice was built on, and settling requires this exact
+	// preimage.
+	Invoice string
+
+	// MaxFeeMsat caps routing fees.
+	MaxFeeMsat uint64
+
+	// CLTVLimit caps the total CLTV of the route, in blocks of this chain.
+	// Keeping it small is the cheapest way to shrink what the incoming leg
+	// has to outlive.
+	CLTVLimit uint32
+
+	// Timeout abandons the attempt. It bounds how long the payment may sit
+	// in flight, not how long an HTLC that has already left takes to
+	// resolve on chain, which is what CLTVLimit bounds.
+	Timeout time.Duration
 }

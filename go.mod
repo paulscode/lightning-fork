@@ -46,6 +46,7 @@ require (
 	github.com/lightningnetwork/lnd/tor v1.1.7
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796
 	github.com/miekg/dns v1.1.43
+	github.com/paulscode/lightning-fork-bridge v0.1.1
 	github.com/prometheus/client_golang v1.11.1
 	github.com/stretchr/testify v1.11.1
 	github.com/tv42/zbase32 v0.0.0-20160707012821-501572607d02
@@ -184,7 +185,7 @@ require (
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/text v0.37.0
 	golang.org/x/tools v0.44.0 // indirect
 	google.golang.org/genproto v0.0.0-20231016165738-49dd2c1f3d0b // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect

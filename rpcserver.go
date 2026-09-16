@@ -802,7 +802,7 @@ func (r *rpcServer) addDeps(ctx context.Context, s *server,
 		genInvoiceFeatures, genAmpInvoiceFeatures,
 		s.getNodeAnnouncement, s.updateAndBroadcastSelfNode, parseAddr,
 		rpcsLog, s.aliasMgr, r.implCfg.AuxDataParser,
-		invoiceHtlcModifier, s.offersDeps(), s.bridgeDeps(),
+		invoiceHtlcModifier, s.offersDeps(), s.bridgeDeps(routerBackend),
 	)
 	if err != nil {
 		return err
