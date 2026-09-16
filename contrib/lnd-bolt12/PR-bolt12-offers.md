@@ -1,5 +1,35 @@
 # BOLT 12 offers for `lnd`
 
+> **Status, 2026-09-16: not ready to open, and not because of the code.**
+> Checked against `lightningnetwork/lnd` before opening it. The base here is
+> `v0.21.3-beta`, which is **585 commits** behind master, and in the meantime:
+>
+> - **master already has a `bolt12` package**, with the decode, invoice,
+>   invoice-request, bech32 and invoice-error files. Commit 1 below ports those
+>   from master, so against master it re-adds what is already there.
+> - **bitromortac is actively working on it**: #11146 (string-codec wrappers
+>   and fuzz harnesses) and #11191 (finalize the codec package, 2026-09-11).
+>   Landing a large series that re-ports the codecs across that would be
+>   unwelcome regardless of its merits.
+> - **master has `onionmessage`** and our changes to it conflict with the
+>   version there.
+> - master still **lacks `offers`, `offerserve`, `offerpay` and `onionmsg`**,
+>   which is the genuinely additive part: serving invoice requests and paying
+>   offers, rather than encoding them.
+>
+> So the contribution is real but its shape is wrong. Before this can be
+> opened it needs rebasing onto current master, commit 1 dropped, and the
+> remainder adapted to their `bolt12` and `onionmessage` packages. That is
+> substantial work and it should not start before asking whether the offers
+> layer is wanted at all, since bitromortac owns this area and may have a plan
+> for it. The right opening move is a comment on #11191 offering the layer
+> above the codecs, not a surprise PR.
+>
+> Everything below describes the series as it stands against `v0.21.3-beta`,
+> where it is verified: all 8 commits build individually, `gofmt` and `go vet`
+> are clean, and the 13 packages named under "Provenance and testing" pass.
+> Branch `bolt12-for-bitcoin` on `paulscode/lightning-fork`.
+
 Eight commits against `v0.21.3-beta` that let a node mint BOLT 12 offers,
 answer invoice requests for them over onion messages, and fetch and pay other
 nodes' offers. No side-car, no external daemon: the offer manager, the onion
