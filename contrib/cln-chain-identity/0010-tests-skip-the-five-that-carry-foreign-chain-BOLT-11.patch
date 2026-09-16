@@ -1,4 +1,4 @@
-From 99329cd6cb29bf00f0bf067463d050cbd63cb433 Mon Sep 17 00:00:00 2001
+From 548fbbc1b4adaf991a22b59c1a532c618e59cb96 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:09:16 -0500
 Subject: [PATCH 10/14] tests: skip the five that carry foreign-chain BOLT 11

@@ -140,6 +140,25 @@ during a migration you have to be able to talk to nodes that have not moved
 yet. Payment and channel opening want to be strict, because the failure there
 costs money rather than a reconnect.
 
+### Downgrading after opening one
+
+A channel that negotiated `option_unified_sigs` records it in its own channel
+type, and every signature on it is made under `0x21` or `0xa3`. A build that
+does not know the bit reads the channel type without complaint, finds nothing
+it recognises, and signs `0x01` instead. The peer then rejects every signature,
+and the channel can neither update nor close cooperatively.
+
+So a node that has opened a unified channel must not be downgraded to a build
+from before this feature. That is the same rule that already applies to any
+negotiated channel type, taproot included, and there is no automatic guard
+against it: the channel type is a bitfield, and an older build cannot warn
+about a bit it has never heard of.
+
+Existing channels are unaffected either way. The type is fixed when the channel
+is opened and is never renegotiated, so upgrading does not change a channel
+that is already open, and a peer that does not signal the bit is offered an
+ordinary channel rather than refused.
+
 ### The numbers are the wrong ones, and this document still says so
 
 The highest pair BOLT 9 has assigned is 66/67
