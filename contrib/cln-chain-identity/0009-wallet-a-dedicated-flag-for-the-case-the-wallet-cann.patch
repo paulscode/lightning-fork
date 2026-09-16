@@ -1,4 +1,4 @@
-From 1d1429536adccc48aaf092092e5a18eeff0c431c Mon Sep 17 00:00:00 2001
+From d2499a61c99f2b578f5dc32351be513d051903c1 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 13:47:25 -0500
 Subject: [PATCH 09/14] wallet: a dedicated flag for the case the wallet cannot

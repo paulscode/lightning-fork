@@ -375,6 +375,7 @@ var witnessSizeTests = []witnessSizeTest{
 				witnessScript,
 				testPubkeyBytes, &maxDERSignature{},
 				testPubkeyBytes, &maxDERSignature{},
+				txscript.SigHashAll,
 			)
 		},
 	},

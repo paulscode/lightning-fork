@@ -235,8 +235,13 @@ func GenTaprootFundingScript(aPub, bPub *btcec.PublicKey,
 
 // SpendMultiSig generates the witness stack required to redeem the 2-of-2 p2wsh
 // multi-sig output.
+// The hash type is the one both signatures were made under, and it is
+// appended to each of them in the witness. It is a parameter rather than a
+// constant because a channel that negotiated the unified signature hash signs
+// with SIGHASH_ALL|SIGHASH_UNIFIED, and a witness that claimed plain
+// SIGHASH_ALL for such a signature would not verify.
 func SpendMultiSig(witnessScript, pubA []byte, sigA Signature,
-	pubB []byte, sigB Signature) [][]byte {
+	pubB []byte, sigB Signature, hashType txscript.SigHashType) [][]byte {
 
 	witness := make([][]byte, 4)
 
@@ -249,11 +254,11 @@ func SpendMultiSig(witnessScript, pubA []byte, sigA Signature,
 	// ensure the signatures appear on the Script Virtual Machine stack in
 	// the correct order.
 	if bytes.Compare(pubA, pubB) == 1 {
-		witness[1] = append(sigB.Serialize(), byte(txscript.SigHashAll))
-		witness[2] = append(sigA.Serialize(), byte(txscript.SigHashAll))
+		witness[1] = append(sigB.Serialize(), byte(hashType))
+		witness[2] = append(sigA.Serialize(), byte(hashType))
 	} else {
-		witness[1] = append(sigA.Serialize(), byte(txscript.SigHashAll))
-		witness[2] = append(sigB.Serialize(), byte(txscript.SigHashAll))
+		witness[1] = append(sigA.Serialize(), byte(hashType))
+		witness[2] = append(sigB.Serialize(), byte(hashType))
 	}
 
 	// Finally, add the preimage as the last witness element.

@@ -128,7 +128,7 @@ func newChannelTestCtx(chanSize int64) (*channelTestCtx, error) {
 
 	commitTx.TxIn[0].Witness = input.SpendMultiSig(
 		multiSigScript, alicePub.SerializeCompressed(), aliceSig,
-		bobPub.SerializeCompressed(), bobSig,
+		bobPub.SerializeCompressed(), bobSig, txscript.SigHashAll,
 	)
 
 	invalidCommitTx := commitTx.Copy()

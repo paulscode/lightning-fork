@@ -10,6 +10,22 @@ type setDesc map[lnwire.FeatureBit]map[Set]struct{}
 // vectors. Each set is annotated with the corresponding identifier from BOLT 9
 // indicating where it should be advertised.
 var defaultSetDesc = setDesc{
+	// Odd, so a peer that does not know it ignores it. Declaring the chain
+	// at init is a courtesy to implementations that want it; what actually
+	// keeps this node off another chain is chain_hash. Not set in invoices
+	// or offers: a payer that cannot read the bit must still be refused,
+	// and the invoice prefix and chain_hash already do that.
+	lnwire.Blake2bOptional: {
+		SetInit:    {}, // I
+		SetNodeAnn: {}, // N
+	},
+	// Signalled so a peer knows a unified-signing channel can be
+	// negotiated with this node. Whether one is depends on the channel
+	// type both sides agree, not on this bit alone.
+	lnwire.UnifiedSigsOptional: {
+		SetInit:    {}, // I
+		SetNodeAnn: {}, // N
+	},
 	lnwire.DataLossProtectRequired: {
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N

@@ -1,4 +1,4 @@
-From 55b1edd9d3fc96c1dd33cd545bc2dea3538d80fe Mon Sep 17 00:00:00 2001
+From 2159c55157e43d36734cacc93721c6397df22251 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 14:34:09 -0500
 Subject: [PATCH 12/14] wallet: a successful restamp is unusual, not broken

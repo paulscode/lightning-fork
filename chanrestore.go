@@ -216,6 +216,14 @@ func (c *chanDBRestorer) openChannelShell(backup chanbackup.Single) (
 		return nil, fmt.Errorf("unknown Single version: %w", err)
 	}
 
+	// Orthogonal to the commitment type, so applied after the switch
+	// rather than in each of its cases. A channel restored without this
+	// would sign SIGHASH_ALL where every signature on it was made under
+	// SIGHASH_ALL|SIGHASH_UNIFIED.
+	if backup.UnifiedSigs {
+		chanType |= channeldb.UnifiedSigsBit
+	}
+
 	ltndLog.Infof("SCB Recovery: created channel shell for ChannelPoint"+
 		"(%v), chan_type=%v", backup.FundingOutpoint, chanType)
 

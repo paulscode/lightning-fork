@@ -1093,7 +1093,7 @@ func (lc *LightningChannel) createSignDesc() error {
 		KeyDesc:       lc.channelState.LocalChanCfg.MultiSigKey,
 		WitnessScript: multiSigScript,
 		Output:        &lc.fundingOutput,
-		HashType:      txscript.SigHashAll,
+		HashType:      CommitSigHashType(lc.channelState.ChanType),
 		InputIndex:    0,
 	}
 
@@ -5099,7 +5099,16 @@ func genHtlcSigValidationJobs(chanState *channeldb.OpenChannel,
 					)
 				}
 
-				hashCache := input.NewTxSigHashesV0Only(successTx)
+				// The unified signature hash commits to the
+				// spent output, which the V0-only midstate
+				// does not carry; BIP143 ignores the fetcher,
+				// so naming it is right either way.
+				prevFetcher := txscript.NewCannedPrevOutputFetcher( //nolint:ll
+					htlc.ourPkScript, htlcAmt,
+				)
+				hashCache := txscript.NewTxSigHashes(
+					successTx, prevFetcher,
+				)
 				sigHash, err := txscript.CalcWitnessSigHash(
 					htlc.ourWitnessScript, hashCache,
 					sigHashType, successTx, 0,
@@ -5193,8 +5202,11 @@ func genHtlcSigValidationJobs(chanState *channeldb.OpenChannel,
 					)
 				}
 
-				hashCache := input.NewTxSigHashesV0Only(
-					timeoutTx,
+				prevFetcher := txscript.NewCannedPrevOutputFetcher( //nolint:ll
+					htlc.ourPkScript, htlcAmt,
+				)
+				hashCache := txscript.NewTxSigHashes(
+					timeoutTx, prevFetcher,
 				)
 				sigHash, err := txscript.CalcWitnessSigHash(
 					htlc.ourWitnessScript, hashCache,
@@ -5525,13 +5537,20 @@ func (lc *LightningChannel) ReceiveNewCommitment(commitSigs *CommitSigs) error {
 		lc.musigSessions.LocalSession = newLocalSession
 	} else {
 		multiSigScript := lc.signDesc.WitnessScript
+
+		// The unified signature hash commits to the spent output's
+		// scriptPubKey, so the fetcher has to carry the funding
+		// output itself rather than the witness script. BIP143 reads
+		// neither from the fetcher, so this is the right output to
+		// name either way.
 		prevFetcher := txscript.NewCannedPrevOutputFetcher(
-			multiSigScript, int64(lc.channelState.Capacity),
+			lc.fundingOutput.PkScript, lc.fundingOutput.Value,
 		)
 		hashCache := txscript.NewTxSigHashes(localCommitTx, prevFetcher)
 
 		sigHash, err := txscript.CalcWitnessSigHash(
-			multiSigScript, hashCache, txscript.SigHashAll,
+			multiSigScript, hashCache,
+			CommitSigHashType(lc.channelState.ChanType),
 			localCommitTx, 0, int64(lc.channelState.Capacity),
 		)
 		if err != nil {
@@ -6965,6 +6984,7 @@ func GetSignedCommitTx(inputs SignedCommitTxInputs,
 			inputs.SignDesc.WitnessScript,
 			inputs.OurKey.PubKey.SerializeCompressed(), ourSig,
 			inputs.TheirKey.PubKey.SerializeCompressed(), theirSig,
+			inputs.SignDesc.HashType,
 		)
 	}
 
@@ -8926,7 +8946,7 @@ func (lc *LightningChannel) CompleteCooperativeClose(
 			SerializeCompressed()
 		witness := input.SpendMultiSig(
 			lc.signDesc.WitnessScript, ourKey, localSig, theirKey,
-			remoteSig,
+			remoteSig, CommitSigHashType(lc.channelState.ChanType),
 		)
 		closeTx.TxIn[0].Witness = witness
 	}

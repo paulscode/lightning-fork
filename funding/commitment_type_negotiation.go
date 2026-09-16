@@ -84,6 +84,33 @@ func explicitNegotiateCommitmentType(channelType lnwire.ChannelType, local,
 
 	channelFeatures := lnwire.RawFeatureVector(channelType)
 
+	// The unified signature hash is orthogonal to the commitment type: it
+	// changes the digest every bilateral signature commits to, and nothing
+	// about the transactions themselves. Rather than double every case
+	// below, take it off, decide the commitment type from what is left,
+	// and let the caller keep the bit on the type it returns.
+	if channelFeatures.IsSet(lnwire.UnifiedSigsRequired) {
+		if !hasFeatures(local, remote, lnwire.UnifiedSigsOptional) {
+			return 0, errUnsupportedChannelType
+		}
+
+		// Not on a taproot channel. There the commitment signature is
+		// a MuSig2 partial signature over a BIP341 digest, and making
+		// that opt in is a wire change (a 65-byte signature in
+		// commitment_signed) rather than a different hash type. Until
+		// that is specified, refusing is better than agreeing to a
+		// channel whose two sides would sign different digests.
+		if channelFeatures.IsSet(lnwire.SimpleTaprootChannelsRequiredFinal) ||
+			channelFeatures.IsSet(lnwire.SimpleTaprootChannelsRequiredStaging) {
+
+			return 0, errUnsupportedChannelType
+		}
+
+		stripped := channelFeatures.Clone()
+		stripped.Unset(lnwire.UnifiedSigsRequired)
+		channelFeatures = *stripped
+	}
+
 	switch {
 	// Lease script enforcement + anchors zero fee + static remote key +
 	// zero conf + scid alias features only.
@@ -469,9 +496,15 @@ func implicitNegotiateCommitmentType(local,
 	// If both peers are signalling support for anchor commitments with
 	// zero-fee HTLC transactions, we'll use this type.
 	if hasFeatures(local, remote, lnwire.AnchorsZeroFeeHtlcTxOptional) {
-		chanType := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		bits := []lnwire.FeatureBit{
 			lnwire.AnchorsZeroFeeHtlcTxRequired,
 			lnwire.StaticRemoteKeyRequired,
+		}
+		if hasFeatures(local, remote, lnwire.UnifiedSigsOptional) {
+			bits = append(bits, lnwire.UnifiedSigsRequired)
+		}
+		chanType := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+			bits...,
 		))
 
 		return &chanType, lnwallet.CommitmentTypeAnchorsZeroFeeHtlcTx

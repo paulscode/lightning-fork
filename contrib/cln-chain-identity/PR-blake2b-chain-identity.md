@@ -5,7 +5,7 @@ which is where `v26.06.7-blake2b.4` and the unified-sigs work live. Retargeted
 from `v26.06.7-blake2b`, which is still at `893f767e8` and is not where the
 next release will come from. The series rebases onto `blake2b-unified` with no
 conflicts.
-Patch series: `0001`-`0005` in this directory (`git am *.patch`); the
+Patch series: `0001`-`0014` in this directory (`git am *.patch`); the
 lightning-fork-lab repository builds and tests it (`make cln`,
 `make cln-interop`).
 
@@ -31,10 +31,10 @@ has mainnet channels.
 
 ## Why the node needs this
 
-With the values as released, tested in a regtest lab against Lightning Fork
-on the same BLAKE2b chain (`v0.21.3-beta-blake2b.8` when the released build
-was tried, `.9` for the series; the `init` check did not change between
-them):
+Measured in a regtest lab against Lightning Fork on the same BLAKE2b chain.
+**These rows were taken on the `v26.06.7-blake2b` base** (`v0.21.3-beta-blake2b.8`
+for the released build, `.9` for the series; the `init` check did not change
+between them), which is what the series was first written against:
 
 | What | Released `v26.06.7-blake2b.3` | With this series |
 | --- | --- | --- |
@@ -48,6 +48,23 @@ them):
 
 Nothing in the protocol changes: only the constants, and one rule for a
 peer that sends no `networks` list.
+
+**On `blake2b-unified` those last four rows do not reproduce, and not because
+of anything in this series.** That branch signals `option_blake2b` as
+compulsory bit 68, which an lnd that does not know the bit must refuse, so the
+two do not peer at all; and it requires `option_unified_sigs` in the channel
+type, so even once they peer, an lnd that cannot negotiate it is told `Did not
+support channel_type [12,22]`. Both are independent of `chain_hash` and of this
+series. I mention it because applying these patches to `blake2b-unified` and
+pointing the result at a released Lightning Fork will show no peering, and that
+should not be mistaken for a regression here.
+
+Lightning Fork now names bit 68 and negotiates the channel type, which closes
+both from that side. With those changes, `blake2b-unified` plus this series
+peers, opens `channel_type [12,22,70]`, pays both ways, and closes both
+cooperatively and by force. That work is in Lightning Fork rather than in this
+PR, and it is not a prerequisite for merging this one: the two questions are
+separate, which is the point of raising it here rather than folding it in.
 
 ## What each commit does
 
@@ -119,10 +136,15 @@ peer that sends no `networks` list.
    `channel_announcement` both carry `chain_hash`, so it is now opt-in and
    renamed `--drop-peers-without-networks` for the action it takes.
 
-8. **doc: reserve an odd, high feature bit.** 32769 odd in `init` and
-   `node_announcement`, 32768 even in invoices and offers, adopting Chris
-   Guida's asymmetry and range and conceding the 2100/2101 this document
-   reserved before.
+8. **doc: the feature bits this chain uses, and why the numbers are wrong.**
+   `.4` shipped `option_blake2b` as bit 68 and `option_unified_sigs` as bit
+   70, so the document now describes 68/69 and 70/71 rather than the
+   32769/32768 an earlier revision reserved, or the 2100/2101 before that. A
+   number already on the wire is the number. It keeps the argument that 68 and
+   70 are the next pairs BOLT 9 will hand out, as an argument rather than as a
+   competing assignment, and it adopts Chris Guida's asymmetry, which matters
+   more than the range: odd in `init` and `node_announcement`, even inside
+   `channel_type`, neither in invoices or offers.
 
 9. **wallet: a dedicated flag for the case the wallet cannot answer.**
    `--restamp-wallet-for-this-chain`, because a wallet created after the fork
@@ -162,21 +184,28 @@ peer that sends no `networks` list.
 - Address formats, derivation paths, `bip70_name` (`main`, so `bitcoin-cli`
   and `getblockchaininfo` work as before), ports, dust and funding limits.
 - The `testnet` (testnet3) entry, which Knots no longer serves.
-- Replay protection. The chain's `SIGHASH_UNIFIED` (hash type bit `0x20`)
-  binds a signature to this chain; Lightning Fork opts in for every
-  transaction it signs alone (wallet sends, sweeps, anchors) and not where
-  the peer verifies under the protocol's fixed hash types. This series does
-  not touch signing: a follow-up in `hsmd`/`libwally` is needed for the same
-  policy, and until then this node's on-chain transactions remain
-  replayable on Bitcoin when their inputs exist there (pre-fork coins). The
-  document's section 4 states the policy.
+- Replay protection. `SIGHASH_UNIFIED` (hash type bit `0x20`) binds a
+  signature to this chain, and this series does not touch signing at all: the
+  branch it targets already implements it for the wallet and for new channels,
+  which is what `blake2b-unified` is for. The two are independent, and keeping
+  them independent is deliberate. Chain identity says which network a channel
+  belongs to; unified signing says which chain a signature can be replayed on.
+  A node can have either without the other, and this series is only the first.
+  The document's section 4 states the policy and section 5 the feature bits.
 
 ## Migration for existing users of the fork
 
-- Start once with `--database-upgrade=true`: the wallet is restamped with the
-  chain's `chain_hash`, one way. Without the flag the node logs what it found
-  and stops, so nobody upgrades a wallet by accident, least of all a Bitcoin
-  one that was pointed at this build by mistake.
+- A wallet that can show it followed this chain is restamped with the chain's
+  `chain_hash` on the next start, with no flag, because its own block table
+  settles the question: on mainnet the `chain_hash` came from the activation
+  block, so a wallet that was running across the fork has that block at that
+  height and one from the SHA256d chain has a different one. A wallet with a
+  different block there is refused and no flag overrides that.
+- A wallet created *after* activation has no record of that height and cannot
+  answer either way. That one needs `--restamp-wallet-for-this-chain`, once,
+  and it is a one-way door. Deliberately not `--database-upgrade=true`: at
+  least one distribution passes that unconditionally, so on those builds it
+  would never have guarded anything.
 - Channels opened before this build announced themselves with Bitcoin's
   `chain_hash`. The restamp clears their remote announcement signatures and
   removes the gossip store, so after both peers upgrade and reconnect each
@@ -185,8 +214,11 @@ peer that sends no `networks` list.
   peers. This was tested (below). Channels funded before the activation
   block stay unannounced, since gossipd ignores channels older than
   `when_lightning_became_cool` and such a channel exists on Bitcoin too.
-- Peers on the old identity, or on Bitcoin, are dropped at `init` from now
-  on, which is what the change is for.
+- A peer that names other chains but not this one is dropped at `init`, which
+  is what the change is for. A peer that names no chains at all is kept by
+  default: dropping those took out every `cln-application` dashboard, and
+  `chain_hash` in `open_channel` and `channel_announcement` is the isolation
+  regardless. `--drop-peers-without-networks` restores the stricter behaviour.
 - Invoices issued before the upgrade carry `lnbcrt`/`lnbc`; they are not
   payable afterwards. Reissue.
 
@@ -281,8 +313,11 @@ peer that sends no `networks` list.
 - Whether to keep the network name `bitcoin` (this series does, so
   `--network=bitcoin` and every script keep working) or add a `blake2b`
   network name as an alias.
-- Whether dropping silent peers should be the default (this series: yes,
-  matching Lightning Fork) or opt-in.
+- Whether dropping peers that name no networks should be opt-in, which is
+  where this series ended up after review, or the default. Opt-in keeps the
+  dashboards working and leaves the isolation to `chain_hash`, which carries
+  it in `open_channel` and `channel_announcement` anyway; the argument for
+  default-on is that the failure then happens at `init` rather than later.
 - The regtest/signet/testnet4 derivation: a tagged hash of genesis was
   chosen so the value is stable across regtest restarts; any other rule is
   fine as long as both implementations use it.
@@ -293,6 +328,11 @@ peer that sends no `networks` list.
 - The bookkeeper's CSV exports name the asset `btc` for the `bc` prefix
   (`plugins/bkpr/incomestmt.c`); what to call this chain's coin there
   (`btcb2`?) is the maintainer's choice and is not changed here.
-- Replay protection (`SIGHASH_UNIFIED` for transactions this node signs
-  alone) is the larger follow-up; see "What it deliberately does not
-  change".
+- Where the unified signing specification lives. The `v26.06.7-blake2b.4`
+  release notes say an independent implementation written from
+  `doc/unified-sighash.md` alone reproduces all 166 Knots digest vectors, but
+  that file is not in `blake2b-unified` and `git log --all` over this
+  repository finds no trace of it. If it is on connorslab's branch, a pointer
+  would help: Lightning Fork now negotiates the same channel type, and it was
+  written by reading `channel_type_sighash()` and `full_channel.c`, which is a
+  poor way for two implementations to agree on a signature digest.

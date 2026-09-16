@@ -235,6 +235,10 @@ type InitFundingReserveMsg struct {
 	// negotiated.
 	ScidAliasFeature bool
 
+	// UnifiedSigs is true if this channel's bilateral signatures opt into
+	// the unified signature hash, binding them to the BLAKE2b chain.
+	UnifiedSigs bool
+
 	// Memo is any arbitrary information we wish to store locally about the
 	// channel that will be useful to our future selves.
 	Memo []byte
@@ -1809,7 +1813,9 @@ func (l *LightningWallet) signCommitTx(pendingReservation *ChannelReservation,
 			WitnessScript: fundingWitnessScript,
 			KeyDesc:       ourKey,
 			Output:        fundingOutput,
-			HashType:      txscript.SigHashAll,
+			HashType: CommitSigHashType(
+				pendingReservation.partialState.ChanType,
+			),
 			SigHashes: input.NewTxSigHashesV0Only(
 				commitTx,
 			),
@@ -2207,8 +2213,7 @@ func (l *LightningWallet) verifyCommitSig(res *ChannelReservation,
 	// If this isn't a taproot channel, then we'll construct a segwit v0
 	// p2wsh sighash.
 	case !res.partialState.ChanType.IsTaproot():
-		hashCache := input.NewTxSigHashesV0Only(commitTx)
-		witnessScript, _, err := input.GenFundingPkScript(
+		witnessScript, fundingOut, err := input.GenFundingPkScript(
 			localKey.SerializeCompressed(),
 			remoteKey.SerializeCompressed(), channelValue,
 		)
@@ -2216,8 +2221,17 @@ func (l *LightningWallet) verifyCommitSig(res *ChannelReservation,
 			return err
 		}
 
+		// Name the funding output: the unified signature hash commits
+		// to its scriptPubKey and value, which a V0-only midstate does
+		// not carry. BIP143 reads neither from the fetcher.
+		prevFetcher := txscript.NewCannedPrevOutputFetcher(
+			fundingOut.PkScript, fundingOut.Value,
+		)
+		hashCache := txscript.NewTxSigHashes(commitTx, prevFetcher)
+
 		sigHash, err := txscript.CalcWitnessSigHash(
-			witnessScript, hashCache, txscript.SigHashAll,
+			witnessScript, hashCache,
+			CommitSigHashType(res.partialState.ChanType),
 			commitTx, 0, channelValue,
 		)
 		if err != nil {
