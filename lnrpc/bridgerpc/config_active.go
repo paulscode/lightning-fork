@@ -76,12 +76,18 @@ type Config struct {
 	// Spread is the fraction charged on top of the rate.
 	Spread float64 `long:"spread" description:"The fraction you keep, on top of the rate. Routing fees come out of this. Default 0.01 (1%)."`
 
-	// MaxSwapMsat caps a single swap, in millisatoshis of the incoming
-	// chain.
-	MaxSwapMsat uint64 `long:"maxswapmsat" description:"The most a single swap may be, in millisatoshis of the incoming chain."`
+	// MaxSwapMsat caps a single swap, in Bitcoin millisatoshis.
+	//
+	// Bitcoin either way round, because an operator thinks in one
+	// currency. The swap packages bound the outgoing leg in the units of
+	// the chain that leg is on, which is a different unit per direction,
+	// so this is converted for the direction that pays in BTCB2. One
+	// number used raw for both would cap two different amounts of value:
+	// at any plausible rate, a couple of hundred times apart.
+	MaxSwapMsat uint64 `long:"maxswapmsat" description:"The most a single swap may be, in Bitcoin millisatoshis. The same value is applied in both directions, converted at your rate."`
 
-	// MinSwapMsat floors a single swap.
-	MinSwapMsat uint64 `long:"minswapmsat" description:"The least a single swap may be, in millisatoshis of the incoming chain."`
+	// MinSwapMsat floors a single swap, in Bitcoin millisatoshis.
+	MinSwapMsat uint64 `long:"minswapmsat" description:"The least a single swap may be, in Bitcoin millisatoshis. The same value is applied in both directions, converted at your rate."`
 
 	// OutgoingCLTVLimit caps the total CLTV of the outgoing route, in
 	// blocks of the outgoing chain.

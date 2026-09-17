@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -221,13 +222,22 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 		invert: invert, inventory: s.res.inventory,
 	}
 
+	// The swap bounds are configured in Bitcoin millisatoshis and applied
+	// to the outgoing leg, which is BTCB2 on this direction. One number
+	// used raw for both would cap two different amounts of value.
+	policy := s.res.quote
+	if invert {
+		policy.MinSwapMsat = s.inBTCB2(policy.MinSwapMsat)
+		policy.MaxSwapMsat = s.inBTCB2(policy.MaxSwapMsat)
+	}
+
 	sd.quoter = &quote.Quoter{
 		In: sd.in, Out: sd.out, Store: s.journal,
 		Price:   s.pricer(sd),
 		Spacing: quote.Rates(s.spacing(invert)),
 		Room:    s.headroom(sd),
 		Margin:  s.res.margin,
-		Policy:  s.res.quote,
+		Policy:  policy,
 	}
 	sd.runner = &runner.Runner{
 		Driver: &driver.Driver{
@@ -240,6 +250,25 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 	}
 
 	return sd
+}
+
+// inBTCB2 converts an amount of Bitcoin millisatoshis into BTCB2 ones at the
+// posted rate, which is quoted as Bitcoin per BTCB2.
+//
+// Saturating rather than wrapping: a cap that overflowed to a small number
+// would refuse everything, and one that wrapped to a huge number would cap
+// nothing at all, which is the worse of the two.
+func (s *service) inBTCB2(btcMsat uint64) uint64 {
+	if btcMsat == 0 || s.cfg.FixedRate <= 0 {
+		return btcMsat
+	}
+
+	converted := float64(btcMsat) / s.cfg.FixedRate
+	if converted >= math.MaxUint64 {
+		return math.MaxUint64
+	}
+
+	return uint64(converted)
 }
 
 // pricer combines the posted rate with what the paying side is holding.
@@ -371,6 +400,13 @@ func (s *service) committedOn(ctx context.Context, sd *side) (uint64, error) {
 		return 0, fmt.Errorf("reading pending swaps: %w", err)
 	}
 
+	// Every swap ever driven was remembered and nothing forgot any of
+	// them, so the map grew for the life of the process. Pruning here
+	// rather than when a swap finishes because this is the one place that
+	// already knows the whole unfinished set, and a swap that leaves it
+	// has by definition stopped being a commitment.
+	s.forgetAllBut(pending)
+
 	var total uint64
 	for _, rec := range pending {
 		switch rec.State {
@@ -425,6 +461,27 @@ func (s *service) sideNameOf(ctx context.Context, hash node.Hash,
 	s.remember(hash, sd)
 
 	return sd.name, nil
+}
+
+// forgetAllBut drops remembered swaps that are no longer unfinished.
+func (s *service) forgetAllBut(pending []store.Record) {
+	s.sideMu.Lock()
+	defer s.sideMu.Unlock()
+
+	if len(s.sideOf) == 0 {
+		return
+	}
+
+	keep := make(map[node.Hash]struct{}, len(pending))
+	for _, rec := range pending {
+		keep[rec.Hash] = struct{}{}
+	}
+
+	for hash := range s.sideOf {
+		if _, ok := keep[hash]; !ok {
+			delete(s.sideOf, hash)
+		}
+	}
 }
 
 // remember records which direction a swap belongs to.
@@ -488,12 +545,16 @@ func (s *service) sizeInventory(ctx context.Context) {
 		// peer whose link was not up at startup reads as zero, and
 		// treating that as the answer for the life of the process
 		// would refuse the direction thereafter.
-		if held < s.res.quote.MinSwapMsat {
+		// The side's own minimum, not the configured one: held is in
+		// the units of the chain this side pays on, and the configured
+		// bound is in Bitcoin. Comparing them raw asks whether a BTCB2
+		// balance clears a Bitcoin floor, which is not a question.
+		floor := sd.quoter.Policy.MinSwapMsat
+		if held < floor {
 			log.Debugf("Bridge cannot pay a swap on %s yet (%d "+
 				"msat against a %d msat minimum), so it will "+
 				"refuse that direction until the paying node "+
-				"has outbound capacity", sd.name, held,
-				s.res.quote.MinSwapMsat)
+				"has outbound capacity", sd.name, held, floor)
 
 			continue
 		}

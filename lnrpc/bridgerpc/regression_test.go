@@ -1125,3 +1125,139 @@ func TestASwapThatHasAlreadyPaidCommitsNothing(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 8. The swap bounds mean one amount of value, not one number.
+//
+// The swap packages bound the outgoing leg in the units of the chain that leg
+// is on, which is a different unit per direction. One configured pair shared
+// by both capped two different amounts of value, a couple of hundred times
+// apart at any plausible rate. Same class as the headroom bug, found by asking
+// the same question of a different pair of numbers.
+// ---------------------------------------------------------------------------
+
+// The swap bounds cap the outgoing leg, in the units of the chain that leg is
+// on. One pair of numbers shared by both directions caps two different
+// amounts of value.
+func TestSwapBoundsCapTheSameValueBothWays(t *testing.T) {
+	t.Parallel()
+
+	cfg := usable()
+	cfg.FixedRate = 0.003
+	cfg.MaxSwapMsat = 150_000_000
+
+	svc := serviceFor(t, cfg, &fakeNode{synced: true},
+		remote(nil, nil, nil))
+
+	caps := map[string]uint64{}
+	for _, sd := range svc.sides {
+		caps[sd.name] = sd.quoter.Policy.MaxSwapMsat
+	}
+
+	// toBitcoin pays in BTC, so its cap is the configured number.
+	// toBlake2b pays in BTCB2, worth 0.003 BTC each, so the same value is
+	// a much larger number of them.
+	wantB2 := uint64(float64(cfg.MaxSwapMsat) / cfg.FixedRate)
+
+	if caps["toBitcoin"] != cfg.MaxSwapMsat {
+		t.Errorf("toBitcoin cap %d, wanted %d", caps["toBitcoin"],
+			cfg.MaxSwapMsat)
+	}
+	if caps["toBlake2b"] != wantB2 {
+		t.Errorf("toBlake2b cap %d msat of BTCB2, wanted %d: the two "+
+			"directions cap the same value, and a BTCB2 "+
+			"millisatoshi is not a Bitcoin one",
+			caps["toBlake2b"], wantB2)
+	}
+}
+
+// sizeInventory compares a balance against a minimum swap. The balance is in
+// the units of the chain that side pays on, so the minimum has to be the
+// side's own converted one and not the configured Bitcoin figure.
+func TestSizingUsesTheSidesOwnMinimum(t *testing.T) {
+	t.Parallel()
+
+	cfg := usable()
+	cfg.FixedRate = 0.003
+	cfg.MinSwapMsat = 1_000_000
+
+	svc := serviceFor(t, cfg, &fakeNode{synced: true},
+		remote(nil, nil, nil))
+
+	var reverse *side
+	for _, sd := range svc.sides {
+		if sd.invert {
+			reverse = sd
+		}
+	}
+
+	// A BTCB2 balance that clears the Bitcoin figure but not the real
+	// BTCB2 minimum. Sizing against it would call the side stocked while
+	// it cannot fund one swap.
+	held := uint64(2_000_000)
+	if held >= reverse.quoter.Policy.MinSwapMsat {
+		t.Fatalf("the balance %d already clears the converted "+
+			"minimum %d, so this no longer covers what it was "+
+			"written for", held, reverse.quoter.Policy.MinSwapMsat)
+	}
+
+	reverse.balance = func(context.Context) (uint64, error) {
+		return held, nil
+	}
+	svc.sizeInventory(context.Background())
+
+	if reverse.isSized() {
+		t.Errorf("a BTCB2 balance of %d was taken as a working "+
+			"balance because it cleared a Bitcoin floor of %d",
+			held, cfg.MinSwapMsat)
+	}
+}
+
+// Which direction each swap belongs to is remembered so headroom need not
+// decode an invoice on every quote. Nothing forgot any of them, so the map
+// grew for the life of the process: small per swap, unbounded over months.
+func TestFinishedSwapsAreForgotten(t *testing.T) {
+	t.Parallel()
+
+	svc := sidedService(t, 10_000_000)
+	ctx := context.Background()
+
+	now := time.Now()
+	pending := store.Record{
+		Hash: [32]byte{1}, State: swap.Funded, OutgoingCLTVLimit: 40,
+		Invoice: "lnblakert1payme", IncomingMsat: 3_000,
+		OutgoingMsat: 1_000, Rate: 1, Spread: 0.01,
+		Created: now, Updated: now,
+	}
+	if err := svc.journal.Put(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remember a swap the journal has never heard of, standing in for one
+	// that has since finished.
+	svc.remember([32]byte{99}, svc.sides[0])
+
+	if _, err := svc.committedOn(ctx, svc.sides[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.sideMu.Lock()
+	_, stale := svc.sideOf[[32]byte{99}]
+	_, live := svc.sideOf[[32]byte{1}]
+	size := len(svc.sideOf)
+	svc.sideMu.Unlock()
+
+	if stale {
+		t.Error("a swap that is no longer unfinished is still " +
+			"remembered, so the map grows for the life of the " +
+			"process")
+	}
+	if !live {
+		t.Error("an unfinished swap was forgotten, which would make " +
+			"headroom decode its invoice again on every quote")
+	}
+	if size != 1 {
+		t.Errorf("the map holds %d entries, wanted only the "+
+			"unfinished swap", size)
+	}
+}
