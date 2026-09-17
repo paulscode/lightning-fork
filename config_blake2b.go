@@ -18,6 +18,18 @@ import (
 func applyBlake2bChainConfig(cfg *Config) error {
 	params := &cfg.ActiveNetParams
 
+	// allow-peers-without-networks became the default when option_blake2b
+	// moved to its even bit, and is kept only so that a configuration
+	// written before that still starts. Asking for both at once is asking
+	// for opposite things, and only a configuration written after the
+	// change can do it, so saying so is better than picking one.
+	if cfg.AllowPeersWithoutNetworks && cfg.RequirePeerNetworks {
+		return fmt.Errorf("allow-peers-without-networks and " +
+			"require-peer-networks contradict each other; " +
+			"allow-peers-without-networks is deprecated and is " +
+			"now the default, so drop it")
+	}
+
 	if cfg.Bitcoin.Blake2bActivationHeight != 0 {
 		if cfg.Bitcoin.MainNet {
 			return fmt.Errorf("bitcoin.blake2b-activation-height cannot " +

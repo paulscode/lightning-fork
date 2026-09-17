@@ -21,9 +21,12 @@ import (
 // reversal, and the bit had to change with it.
 //
 // Pinned here because reverting it would break nothing visible: peers that
-// understand this chain would still connect, tests would still pass, and the
-// separation would quietly fall back to RequirePeerNetworks, a heuristic that
-// drops any peer sending no networks TLV even though sending it is optional.
+// understand this chain would still connect and tests would still pass. When
+// the odd bit was being sent, the separation had quietly fallen back to
+// RequirePeerNetworks, a heuristic that drops any peer sending no networks
+// TLV even though sending it is optional. That heuristic is now off by
+// default, precisely because this bit does the job properly, so there is
+// nothing left to fall back to.
 func TestBlake2bIsAdvertisedAsRequired(t *testing.T) {
 	t.Parallel()
 

@@ -68,19 +68,22 @@ Consequences:
 
 BOLT 1 lets a node list the chains it serves in its `init` message. Core
 Lightning sends it and drops a peer with no chain in common; `lnd` never
-implemented it. Lightning Fork always sends its chain hash, and by default
-disconnects a peer that does not list it, **including a peer that sends no
-list at all**.
+implemented it. Lightning Fork always sends its chain hash, and disconnects a
+peer that lists chains without ours among them.
 
-Since `chain_hash` is shared, this no longer separates the two chains: bit 68
-does that, and it does it from the other side, so it works whatever this node
-is configured to do. The `networks` check now distinguishes both chains from
-some third chain entirely, and the silent-peer rule is defence in depth.
+Since `chain_hash` is shared, that check no longer separates the two chains;
+it separates both of them from some third chain entirely. Bit 68 separates
+the two, and does it from the other side, so it works whatever this node is
+configured to do.
 
-`--allow-peers-without-networks` relaxes this to "disconnect only a peer that
-lists other chains". Sending the TLV is optional, so the silent-peer rule has
-false positives, including client applications that speak the wire protocol
-only to reach a node's RPC.
+A peer that sends **no list at all** is kept. It used to be disconnected, on
+the reasoning that `lnd` never sent the field so a silent peer was probably a
+stock `lnd` node on the other chain. That was a heuristic standing in for a
+mechanism: sending the list is optional in BOLT 1, so it also dropped client
+applications that speak the wire protocol only to reach a node's RPC.
+`--require-peer-networks` restores the old behaviour for an operator who wants
+it. `--allow-peers-without-networks` is accepted and ignored, so a
+configuration written before the change still starts.
 
 ## The activation-header check
 
@@ -140,7 +143,7 @@ network with no filter servers; both are refused at configuration time.
 | --- | --- |
 | `bitcoin.blake2b-activation-height=N` | Required on regtest and simnet; must match the node's `-testactivationheight=blake2b@N`. Overrides the node-reported height on testnet4. Refused on mainnet. |
 | `bitcoin.chain-hash-override=<hex>` | Regtest only: advertise this chain hash instead of the built-in one, for interoperability testing. |
-| `allow-peers-without-networks` | Off by default; see above. |
+| `require-peer-networks` | Off by default; see above. Disconnects peers that send no networks list. `allow-peers-without-networks` is accepted and ignored, so configurations written before this still start. |
 
 Everything else is `lnd` as documented upstream. Data directories, macaroon
 paths, `lncli` and the RPC surface are unchanged; `lncli getinfo` reports

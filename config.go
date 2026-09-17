@@ -430,7 +430,9 @@ type Config struct {
 
 	NoBackupArchive bool `long:"no-backup-archive" description:"If set to true, channel backups will be deleted or replaced rather than being archived to a separate location."`
 
-	AllowPeersWithoutNetworks bool `long:"allow-peers-without-networks" description:"Keep a peer whose init message carries no networks list. By default such a peer is disconnected: Bitcoin and Bitcoin BLAKE2b share a genesis block, and a peer that does not say which chain it serves is most likely a Bitcoin SHA256d node. A peer that lists other chains but not ours is always disconnected. Set this only on a test network when interoperating with an implementation that does not send the field."`
+	RequirePeerNetworks bool `long:"require-peer-networks" description:"Disconnect a peer whose init message carries no networks list. Off by default: the chains are separated by option_blake2b, an even feature bit that a node on the other chain must disconnect on, so refusing silent peers as well costs more than it protects. Sending the networks list is optional in BOLT 1, so this refuses clients that simply do not send it. A peer that lists other chains but not ours is always disconnected, whatever this is set to."`
+
+	AllowPeersWithoutNetworks bool `long:"allow-peers-without-networks" description:"DEPRECATED: now the default and ignored. Silent peers are kept unless require-peer-networks is set." hidden:"true"`
 
 	FeeURL string `long:"feeurl" description:"DEPRECATED: Use 'fee.url' option. Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network. Must be set for neutrino on mainnet." hidden:"true"`
 

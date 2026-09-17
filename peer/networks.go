@@ -28,21 +28,28 @@ type ErrPeerNetworksMissing struct {
 // Error implements the error interface.
 func (e *ErrPeerNetworksMissing) Error() string {
 	return fmt.Sprintf("peer did not advertise the chains it serves; ours "+
-		"is %v (a peer that sends no networks is most likely a Bitcoin "+
-		"SHA256d node sharing our genesis block; "+
-		"allow-peers-without-networks keeps such peers)", e.Ours)
+		"is %v (require-peer-networks is set, and sending the list is "+
+		"optional in BOLT 1, so this refuses peers that simply do not "+
+		"send it; option_blake2b is what separates the chains)", e.Ours)
 }
 
 // checkPeerNetworks decides whether a peer's BOLT 1 `networks` list is
 // compatible with the chain this node runs on.
 //
-// Bitcoin and Bitcoin BLAKE2b share a genesis block, so the chain hash in
-// open_channel and gossip is the only protocol-level difference between a
-// peer on the other chain and one of ours, and by then a connection and its
-// gossip exchange are already under way. The init `networks` list is the one
-// place to tell them apart at the handshake. Core Lightning sends it; LND
-// does not, so a silent peer is most likely a stock LND node on the SHA256d
-// chain. When required is set, silence is refused too.
+// A peer that lists chains and does not list ours is always refused. That is
+// the BOLT 1 rule and it separates this node from a chain that is neither of
+// the two here; it does not separate the two, because Bitcoin and Bitcoin
+// BLAKE2b share a genesis block and therefore send the same chain hash.
+//
+// Silence is a different question and is not refused by default. It used to
+// be, on the reasoning that LND never sent the list so a silent peer was
+// probably a stock LND node on the SHA256d chain. That was a heuristic
+// standing in for a mechanism, and it drops anything that simply does not
+// send an optional field, including client applications that speak the wire
+// protocol only to reach a node's RPC. The mechanism is option_blake2b, an
+// even feature bit: a node on the other chain must disconnect on seeing it,
+// by BOLT 1's own rule, whatever it sends in its networks list. required
+// restores the old behaviour for an operator who wants it.
 func checkPeerNetworks(theirs []chainhash.Hash, ours chainhash.Hash,
 	required bool) error {
 

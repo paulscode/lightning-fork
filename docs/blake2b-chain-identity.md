@@ -64,11 +64,16 @@ not including ours is still disconnected. That check no longer distinguishes
 the two chains, since both send the same value; it distinguishes both of them
 from a node on some other chain entirely.
 
-A peer that sends no `networks` TLV at all is also disconnected by default
-(`--allow-peers-without-networks` keeps it). That rule predates bit 68 and is
-now defence in depth rather than the mechanism: sending the TLV is optional,
-so it has false positives, including client applications that speak the wire
-protocol only to reach a node's RPC.
+A peer that sends no `networks` TLV at all is kept. Lightning Fork used to
+disconnect it, on the reasoning that lnd never sent the field so a silent peer
+was probably a stock lnd node on the other chain. That is a heuristic standing
+in for a mechanism, and once bit 68 is the mechanism it costs more than it
+protects: sending the TLV is optional in BOLT 1, so refusing silence drops
+anything that simply omits an optional field, including client applications
+that speak the wire protocol only to reach a node's RPC.
+`--require-peer-networks` restores the old behaviour for an operator who wants
+it. A second implementation does not need to match this to interoperate; it is
+a local policy rather than an identity constant.
 
 ## 3. Gossip: a floor at the activation height
 

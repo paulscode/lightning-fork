@@ -195,3 +195,61 @@ func TestBlake2bChainIdentityFileOption(t *testing.T) {
 		require.Contains(t, err.Error(), "absolute")
 	})
 }
+
+// Silent peers are kept by default. The chains are separated by
+// option_blake2b, an even feature bit a node on the other chain must
+// disconnect on, and refusing every peer that omits an optional BOLT 1 field
+// as well costs more than it protects: it drops client applications that speak
+// the wire protocol only to reach a node's RPC.
+//
+// This used to be the other way round, when the odd form of option_blake2b
+// separated nothing and this heuristic was carrying the separation on its own.
+func TestSilentPeersAreKeptByDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams, nil)
+	require.NoError(t, applyBlake2bChainConfig(cfg))
+	require.False(t, cfg.RequirePeerNetworks,
+		"a peer that sends no networks list is refused by default; "+
+			"that is a heuristic standing in for option_blake2b")
+}
+
+// An operator who wants the old behaviour can still have it, and asking for
+// both at once is asking for opposite things.
+func TestPeerNetworksOptionsThatContradict(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the strict option alone is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams,
+			func(c *Config) { c.RequirePeerNetworks = true })
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+		require.True(t, cfg.RequirePeerNetworks)
+	})
+
+	t.Run("the deprecated option alone still starts", func(t *testing.T) {
+		t.Parallel()
+
+		// A configuration written before the change must not stop the
+		// node from booting. It now asks for what already happens.
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams,
+			func(c *Config) { c.AllowPeersWithoutNetworks = true })
+		require.NoError(t, applyBlake2bChainConfig(cfg))
+		require.False(t, cfg.RequirePeerNetworks)
+	})
+
+	t.Run("both together are refused", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := blake2bTestConfig(t, chainreg.BitcoinMainNetParams,
+			func(c *Config) {
+				c.AllowPeersWithoutNetworks = true
+				c.RequirePeerNetworks = true
+			})
+		err := applyBlake2bChainConfig(cfg)
+		require.Error(t, err, "opposite requests were accepted, and "+
+			"one of them was silently ignored")
+		require.Contains(t, err.Error(), "contradict")
+	})
+}
