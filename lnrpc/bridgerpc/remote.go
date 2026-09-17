@@ -5,6 +5,7 @@ package bridgerpc
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/paulscode/lightning-fork-bridge/node"
@@ -37,6 +39,7 @@ type Remote struct {
 	main     lnrpc.LightningClient
 	invoices invoicesrpc.InvoicesClient
 	router   routerrpc.RouterClient
+	chain    chainrpc.ChainKitClient
 }
 
 // NewRemote wraps a connection to the Bitcoin node.
@@ -45,6 +48,7 @@ func NewRemote(conn grpc.ClientConnInterface) *Remote {
 		main:     lnrpc.NewLightningClient(conn),
 		invoices: invoicesrpc.NewInvoicesClient(conn),
 		router:   routerrpc.NewRouterClient(conn),
+		chain:    chainrpc.NewChainKitClient(conn),
 	}
 }
 
@@ -392,9 +396,8 @@ func (r *Remote) LookupPayment(ctx context.Context, hash node.Hash) (
 
 // Check confirms the node answers and is synced to its chain.
 //
-// Worth calling at startup. Dialling succeeds against a node that is not there,
-// so without this the first sign of a wrong address or a node still catching up
-// is a swap that has already accepted someone's money.
+// Both conditions, so it reports whether the bridge can quote right now. Use
+// Reachable at startup instead.
 func (r *Remote) Check(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -406,6 +409,26 @@ func (r *Remote) Check(ctx context.Context) error {
 	return nil
 }
 
+// Reachable confirms the node answers, without requiring that it has caught up.
+//
+// This is what startup needs. Dialling succeeds against a node that is not
+// there, so a wrong address, a wrong macaroon or a node that is simply down
+// has to be found here rather than by a swap that has already accepted
+// someone's money. Being merely behind is different: it is temporary, it is
+// already refused at quote time, and refusing to start on it would mean a
+// Bitcoin node restart takes this one down too.
+func (r *Remote) Reachable(ctx context.Context) (BlockInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	info, err := r.BestBlock(ctx)
+	if err != nil {
+		return BlockInfo{}, fmt.Errorf("bitcoin node: %w", err)
+	}
+
+	return info, nil
+}
+
 // Balance is what that node can still send over its channels.
 //
 // Local balance rather than capacity: what the far end holds is not something
@@ -413,21 +436,39 @@ func (r *Remote) Check(ctx context.Context) error {
 // the side is better funded than it is and quote a spread too thin for what it
 // can actually do.
 func (r *Remote) Balance(ctx context.Context) (uint64, error) {
-	bal, err := r.main.ChannelBalance(
-		ctx, &lnrpc.ChannelBalanceRequest{},
+	// ListChannels rather than ChannelBalance, because the aggregate
+	// includes each channel's reserve and channels whose peer is offline.
+	// Neither can carry a payment, and counting them lets the bridge quote
+	// a swap it cannot pay: that fails safely, but it wastes an HTLC and
+	// the payer's time on a promise it should not have made.
+	channels, err := r.main.ListChannels(
+		ctx, &lnrpc.ListChannelsRequest{ActiveOnly: true},
 	)
 	if err != nil {
-		return 0, fmt.Errorf("reading the Bitcoin node's outgoing "+
-			"balance: %w", err)
+		return 0, fmt.Errorf("reading the Bitcoin node's channels: %w",
+			err)
 	}
 
-	msat := bal.GetLocalBalance().GetMsat()
-	if msat > math.MaxInt64 {
-		return 0, fmt.Errorf("the Bitcoin node reports an implausible "+
-			"balance of %d msat", msat)
+	var outbound uint64
+	for _, c := range channels.GetChannels() {
+		if c == nil {
+			continue
+		}
+
+		spendable := c.GetLocalBalance() -
+			int64(c.GetLocalChanReserveSat())
+		if spendable <= 0 {
+			continue
+		}
+		if uint64(spendable) > math.MaxInt64/1000 {
+			return 0, fmt.Errorf("the Bitcoin node reports an "+
+				"implausible balance of %d sat", spendable)
+		}
+
+		outbound += uint64(spendable) * 1000
 	}
 
-	return msat, nil
+	return outbound, nil
 }
 
 // BestBlock is the tip that node sees, with the time it was mined.
@@ -457,4 +498,54 @@ func (r *Remote) BestBlock(ctx context.Context) (BlockInfo, error) {
 	}
 
 	return out, nil
+}
+
+// BlockAt is a block's header by height, for seeding the chain observer.
+//
+// It goes through ChainKit, which a stock lnd only serves when built with the
+// chainrpc tag. A node without it answers Unimplemented, which the caller
+// treats as "no history available" and falls back to learning from tips. That
+// is slow rather than wrong, so it is worth trying and not worth requiring.
+func (r *Remote) BlockAt(ctx context.Context, height int32) (BlockInfo, error) {
+	if height < 0 {
+		return BlockInfo{}, fmt.Errorf("height %d is not a block",
+			height)
+	}
+
+	hash, err := r.chain.GetBlockHash(
+		ctx, &chainrpc.GetBlockHashRequest{BlockHeight: int64(height)},
+	)
+	if err != nil {
+		return BlockInfo{}, fmt.Errorf("the Bitcoin node's hash for "+
+			"height %d: %w", height, err)
+	}
+
+	hdr, err := r.chain.GetBlockHeader(
+		ctx, &chainrpc.GetBlockHeaderRequest{
+			BlockHash: hash.GetBlockHash(),
+		},
+	)
+	if err != nil {
+		return BlockInfo{}, fmt.Errorf("the Bitcoin node's header at "+
+			"height %d: %w", height, err)
+	}
+
+	raw := hdr.GetRawBlockHeader()
+	if len(raw) < 80 {
+		return BlockInfo{}, fmt.Errorf("the Bitcoin node returned a "+
+			"%d byte header at height %d", len(raw), height)
+	}
+
+	// Bytes 68 to 72 of a block header are its timestamp, little endian.
+	// Decoding the four bytes rather than the whole header keeps this
+	// independent of which chain's header format this build parses, which
+	// matters because this binary's own parser is the BLAKE2b one.
+	ts := binary.LittleEndian.Uint32(raw[68:72])
+
+	return BlockInfo{
+		Height: height, Time: time.Unix(int64(ts), 0),
+
+		// Historical, so by definition already in the chain.
+		SyncedToChain: true,
+	}, nil
 }

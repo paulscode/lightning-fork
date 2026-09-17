@@ -89,6 +89,12 @@ func (f *fakeNode) deps() *Deps {
 				SyncedToChain: f.synced,
 			}, f.htErr
 		},
+		BlockAt: func(_ context.Context, h int32) (BlockInfo, error) {
+			return BlockInfo{
+				Height: h, Time: f.blockTime,
+				SyncedToChain: true,
+			}, nil
+		},
 		ChannelBalance: func(context.Context) (uint64, error) {
 			return f.balance, f.balanceErr
 		},

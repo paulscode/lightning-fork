@@ -75,6 +75,8 @@ func (s *server) bridgeDeps(
 
 		BestBlock: s.bridgeBestBlock,
 
+		BlockAt: s.bridgeBlockAt,
+
 		ChannelBalance: s.bridgeChannelBalance,
 	}
 }
@@ -301,6 +303,35 @@ func (s *server) bridgeBestBlock(_ context.Context) (bridgerpc.BlockInfo,
 	return info, nil
 }
 
+// bridgeBlockAt is a block's header by height, for seeding the chain observer.
+//
+// Straight to the chain backend, which is the only thing here that has the
+// history. The alternative is learning block spacing from tips as they arrive,
+// which takes a hundred blocks before the bridge will quote at all.
+func (s *server) bridgeBlockAt(_ context.Context, height int32) (
+	bridgerpc.BlockInfo, error) {
+
+	hash, err := s.cc.ChainIO.GetBlockHash(int64(height))
+	if err != nil {
+		return bridgerpc.BlockInfo{}, fmt.Errorf("the hash at height "+
+			"%d: %w", height, err)
+	}
+
+	block, err := s.cc.ChainIO.GetBlock(hash)
+	if err != nil {
+		return bridgerpc.BlockInfo{}, fmt.Errorf("the block at height "+
+			"%d: %w", height, err)
+	}
+
+	return bridgerpc.BlockInfo{
+		Height: height,
+		Time:   block.Header.Timestamp,
+
+		// Historical, so by definition already in the chain.
+		SyncedToChain: true,
+	}, nil
+}
+
 // bridgeChannelBalance is what this node can still send over its channels.
 //
 // Local balance rather than total capacity: the inventory policy prices how
@@ -328,7 +359,20 @@ func (s *server) bridgeChannelBalance(_ context.Context) (uint64, error) {
 			continue
 		}
 
-		outbound += uint64(channel.LocalCommitment.LocalBalance)
+		// The channel reserve is the operator's own balance but is not
+		// spendable: the commitment must leave it behind. Counting it
+		// lets the bridge quote a swap it cannot pay, which fails
+		// safely but wastes an HTLC and the payer's time.
+		reserve := lnwire.NewMSatFromSatoshis(
+			channel.LocalChanCfg.ChanReserve,
+		)
+		if channel.LocalCommitment.LocalBalance <= reserve {
+			continue
+		}
+
+		outbound += uint64(
+			channel.LocalCommitment.LocalBalance - reserve,
+		)
 	}
 
 	return outbound, nil

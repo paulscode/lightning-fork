@@ -30,9 +30,15 @@ const pollInterval = 30 * time.Second
 func (s *service) start() {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
-	// Sample once before anything else so the observers are not empty for
-	// a whole interval.
+	// History first, then the tip. The observers need a hundred blocks in
+	// the current epoch before they will estimate, and reading the ones
+	// that already exist is the difference between quoting in seconds and
+	// quoting tomorrow.
+	s.backfill(s.ctx)
 	s.sample(s.ctx)
+
+	// After the balances can be read, because that is what it sizes from.
+	s.sizeInventory(s.ctx)
 
 	s.wg.Add(1)
 	go func() {
@@ -88,6 +94,12 @@ func (s *service) poll(ctx context.Context) {
 		}
 
 		s.sample(ctx)
+
+		// Retried until each direction has been sized from a real
+		// balance. A node whose peer was still reconnecting at startup
+		// reports nothing to pay with, and that must not be the answer
+		// for the life of the process.
+		s.sizeInventory(ctx)
 	}
 }
 
@@ -231,4 +243,89 @@ func (s *service) drive(sd *side, hash node.Hash) {
 				sd.name, hex.EncodeToString(hash[:]), err)
 		}
 	}()
+}
+
+// backfillBlocks is how many recent blocks are read into each observer at
+// startup.
+//
+// Enough to clear the hundred-sample floor the observer applies to the current
+// difficulty epoch, with room for the window straddling an epoch boundary,
+// where the blocks before it count towards the previous epoch instead.
+const backfillBlocks = 150
+
+// backfill seeds both chain observers from history.
+//
+// Without this an observer learns only from tips as they arrive, one per poll,
+// and refuses to estimate until it has a hundred in the current epoch. On a
+// chain with ten minute blocks that is most of a day after every restart, and
+// the bridge refuses every swap throughout. The headers already exist; reading
+// them turns that wait into a few seconds.
+//
+// A failure is logged and not fatal. The Bitcoin node serves these through
+// ChainKit, which a stock lnd only has when built with the chainrpc tag, so a
+// node without it falls back to the slow path rather than stopping the bridge
+// from running at all.
+func (s *service) backfill(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	for _, src := range []struct {
+		name string
+		tip  func(context.Context) (BlockInfo, error)
+		at   func(context.Context, int32) (BlockInfo, error)
+		obs  *chainrate.Observer
+	}{
+		{"blake2b", s.local.BestBlock, s.local.BlockAt, s.lfChain},
+		{"bitcoin", s.remote.BestBlock, s.remote.BlockAt, s.btcChain},
+	} {
+		tip, err := src.tip(ctx)
+		if err != nil {
+			log.Warnf("Bridge could not read the %s tip to "+
+				"backfill from: %v", src.name, err)
+
+			continue
+		}
+
+		from := tip.Height - backfillBlocks + 1
+		if from < 0 {
+			from = 0
+		}
+
+		var added int
+		for h := from; h <= tip.Height; h++ {
+			if ctx.Err() != nil {
+				break
+			}
+
+			info, err := src.at(ctx, h)
+			if err != nil {
+				// The first failure is the informative one:
+				// on a node without ChainKit every height
+				// fails the same way, and a log line each
+				// would bury everything else.
+				log.Infof("Bridge cannot read %s history, so "+
+					"it will learn block spacing from new "+
+					"blocks instead, which takes a while: "+
+					"%v", src.name, err)
+
+				break
+			}
+			if info.Time.IsZero() {
+				continue
+			}
+
+			s.chainMu.Lock()
+			if err := src.obs.Add(chainrate.Block{
+				Height: info.Height, Time: info.Time,
+			}); err == nil {
+				added++
+			}
+			s.chainMu.Unlock()
+		}
+
+		if added > 0 {
+			log.Infof("Bridge read %d %s blocks of history", added,
+				src.name)
+		}
+	}
 }

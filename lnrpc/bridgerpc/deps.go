@@ -74,6 +74,17 @@ type Deps struct {
 	// and a stale one says an HTLC has more time left than it does.
 	BestBlock func(ctx context.Context) (BlockInfo, error)
 
+	// BlockAt is the header of a block by height, for seeding the chain
+	// observer at startup.
+	//
+	// Without it the observer can only learn from tips as they arrive, one
+	// per poll, and it needs a hundred of them in the current difficulty
+	// epoch before it will estimate. On a chain with ten minute blocks
+	// that is most of a day after every restart, during which the bridge
+	// refuses every swap. Reading the headers that already exist turns
+	// that into a few seconds.
+	BlockAt func(ctx context.Context, height int32) (BlockInfo, error)
+
 	// ChannelBalance is what this node can still send over its channels.
 	//
 	// It is the side the bridge's own money leaves from, so it is what the

@@ -83,9 +83,48 @@ type Config struct {
 	// MinSwapMsat floors a single swap.
 	MinSwapMsat uint64 `long:"minswapmsat" description:"The least a single swap may be, in millisatoshis of the incoming chain."`
 
+	// OutgoingCLTVLimit caps the total CLTV of the outgoing route, in
+	// blocks of the outgoing chain.
+	//
+	// It has to cover the destination's own final hop delta plus every hop
+	// in between. The swap packages default it to 80, which is what a
+	// stock lnd asks for on the final hop alone, so a bridge using that
+	// number cannot pay an ordinary invoice at all. Raising it is not
+	// free: the incoming leg has to outlive the whole budget, so a larger
+	// one demands more incoming CLTV, and past a point no incoming CLTV
+	// within the cap is enough. Validate checks that combination.
+	OutgoingCLTVLimit uint32 `long:"outgoingcltvlimit" description:"The most CLTV a payout route may use, in blocks of the outgoing chain. Must cover the destination's final hop delta plus the hops before it."`
+
+	// InventoryTargetMsat is the working balance each paying side is sized
+	// against, in millisatoshis of that side's chain.
+	//
+	// Zero means derive it from what that side actually holds when the
+	// bridge starts. That is the useful default: the shipped one is a
+	// mainnet-sized half a bitcoin, and on a node holding less than its
+	// floor the bridge refuses every swap while reporting only that it is
+	// below a number the operator never chose.
+	InventoryTargetMsat uint64 `long:"inventorytargetmsat" description:"The working balance each paying side is priced against. Zero derives it from what that side holds at startup."`
+
+	// InventoryFloorMsat is how much of that is held back for swaps
+	// already in flight. Zero derives it alongside the target.
+	InventoryFloorMsat uint64 `long:"inventoryfloormsat" description:"How much of the working balance is reserved for swaps already in flight. Zero derives it from the target."`
+
 	// Deps is what the node provides.
 	Deps *Deps
 }
+
+// DefaultFloorFraction is the share of the working balance held back for swaps
+// already in flight, when the bounds are derived rather than configured. It is
+// the ratio the shipped defaults use.
+const DefaultFloorFraction = 10
+
+// DefaultOutgoingCLTVLimit is the route budget when the operator names none.
+//
+// A stock lnd asks for 80 blocks on the final hop, so the budget has to be
+// comfortably above that to leave room for the hops before it. This is roughly
+// that plus three ordinary hops, and it stays well inside what the incoming
+// leg can be asked to outlive.
+const DefaultOutgoingCLTVLimit = 200
 
 // maxSpread bounds what an operator may post as a fee.
 //
@@ -122,6 +161,20 @@ func (c *Config) resolve() resolved {
 		rate:      rate.DefaultPolicy,
 		lfChain:   chainrate.BlakeParams,
 		btcChain:  chainrate.BitcoinParams,
+	}
+
+	r.quote.OutgoingCLTVLimit = DefaultOutgoingCLTVLimit
+	if c.OutgoingCLTVLimit != 0 {
+		r.quote.OutgoingCLTVLimit = c.OutgoingCLTVLimit
+	}
+
+	if c.InventoryTargetMsat != 0 {
+		r.inventory.TargetOutgoingMsat = c.InventoryTargetMsat
+		r.inventory.FloorOutgoingMsat =
+			c.InventoryTargetMsat / DefaultFloorFraction
+	}
+	if c.InventoryFloorMsat != 0 {
+		r.inventory.FloorOutgoingMsat = c.InventoryFloorMsat
 	}
 
 	if c.MaxSwapMsat != 0 {

@@ -235,6 +235,48 @@ func TestAtTargetSpacing(t *testing.T) {
 	}
 }
 
+// The swap packages default the route budget to 80 blocks, which is exactly
+// what a stock lnd asks for on the final hop alone. A bridge using that number
+// refuses every ordinary invoice, which the lab found by trying one.
+func TestTheRouteBudgetCanPayAStockNodesInvoice(t *testing.T) {
+	t.Parallel()
+
+	const stockFinalHopDelta = 80
+
+	c := usable()
+	r := c.resolve()
+
+	if r.quote.OutgoingCLTVLimit <= stockFinalHopDelta {
+		t.Errorf("the route budget is %d blocks against a final hop "+
+			"delta of %d, which leaves nothing for the hops "+
+			"between and refuses every ordinary invoice",
+			r.quote.OutgoingCLTVLimit, stockFinalHopDelta)
+	}
+
+	// And it still has to be a budget the incoming leg can outlive.
+	if err := c.Validate(); err != nil {
+		t.Errorf("the default route budget does not validate: %v", err)
+	}
+}
+
+// Raising the budget is not free: the incoming leg has to outlive it, and past
+// a point no incoming CLTV within the cap is enough. That has to be refused at
+// startup rather than discovered per swap.
+func TestARouteBudgetTooLargeToOutliveIsRefused(t *testing.T) {
+	t.Parallel()
+
+	c := usable()
+	c.OutgoingCLTVLimit = 5000
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("a route budget nothing can outlive was accepted")
+	}
+	if !strings.Contains(err.Error(), "refuse every swap") {
+		t.Errorf("the refusal should say what it costs: %v", err)
+	}
+}
+
 // The operator's spread is a floor, not a ceiling: the oracle widens for
 // volatility and the inventory policy for how drained the paying side is, and
 // both are reasons to charge more than the posted fee rather than less.

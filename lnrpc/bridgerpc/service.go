@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -47,6 +49,16 @@ type side struct {
 	// configured one. The rate is posted as BTC per BTCB2, so the
 	// direction paying out in BTCB2 uses one over it.
 	invert bool
+
+	// inventory prices how drained this side is. It is per side because
+	// the two sides hold different amounts, on chains whose units are not
+	// the same: one policy for both would price one of them against the
+	// other's balance.
+	inventory inventory.Policy
+
+	// sized is set once the inventory bounds have been derived from a
+	// real balance, so it is done once rather than tracking the balance.
+	sized bool
 }
 
 // service is the bridge, running inside the node.
@@ -97,6 +109,18 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 		cfg: cfg, res: cfg.resolve(), local: local, remote: remote,
 	}
 
+	// The journal's directory is created rather than required. It defaults
+	// to a subdirectory of the network directory that nothing else makes,
+	// so on a fresh node the first start would otherwise fail on a
+	// directory the operator never asked for and cannot be expected to
+	// know about.
+	if dir := filepath.Dir(cfg.Journal); dir != "" {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return nil, fmt.Errorf("creating the swap journal's "+
+				"directory %s: %w", dir, err)
+		}
+	}
+
 	var err error
 	if s.journal, err = store.Open(cfg.Journal); err != nil {
 		return nil, fmt.Errorf("opening the swap journal %s: %w",
@@ -144,7 +168,7 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 
 	sd := &side{
 		name: name, in: in, out: out, balance: balance, dir: dir,
-		invert: invert,
+		invert: invert, inventory: s.res.inventory,
 	}
 
 	sd.quoter = &quote.Quoter{
@@ -205,7 +229,7 @@ func (s *service) pricer(sd *side) quote.Pricer {
 			return rate.Reading{}, err
 		}
 
-		pos, err := s.res.inventory.Spread(inventory.State{
+		pos, err := sd.inventory.Spread(inventory.State{
 			OutgoingMsat: held, At: time.Now(),
 		}, sd.dir, time.Now())
 		if err != nil {
@@ -284,5 +308,78 @@ func (s *service) close() {
 	if s.journal != nil {
 		_ = s.journal.Close()
 		s.journal = nil
+	}
+}
+
+// sizeInventory derives each side's working balance from what it actually
+// holds, unless the operator named one.
+//
+// The shipped default is a mainnet-sized half a bitcoin with a tenth of it
+// held back. On a node holding less than that floor the bridge refuses every
+// swap, and says only that it is below a number the operator never chose,
+// which is the least useful way to be right. What the side holds now is a far
+// better estimate of what it will hold, and an operator who knows better can
+// still say so.
+//
+// Run once at startup rather than per quote: the target is what the position is
+// priced against, and one that moved with the balance would price a drained
+// side as though it were full.
+func (s *service) sizeInventory(ctx context.Context) {
+	if s.cfg.InventoryTargetMsat != 0 {
+		return
+	}
+
+	for _, sd := range s.sides {
+		if sd.sized {
+			continue
+		}
+
+		held, err := sd.balance(ctx)
+		if err != nil {
+			log.Warnf("Bridge could not read the %s paying "+
+				"balance to size its inventory, so it keeps "+
+				"the default: %v", sd.name, err)
+
+			continue
+		}
+		if held == 0 {
+			// Not settled yet, so this is retried on every poll
+			// rather than taken as final. A peer whose link was
+			// not up at startup reads as zero, and sizing a
+			// direction as empty for the life of the process
+			// because of a few seconds of reconnection would
+			// refuse every swap on it thereafter.
+			log.Debugf("Bridge has nothing to pay with on %s yet, "+
+				"so it will refuse that direction until the "+
+				"paying node has outbound capacity", sd.name)
+
+			continue
+		}
+
+		sd.inventory.TargetOutgoingMsat = held
+		sd.inventory.FloorOutgoingMsat = held / DefaultFloorFraction
+		if s.cfg.InventoryFloorMsat != 0 {
+			sd.inventory.FloorOutgoingMsat = s.cfg.InventoryFloorMsat
+		}
+
+		// A policy derived from a balance still has to be one the
+		// package will take: the discount and rebalance cost were
+		// scaled against the operator's spread, and the floor has to
+		// stay below the target.
+		if err := sd.inventory.Valid(); err != nil {
+			log.Warnf("Bridge could not size %s inventory from a "+
+				"balance of %d msat, so it keeps the default: "+
+				"%v", sd.name, held, err)
+			sd.inventory = s.res.inventory
+
+			continue
+		}
+
+		sd.sized = true
+
+		log.Infof("Bridge sized %s against %d msat of paying "+
+			"balance, holding back %d msat for swaps in flight",
+			sd.name, sd.inventory.TargetOutgoingMsat,
+			sd.inventory.FloorOutgoingMsat)
 	}
 }

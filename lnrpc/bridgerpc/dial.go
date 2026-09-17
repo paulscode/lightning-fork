@@ -99,16 +99,3 @@ func dialBitcoinNode(cfg *Config) (*grpc.ClientConn, error) {
 
 	return conn, nil
 }
-
-// checkBitcoinNode confirms the node answers and has caught up with its chain.
-//
-// Worth doing before the bridge quotes anything. Dialling succeeds against a
-// node that is not there, so without this the first sign of a wrong address, a
-// wrong macaroon or a node still syncing is a swap that has already accepted
-// someone's money.
-func checkBitcoinNode(ctx context.Context, r *Remote) error {
-	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
-	defer cancel()
-
-	return r.Check(ctx)
-}

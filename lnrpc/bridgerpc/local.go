@@ -59,7 +59,7 @@ func (l *Local) ready() error {
 		l.deps.SettleInvoice == nil, l.deps.CancelInvoice == nil,
 		l.deps.DecodeInvoice == nil, l.deps.PayInvoice == nil,
 		l.deps.LookupPayment == nil, l.deps.BestBlock == nil,
-		l.deps.ChannelBalance == nil:
+		l.deps.BlockAt == nil, l.deps.ChannelBalance == nil:
 
 		return ErrNoDeps
 	}
@@ -237,6 +237,15 @@ func (l *Local) BestBlock(ctx context.Context) (BlockInfo, error) {
 	return l.deps.BestBlock(ctx)
 }
 
+// BlockAt is a block's header by height, for seeding the chain observer.
+func (l *Local) BlockAt(ctx context.Context, height int32) (BlockInfo, error) {
+	if err := l.ready(); err != nil {
+		return BlockInfo{}, err
+	}
+
+	return l.deps.BlockAt(ctx, height)
+}
+
 // Balance is what this node can still send over its channels.
 func (l *Local) Balance(ctx context.Context) (uint64, error) {
 	if err := l.ready(); err != nil {
@@ -377,8 +386,9 @@ func payment(s PaymentStatus) node.Payment {
 
 // Check confirms this node can answer and has caught up with its chain.
 //
-// Worth calling before the bridge opens: the first sign of a node still
-// catching up should not be a swap that has already accepted someone's money.
+// Both conditions, so it reports whether the bridge can quote right now. Use
+// Reachable at startup instead: a node that has just started is behind its
+// chain for a while, and that is not a reason to refuse to run.
 func (l *Local) Check(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -388,4 +398,24 @@ func (l *Local) Check(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Reachable confirms this node answers, without requiring that it has caught
+// up.
+//
+// The distinction matters at startup. Every node is behind its chain for a
+// while after it starts, so refusing to run on that would make the daemon
+// unbootable whenever it restarts, which is every time. Being behind is
+// already refused where it counts: BlockHeight declines to report a height
+// that may be stale, so no swap is sized against one.
+func (l *Local) Reachable(ctx context.Context) (BlockInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	info, err := l.BestBlock(ctx)
+	if err != nil {
+		return BlockInfo{}, fmt.Errorf("local node: %w", err)
+	}
+
+	return info, nil
 }

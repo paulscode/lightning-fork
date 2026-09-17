@@ -118,34 +118,47 @@ func (s *Server) Start() error {
 		return nil
 	}
 
-	conn, err := dialBitcoinNode(s.cfg)
-	if err != nil {
-		return err
+	conn, dialErr := dialBitcoinNode(s.cfg)
+	if dialErr != nil {
+		return dialErr
 	}
 	s.conn = conn
 	s.remote = NewRemote(conn)
 
-	// Both nodes are checked before anything is served. Dialling succeeds
-	// against a node that is not there, so without this the first sign of
-	// a wrong address, a wrong macaroon or a node still syncing is a swap
-	// that has already accepted someone's money.
+	// Both nodes have to answer before anything is served. Dialling
+	// succeeds against a node that is not there, so a wrong address, a
+	// wrong macaroon or a node that is down has to be found here rather
+	// than by a swap that has already accepted someone's money. That is a
+	// refusal to start: a bridge that cannot reach one of its two nodes
+	// cannot honour a quote, and starting anyway advertises one.
 	//
-	// This is a refusal to start rather than a warning. A bridge that
-	// cannot reach one of its two nodes cannot honour a quote, and
-	// starting anyway would mean advertising one.
+	// Being behind the chain is deliberately not part of this. Every node
+	// is behind for a while after it starts, so refusing on that would
+	// make the daemon unbootable on every restart, and this one runs
+	// inside the node it is checking. It is already refused where it
+	// counts: no swap is sized against a height that may be stale. Say so
+	// and carry on.
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 
-	if err := s.local.Check(ctx); err != nil {
+	local, err := s.local.Reachable(ctx)
+	if err != nil {
 		_ = conn.Close()
 
 		return fmt.Errorf("the bridge cannot use this node: %w", err)
 	}
-	if err := checkBitcoinNode(ctx, s.remote); err != nil {
+	remote, err := s.remote.Reachable(ctx)
+	if err != nil {
 		_ = conn.Close()
 
 		return fmt.Errorf("the bridge cannot use the Bitcoin node at "+
 			"%s: %w", s.cfg.BitcoinRPCHost, err)
+	}
+	if !local.SyncedToChain || !remote.SyncedToChain {
+		log.Infof("Bridge will refuse to quote until both nodes catch "+
+			"up (this node synced=%v at height %d, Bitcoin node "+
+			"synced=%v at height %d)", local.SyncedToChain,
+			local.Height, remote.SyncedToChain, remote.Height)
 	}
 
 	svc, err := newService(s.cfg, s.local, s.remote)
