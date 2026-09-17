@@ -170,16 +170,26 @@ replayed on the SHA256d chain, whichever coins they spend. Taproot key-path
 spends, which normally carry no hash type byte, carry `ALL|UNIFIED` (`0x21`)
 and are one byte longer.
 
-It does not opt in where a peer must be able to verify the signature under
-the protocol's fixed hash types: commitment transaction signatures, the HTLC
-signatures exchanged with the peer, and cooperative closes. Those are
-bilateral, and a channel opened with a peer that does not implement the
-opt-in has to stay valid to that peer. A commitment transaction that spends
-a funding output funded from pre-fork coins therefore remains replayable
-until the channel type that requires the opt-in on both sides exists; until
-then, prefer funding channels from coins received after the fork. The
-justice transactions handed to a watchtower are signed the legacy way too,
-because the tower reconstructs their witnesses without a hash type byte.
+Signatures a peer verifies are a different matter, because both sides have to
+compute the same digest: commitment signatures, the HTLC signatures exchanged
+with the peer, and cooperative closes. Those follow the channel type. A channel
+that negotiated `option_unified_sigs` signs them `0x21`, or `0xa3` for the
+peer's half of a second-level HTLC on an anchor channel; a channel that did not
+signs them the way BOLT 3 already says, so a peer that has never heard of the
+opt-in stays able to verify.
+
+That channel type is what closes the replay hole for bilateral signatures, and
+it is negotiated by default with any peer that supports it. What is left is a
+channel funded from pre-fork coins on a channel type *without* the opt-in,
+which is now only reachable with a peer that cannot do it. Prefer funding from
+coins received after the activation.
+
+The justice transactions handed to a watchtower are signed the legacy way,
+because the tower reconstructs their witnesses without a hash type byte. That
+is safe for a reason worth stating: such a transaction spends an output created
+by a commitment transaction that was itself signed with the opt-in, so on the
+SHA256d chain that output does not exist and there is nothing to replay
+against.
 
 A channel funded before the fork is the one thing this cannot protect: its
 funding output exists on both chains, and its commitment transactions carry

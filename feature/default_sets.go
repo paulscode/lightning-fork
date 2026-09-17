@@ -23,7 +23,10 @@ var defaultSetDesc = setDesc{
 	// rule rather than a new one, and needs no cooperation from the other
 	// side. Until this change the separation rested on
 	// RequirePeerNetworks, which is a heuristic: it drops any peer that
-	// sends no networks TLV, and sending it is optional.
+	// sends no networks TLV, and sending it is optional. That is now off by
+	// default precisely because this bit does the job, so there is no
+	// longer a second thing quietly covering for it. Reverting this to the
+	// odd bit would leave the two chains on one network.
 	//
 	// Safe for nodes already in the field. The check a peer applies is
 	// whether the bit is *known*, not whether the peer sets it too, and

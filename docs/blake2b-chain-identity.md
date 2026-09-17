@@ -97,12 +97,22 @@ this chain: it commits to `TaggedHash("UnifiedSighash", message)` over a
 BIP 341-shaped message that covers every spent output's value and
 scriptPubKey.
 
-Signatures a node makes **alone** opt in unconditionally past the activation:
-on-chain sends, funding inputs it contributes, sweeps of its own outputs,
-anchor spends, and its own half of any second-level transaction it
-broadcasts. These are `ALL | UNIFIED` (`0x21`), and `0x21` also for taproot
-key-path spends, which use a 65-byte signature because `SIGHASH_DEFAULT`
-cannot carry the bit. No peer verifies these, so no peer has to agree.
+Signatures a node makes **alone** opt in past the activation: on-chain sends,
+funding inputs it contributes, sweeps of its own outputs, anchor spends, and
+its own half of any second-level transaction it broadcasts. These are
+`ALL | UNIFIED` (`0x21`), and `0x21` also for taproot key-path spends, which
+use a 65-byte signature because `SIGHASH_DEFAULT` cannot carry the bit. No peer
+verifies these, so no peer has to agree.
+
+One exception, and it is deliberate: the justice transaction handed to a
+watchtower keeps the pre-activation hash type, because the tower reconstructs
+the witness from a fixed-size blob with no room for the byte. That is safe
+because such a transaction spends an output created by a commitment
+transaction already signed with the opt-in, so the output does not exist on the
+chain that did not upgrade and there is nothing to replay against. An
+implementation with a different tower protocol may opt these in too; nothing
+here depends on the choice. The same reasoning covers a sweep of a
+second-level HTLC output, which this node does opt in.
 
 Signatures a **peer** verifies are governed by `channel_type`. A channel that
 negotiated `option_unified_sigs` signs them with the hash type BOLT 3 already
@@ -150,6 +160,7 @@ chain:
 | mainnet | `blake` | `lnblake10n1...` |
 | testnet4 | `tblake` | `lntblake...` |
 | signet | `tbsblake` | `lntbsblake...` |
+| simnet | `sblake` | `lnsblake...` |
 | regtest | `blakert` | `lnblakert...` |
 
 An invoice with Bitcoin's prefix (`lnbc`, `lntb`, `lntbs`, `lnbcrt`) is
