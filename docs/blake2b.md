@@ -28,28 +28,41 @@ format, so nothing a Lightning node normally checks can tell them apart.
 a node indistinguishable from a Bitcoin node, and the failure is not an error
 message but funds sent to the wrong chain.
 
-Lightning Fork therefore keeps two identities apart:
+Lightning Fork keeps `chain_hash` as the genesis hash both chains share, and
+separates them in the four places it actually matters:
 
 | What | Value | Used for |
 | --- | --- | --- |
-| Genesis hash | unchanged | Identifying the connected node's network (the wallet backend compares block 0) |
-| BOLT `chain_hash`, mainnet | `0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb`, the first BLAKE2b block | `init` networks, `open_channel`, gossip, channel backups |
-| BOLT `chain_hash`, testnet4 / regtest / others | a BIP-340 tagged hash of the network's genesis (tag `Lightning Fork chain_hash`) | same; stable across testnet restarts |
+| Genesis hash and BOLT `chain_hash` | unchanged, and the same value the other chain uses | `init` networks, `open_channel`, gossip, channel backups. **Does not distinguish the two chains anywhere.** |
+| `option_blake2b`, bit 68, even | set in `init` and `node_announcement` | Peering. A node that does not know the bit must hang up, per BOLT 1 |
+| Gossip height floor | 961,640 | `channel_announcement` below the activation is ignored |
+| `option_unified_sigs`, bit 70 | inside `channel_type` | Channels: both sides sign with `SIGHASH_UNIFIED` set |
 | Invoice prefix, mainnet | `lnblake` | BOLT 11 invoices |
 | Invoice prefix, testnet4 | `lntblake` | |
 | Invoice prefix, regtest | `lnblakert` | |
+
+Until 2026-09-17 this daemon used a `chain_hash` of its own and that was what
+kept the chains apart. `docs/blake2b-chain-identity.md` section 8 explains the
+change and what to do if you implemented the old values.
 
 Consequences:
 
 - A Bitcoin invoice (`lnbc…`) is refused with a message naming the SHA256
   network. A Lightning Fork invoice is refused by every Bitcoin
   implementation, which is the intended failure.
-- `open_channel`, `channel_announcement` and `channel_update` from a Bitcoin
-  node carry the genesis hash and are ignored.
-- Channel backups (`channel.backup`) written by this daemon carry the
-  BLAKE2b chain hash. A backup from a Bitcoin `lnd` is refused: its channels
-  were funded on the other chain with peers on the other chain, and nothing
-  here could close them safely.
+- A node on the SHA256d chain never gets as far as sending `open_channel` or
+  gossip: it disconnects at `init` on bit 68. Its announcements would not be
+  ignored on `chain_hash` grounds if they did arrive, because it sends the
+  same `chain_hash` this node does; what covers them is the height floor for
+  pre-activation channels and the funding output lookup for the rest.
+- BOLT 12 offers are the gap: an offer names chains by `chain_hash`, so one
+  minted on either chain reads as valid and for this chain. See section 6 of
+  the chain-identity document.
+- Channel backups (`channel.backup`) written by this daemon carry the shared
+  chain hash, and backups written before the change carry the old value; both
+  are accepted, per network. A backup from a Bitcoin `lnd` carries the same
+  value too, so what keeps its channels out is `option_unified_sigs` in the
+  channel type rather than the hash.
 
 ### The `init` networks list
 
@@ -57,12 +70,17 @@ BOLT 1 lets a node list the chains it serves in its `init` message. Core
 Lightning sends it and drops a peer with no chain in common; `lnd` never
 implemented it. Lightning Fork always sends its chain hash, and by default
 disconnects a peer that does not list it, **including a peer that sends no
-list at all**, because a silent peer is almost certainly a Bitcoin `lnd`
-node sharing our genesis block.
+list at all**.
+
+Since `chain_hash` is shared, this no longer separates the two chains: bit 68
+does that, and it does it from the other side, so it works whatever this node
+is configured to do. The `networks` check now distinguishes both chains from
+some third chain entirely, and the silent-peer rule is defence in depth.
 
 `--allow-peers-without-networks` relaxes this to "disconnect only a peer that
-lists other chains". Use it only on a test network, to interoperate with an
-implementation that does not send the field.
+lists other chains". Sending the TLV is optional, so the silent-peer rule has
+false positives, including client applications that speak the wire protocol
+only to reach a node's RPC.
 
 ## The activation-header check
 
@@ -95,7 +113,7 @@ temporary block-size reduction as the node reports it (`active`, `height`,
 {
   "state": "confirmed",
   "network": "mainnet",
-  "chain_hash": "0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb",
+  "chain_hash": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
   "activation_height": 961640,
   "activation_hash": "0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb",
   "updated_at": "2026-09-12T23:00:00Z"

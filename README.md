@@ -20,10 +20,13 @@ networks handshake, and the configuration options. It builds against
 [`paulscode/btcd-blake2b`](https://github.com/paulscode/btcd-blake2b), which
 parses the 164-byte header and computes the BLAKE2b block id.
 
-The identity constants another implementation needs to agree with (chain
-hashes, invoice prefixes, the `init` networks rule, which signatures opt
-into `SIGHASH_UNIFIED`, reserved feature bits) are in
-[docs/blake2b-chain-identity.md](docs/blake2b-chain-identity.md).
+The identity constants another implementation needs to agree with are in
+[docs/blake2b-chain-identity.md](docs/blake2b-chain-identity.md): the feature
+bit that separates the two chains at `init`, the gossip height floor, which
+signatures opt into `SIGHASH_UNIFIED` and under which channel type, and the
+invoice prefixes. `chain_hash` is the genesis hash both chains share, and
+section 8 of that document covers the change away from a distinct one, since
+this daemon shipped the older design first.
 
 The node mints BOLT 12 offers and serves and pays them over onion
 messages, which is how a mining pool that pays to offers pays a miner.

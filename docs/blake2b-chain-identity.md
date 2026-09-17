@@ -13,49 +13,129 @@ height, including the genesis block, is shared with Bitcoin, which is the
 whole problem: BOLT 1, 2, 7 and 11 identify a chain by its genesis hash or
 a prefix derived from it, and on this chain those are Bitcoin's.
 
+> **This document changed substantially on 2026-09-17.** Until then it
+> specified a `chain_hash` of this chain's own, derived from the activation
+> block or from a tagged hash, and said that `chain_hash` was what kept the
+> two chains apart. That design has been withdrawn in favour of keeping the
+> shared genesis hash and separating the chains in the four specific places
+> it actually matters. Section 8 says why, and what to do if you implemented
+> the old version. The spec discussion is
+> [lightning-blake2b/bolts#1](https://github.com/lightning-blake2b/bolts/pull/1).
+
 ## 1. `chain_hash`
 
-BOLT 1's `networks` record, BOLT 2's `open_channel`, BOLT 7's channel
-announcements and updates, and channel backups all carry a 32-byte
-`chain_hash`. On this chain it is **not** the genesis hash.
+`chain_hash` is **the genesis hash, unchanged**:
+`000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f` on
+mainnet, and each test network's own genesis on the others. It is the same
+value the chain that did not upgrade uses.
 
-| Network | `chain_hash` (hex, in the order `getblockhash` prints) | Derivation |
+This is deliberate. A change of proof of work is not a change of chain, and
+giving this chain a `chain_hash` of its own would ask every node, wallet and
+tool to agree a new 32-byte identifier for something that only ever mattered
+in a few specific places. Those places are addressed directly instead, in
+sections 2 to 5.
+
+The consequence to keep in mind while reading the rest: **`chain_hash` does
+not separate the two chains anywhere.** Two nodes on different chains agree
+on it in `init`, in `open_channel`, and in every channel announcement. Any
+reasoning of the form "that case is already covered, because `chain_hash`
+differs" is wrong here, and was the source of more than one bug.
+
+## 2. `init`: `option_blake2b`, bit 68
+
+Every node on this chain sets feature bit **68**, the even form of
+`option_blake2b`, in `init` and in `node_announcement`. It does not set 69.
+
+Even is the point. BOLT 1 obliges a peer that does not know an even feature
+bit to close the connection, so a node that has not been updated for this
+chain hangs up by itself, without knowing why and without this node having to
+decide anything. The separation is symmetric and needs no cooperation from
+the other side. Measured: a stock lnd on the SHA256d chain refuses a
+Lightning Fork node with `feature vector contains unknown required features:
+[68]`.
+
+This is what `chain_hash` used to do, and it is the one place where an even
+bit is right despite BOLT 9's usual direction of travel. The usual argument
+against starting at the compulsory end is that it refuses peers before there
+is anything to be compatible with. Here refusing them is the entire purpose.
+
+The `networks` TLV still carries `chain_hash`, and a peer that lists chains
+not including ours is still disconnected. That check no longer distinguishes
+the two chains, since both send the same value; it distinguishes both of them
+from a node on some other chain entirely.
+
+A peer that sends no `networks` TLV at all is also disconnected by default
+(`--allow-peers-without-networks` keeps it). That rule predates bit 68 and is
+now defence in depth rather than the mechanism: sending the TLV is optional,
+so it has false positives, including client applications that speak the wire
+protocol only to reach a node's RPC.
+
+## 3. Gossip: a floor at the activation height
+
+A node ignores any `channel_announcement` whose `short_channel_id` names a
+block height **below 961,640**. At the activation height and above is
+ordinary.
+
+A funding output from before the change of proof of work exists for nodes
+that did not upgrade too, and its spend may happen where this node cannot
+see it, so a channel announced against one would sit in the graph forever. A
+channel funded after the activation elsewhere fails its funding output lookup
+here anyway; one funded before it would not.
+
+The rule applies to this node's own announcements as well, which is intended:
+a channel of ours funded before the activation is in the same position.
+
+## 4. Channels: `option_unified_sigs`, bit 70 in `channel_type`
+
+The chain's `SIGHASH_UNIFIED` (hash type bit `0x20`) binds a signature to
+this chain: it commits to `TaggedHash("UnifiedSighash", message)` over a
+BIP 341-shaped message that covers every spent output's value and
+scriptPubKey.
+
+Signatures a node makes **alone** opt in unconditionally past the activation:
+on-chain sends, funding inputs it contributes, sweeps of its own outputs,
+anchor spends, and its own half of any second-level transaction it
+broadcasts. These are `ALL | UNIFIED` (`0x21`), and `0x21` also for taproot
+key-path spends, which use a 65-byte signature because `SIGHASH_DEFAULT`
+cannot carry the bit. No peer verifies these, so no peer has to agree.
+
+Signatures a **peer** verifies are governed by `channel_type`. A channel that
+negotiated `option_unified_sigs` signs them with the hash type BOLT 3 already
+specifies for that signature, plus `SIGHASH_UNIFIED`:
+
+| Signature | BOLT 3 | With the opt-in |
 | --- | --- | --- |
-| mainnet | `0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb` | the block id of block 961,640, the first BLAKE2b block |
-| testnet4 | `572c94664c77fb4ce6a9c4ee50ed8f0eb1bd363061342194ac66fca694aa63a6` | `TaggedHash("Lightning Fork chain_hash", genesis)` |
-| signet | `c283e28a744edd1bf7a47946620de35ae2e8ac84dc0a2b21e29f1ebf36ec6589` | same |
-| regtest | `2594d57b43169a2856ded0623840f0863b9e967b936f6f3d7945da28d909ab1a` | same |
+| Commitment transaction | `SIGHASH_ALL` | `0x21` |
+| Cooperative close | `SIGHASH_ALL` | `0x21` |
+| Second-level HTLC sent to the peer, channel without `option_anchors` | `SIGHASH_ALL` | `0x21` |
+| Second-level HTLC sent to the peer, channel with `option_anchors` | `SIGHASH_SINGLE\|SIGHASH_ANYONECANPAY` | `0xa3` |
+| Second-level HTLC, the broadcaster's own half | `SIGHASH_ALL` | `0x21` |
 
-`TaggedHash` is BIP 340's: `SHA256(SHA256(tag) || SHA256(tag) || msg)`,
-with the tag as ASCII. Byte order matters: `genesis` is the 32-byte genesis
-block id in its internal (wire) order, which is the reverse of what
-`getblockhash` prints, and the 32-byte digest is taken as a block id in
-that same internal order, so the table above shows it reversed. On the
-wire (`init`, `open_channel`, gossip, BOLT 12) every `chain_hash` is sent
-in internal order, exactly like Bitcoin's genesis hash is. For regtest:
-`TaggedHash("Lightning Fork chain_hash", reverse(0f9188f1...2206))` gives the
-digest `1aab09d9...9425`, which is the wire value, printed as `2594d57b...ab1a`.
-Mainnet uses the activation block's id
-rather than a tagged hash so that the value is a fact about the chain
-itself, checkable against any node with `getblockhash 961640`; the test
-networks have no fixed activation block (regtest chooses its height per
-run), so they derive from their genesis instead.
+The last two rows are one transaction. An HTLC-timeout or HTLC-success
+transaction is spent by a 2-of-2 and carries two signatures, and on an anchor
+channel they are not the same hash type: only the half pre-signed by the peer
+is `SIGHASH_SINGLE|SIGHASH_ANYONECANPAY`, because that is what lets the
+broadcaster attach fees to a transaction someone else signed. Its witness is
 
-Two nodes with different `chain_hash` values do not share a chain and must
-not open channels or relay gossip to each other. A node whose `init` lists
-Bitcoin's genesis hash, or lists nothing, is a Bitcoin node.
+    <> <remotehtlcsig 0xa3> <localhtlcsig 0x21> <> <witness script>
 
-## 2. `init` networks
+and both values are confirmed on chain between Lightning Fork and an
+unmodified Core Lightning. A single value quoted for "the second-level HTLC
+signature" is wrong, and an implementation that signs its own half `0xa3`
+produces a transaction that is valid and malleable by a third party.
 
-Every `init` message carries the `networks` TLV (type 1) with the single
-`chain_hash` above. On receiving `init`, a node disconnects a peer whose
-list does not contain its `chain_hash`. A peer that sends no list at all is
-also disconnected by default: LND never sent the record, so a silent peer is
-almost certainly a Bitcoin LND node that shares the genesis block. An
-implementation may offer a switch to tolerate silent peers for testing; it
-should not be the default on mainnet.
+The opt-in is not a property of the commitment type, and is not the
+operator's to choose: it is added to whatever channel type is negotiated,
+named or implicit, whenever both peers support it. Taproot channels are the
+exception and are refused, because there the commitment signature is a MuSig2
+partial signature over a BIP341 digest, so opting in would be a wire change
+rather than a hash type, and two sides would sign different digests.
 
-## 3. Invoice prefix
+A channel funded from coins that existed before the fork, on a channel type
+without the opt-in, remains replayable through its commitment transactions.
+Prefer funding from coins received after the activation.
+
+## 5. Invoices: the BOLT 11 prefix
 
 BOLT 11's human-readable part is `ln` followed by a network prefix. On this
 chain:
@@ -68,85 +148,76 @@ chain:
 | regtest | `blakert` | `lnblakert...` |
 
 An invoice with Bitcoin's prefix (`lnbc`, `lntb`, `lntbs`, `lnbcrt`) is
-refused, and a Bitcoin wallet refuses these, which is intended: an invoice
-is the last thing a user sees before paying, and it must not be payable on
-the other chain. Fallback on-chain addresses in invoices keep Bitcoin's
-address formats, since the address formats are shared.
+refused here, and a node on the other chain refuses these. That is the whole
+of what keeps an invoice for one chain from being paid on the other: an
+invoice carries `chain_hash` nowhere, and it is the last thing a user sees
+before paying. Fallback on-chain addresses keep Bitcoin's address formats,
+since the address formats are shared.
 
-## 4. Replay protection
+**This is not settled between implementations.** privkeyio's Core Lightning
+keeps `bc` as its `lightning_hrp` and mints `lnbc` invoices. The two builds
+therefore peer, agree a channel type, gossip and close, and cannot pay each
+other: each refuses the other's invoice on the prefix before a route is
+considered. Until it is settled, that is the state of interoperability, and
+it is the open question on
+[lightning-blake2b/bolts#1](https://github.com/lightning-blake2b/bolts/pull/1).
 
-The chain's `SIGHASH_UNIFIED` (hash type bit `0x20`) binds a signature to
-this chain: it commits to `TaggedHash("UnifiedSighash", message)` over a
-BIP 341-shaped message that covers every spent output and a script type
-byte. A Lightning node opts in for every transaction it signs alone:
+## 6. Offers: a known gap
 
-| Transaction | Hash type |
-| --- | --- |
-| on-chain wallet sends, funding inputs it contributes | `ALL \| UNIFIED` (`0x21`) |
-| sweeps of its own outputs after a close, second-level HTLC transactions it broadcasts, justice transactions it broadcasts itself, anchor spends | `ALL \| UNIFIED` (`0x21`) |
-| taproot key-path spends of the above | `ALL \| UNIFIED` (`0x21`), 65-byte signature; `SIGHASH_DEFAULT` cannot carry the bit |
+There is no equivalent of the invoice prefix for BOLT 12, and as things
+stand an offer cannot say which of the two chains it is for.
 
-It does **not** opt in where the peer verifies the signature under the
-protocol's fixed hash types: commitment transactions (`SIGHASH_ALL`), the
-HTLC signatures exchanged in `commitment_signed` (`SIGHASH_ALL`, or
-`SINGLE|ANYONECANPAY` for anchor channels), cooperative closes, and justice
-transactions pre-signed for a watchtower. A channel funded from coins that
-existed before the fork therefore remains replayable through its commitment
-transactions until a channel type requiring the opt-in on both sides
-exists; implementations should warn about such channels and prefer funding
-from coins received after the fork.
+An offer names chains with `offer_chains`, whose values are `chain_hash`, and
+an offer that omits the field means Bitcoin mainnet by the spec's default.
+Both chains now answer to that same value. Two BOLT 12 nodes, one following
+each chain, each mint an offer and read the other's as valid and for their
+own chain, naming the same hash, with no warning from either.
 
-## 5. Feature bits
+Nothing is malfunctioning. Two implementations following the spec exactly
+cannot tell these offers apart, because as of the `chain_hash` change there
+is nothing in an offer that distinguishes them. The failure that costs money
+needs a merchant with channels on both chains, which is plausible precisely
+because the chains share addresses and all their pre-fork history: the offer
+is fetchable from either side, the invoice comes back, and the payer pays on
+whichever chain they were on.
 
-Two bits are in use on this chain, and Lightning Fork implements both at the
-numbers they were deployed at rather than at the numbers this document once
-proposed:
+No fix is implemented, because minting offers that name a chain the other
+implementation does not recognise would break fetching between them and that
+is not a thing to do unilaterally. The proposal on the table is to put the
+activation block's id in `offer_chains`.
 
-| Bit | Name | Meaning |
+## 7. Feature bits
+
+| Bit | Name | Where |
 | --- | --- | --- |
-| 68 / 69 | `option_blake2b` | This node follows the Bitcoin BLAKE2b chain. |
-| 70 / 71 | `option_unified_sigs` | This node can negotiate a channel whose commitment, second-level HTLC and cooperative close signatures opt into `SIGHASH_UNIFIED`. |
+| 68 | `option_blake2b` | `init`, `node_announcement`, even only |
+| 70 / 71 | `option_unified_sigs` | 70 inside `channel_type`; 71 in `init` and `node_announcement` |
 
-Core Lightning's port of this chain assigned both and ships them. A number
-already on the wire is the number, whatever it should have been, so
-interoperating with it beats being right about it alone.
+Core Lightning's port of this chain assigned both and ships them at these
+numbers. A number already on the wire is the number, whatever it should have
+been, so interoperating with it beats being right about it alone.
 
 **Both are provisional and both implementations say so.** The
 `v26.06.7-blake2b.4` release notes are explicit that bits 68 and 70 "are not
-registered BOLT allocations and are expected to move", and that channels opened
-under them may have to be closed and reopened once the numbers settle. This
-document takes the same position. What is written here is what is on the wire
-today, not a claim that it is right.
+registered BOLT allocations and are expected to move", and that channels
+opened under them may have to be closed and reopened once the numbers settle.
+This document takes the same position. What is written here is what is on the
+wire today, not a claim that it is right. The highest pair BOLT 9 has
+assigned is 66/67, so 68 and 70 are the next numbers the spec will hand out
+rather than spare ones; a pair in the custom range would have been the
+conservative choice, and both implementations would have to move together.
 
-Where each form is set differs, and the difference is the point:
+Neither bit is set in invoices or offers. A payer that cannot read a bit must
+still be refused, and for BOLT 11 the prefix does that. For BOLT 12 nothing
+does, which is section 6.
 
-- **Odd (69, 71) in `init` and `node_announcement`.** A peer that does not
-  understand an odd bit ignores it and stays connected, which is what lets a
-  pre-fork channel with an unpatched counterparty still be closed
-  cooperatively. An even bit there refuses more than it means to, including
-  client applications that speak the wire protocol only to reach a node's RPC
-  and have no reason to know what chain they are on.
-- **Even (70) inside `channel_type`.** A channel type is a set of even bits by
-  construction, and there the strictness is right: both sides must agree on
-  the digest they sign, and a peer that does not understand the bit must not
-  end up in such a channel.
-- **Neither, in invoices and offers.** A payer on the SHA256d chain must be
-  refused, and the invoice prefix and `chain_hash` already do that without a
-  feature bit.
-
-This is Chris Guida's asymmetry, from the migration plan, and it is a better
-answer than one choice for everywhere. Peering wants to be permissive, because
-during a migration you have to be able to talk to nodes that have not moved
-yet. Payment and channel opening want to be strict, because the failure there
-costs money rather than a reconnect.
-
-### Downgrading after opening one
+### Downgrading after opening a unified channel
 
 A channel that negotiated `option_unified_sigs` records it in its own channel
 type, and every signature on it is made under `0x21` or `0xa3`. A build that
 does not know the bit reads the channel type without complaint, finds nothing
-it recognises, and signs `0x01` instead. The peer then rejects every signature,
-and the channel can neither update nor close cooperatively.
+it recognises, and signs `0x01` instead. The peer then rejects every
+signature, and the channel can neither update nor close cooperatively.
 
 So a node that has opened a unified channel must not be downgraded to a build
 from before this feature. That is the same rule that already applies to any
@@ -154,64 +225,83 @@ negotiated channel type, taproot included, and there is no automatic guard
 against it: the channel type is a bitfield, and an older build cannot warn
 about a bit it has never heard of.
 
-Existing channels are unaffected either way. The type is fixed when the channel
-is opened and is never renegotiated, so upgrading does not change a channel
-that is already open, and a peer that does not signal the bit is offered an
-ordinary channel rather than refused.
+Existing channels are unaffected either way. The type is fixed when the
+channel is opened and is never renegotiated, so upgrading does not change a
+channel that is already open, and a peer that does not signal the bit is
+offered an ordinary channel rather than refused.
 
-### The numbers are the wrong ones, and this document still says so
+## 8. What changed on 2026-09-17, and what to do about it
 
-The highest pair BOLT 9 has assigned is 66/67
-(`option_onion_messages_only_channels`), so 68 and 70 are the next numbers the
-spec will hand out, not spare ones. A pair in the range implementations already
-treat as custom, such as **32769 / 32768**, sits clear of that and is the
-conservative choice. An earlier revision of this document reserved 32769/32768
-on exactly that reasoning, and before that 2100/2101, which was no better.
+Until this date, this document specified a distinct `chain_hash` per network:
+the activation block's id on mainnet, and
+`TaggedHash("Lightning Fork chain_hash", genesis)` elsewhere. Lightning Fork
+shipped it, and a patch series implementing it for Core Lightning was
+proposed.
 
-They have not moved yet because a second implementation that picked different
-numbers would simply not interoperate, and interoperating today is worth more
-than holding out for the better pair. When they do move, this document and both
-implementations move together, and the cost rises with every channel opened
-under the current numbers.
+It is withdrawn. Isolating at `chain_hash` asked everything that touches a
+chain identifier to agree a new value, to solve problems that live in four
+specific places, and those places are better addressed where they are: bit 68
+for peering, the height floor for gossip, `channel_type` for channels, and the
+invoice prefix for BOLT 11. BOLT 12 remains open, and is the one thing the
+old design covered that the new one does not.
 
-An even bit in `init` also runs BOLT 9 backwards. The spec introduces a feature
-as an optional odd bit and upgrades it to a compulsory even one later, "which
-will be refused by outdated nodes". Starting at the compulsory end refuses
-peers before there is anything to be compatible with.
+If you implemented the old version:
 
-And no feature bit is what keeps the two chains apart. `chain_hash` does that,
-in the `init` networks list, in `open_channel` and in `channel_announcement`. A
-node on the SHA256d chain cannot open a channel here or have its gossip
-accepted here whatever bits it sets. What `option_blake2b` says is narrower:
-that this node knows what the peer is declaring.
+- **`chain_hash` goes back to the genesis hash.** A build still using a
+  distinct value will not peer with one that has changed: the two disagree on
+  the `networks` TLV and hang up with "no common chain".
+- **Move `option_blake2b` to the even bit** if you were sending the odd one.
+  With the shared `chain_hash`, the odd bit separates nothing, because a peer
+  that cannot read it ignores it by definition.
+- **Backups written under the old value are still restorable.** Lightning
+  Fork accepts the legacy form per network alongside the current one, so a
+  backup taken the day before an upgrade restores after it. It accepts each
+  network's own legacy value only, so a mainnet backup does not restore onto
+  regtest.
+- **Wallet checks that keyed off `chain_hash` no longer fire.** Core
+  Lightning's restamp path, for instance, is reached only when the wallet is
+  stamped with block 0 and the chain's `chain_hash` is not; with the two equal
+  it is unreachable. If you were relying on it to catch a wallet carried
+  between chains, it will not.
 
-## 6. Block header
+The check that does still catch a node pointed at the wrong chain is not a
+Lightning check at all: read the block header at the activation height and
+refuse it if it is 80 bytes rather than 164. That touches `chain_hash`
+nowhere and came through this change unaltered.
 
-Not a Lightning constant, but every node on this chain has to parse it:
-from block 961,640, block headers are 164 bytes (the 80-byte layout plus a
-second section), the block id is a BLAKE2b digest of the header rather
-than SHA256d, and the header's time field is offset. A node that reads
-block headers itself (rather than through a Bitcoin node's RPC) needs the
-Knots definition; Lightning Fork's is in the btcd fork's `wire` package.
+## 9. Block header
 
-## 7. What is deliberately unchanged
+Not a Lightning constant, but every node on this chain has to parse it: from
+block 961,640, block headers are 164 bytes (the 80-byte layout plus a second
+section), the block id is a BLAKE2b digest of the header rather than SHA256d,
+and the header's time field is offset. A node that reads block headers itself
+(rather than through a Bitcoin node's RPC) needs the Knots definition;
+Lightning Fork's is in the btcd fork's `wire` package.
+
+## 10. What is deliberately unchanged
 
 - Address formats (`bc1...`, `1...`, `3...`) and the derivation paths, so a
   seed restores the same wallet.
+- `chain_hash`, as of the change above.
 - The genesis hash as the wallet backend's notion of "which network is this
   node on": the chain-identity check (reading the header at the activation
   height) does the work the genesis hash cannot.
-- The Lightning protocol messages, feature bits and channel types, apart
-  from the values above.
+- The Lightning protocol messages, feature bits and channel types, apart from
+  the values above.
 
 ## Status
 
 Implemented in Lightning Fork (`github.com/paulscode/lightning-fork`) and
-running on mainnet. A patch series implementing the same values in
-Core Lightning, on top of `privkeyio/lightning` `blake2b-unified`, is
-kept under `contrib/cln-chain-identity/` in this repository with
-its proposal; with it applied, the two implementations peer, open channels
-from either side, pay each other's invoices and offers, and close, in the
-regtest lab. Open to change until a second implementation has mainnet
-channels; changes after that would strand channels. Discussion: open an
-issue on the repository above.
+running on mainnet.
+
+Interoperability with privkeyio's Core Lightning, measured in the regtest lab
+against `blake2b-unified` at `24d027310` with nothing applied on top: the two
+peer, agree `channel_type [12,22,70]`, exchange gossip, and close both
+cooperatively and by force with `0x21` in both witnesses. An HTLC held across
+a force close produces an HTLC-timeout transaction carrying `0xa3` from their
+node and `0x21` from ours. They cannot pay each other, for the BOLT 11 prefix
+reason in section 5.
+
+Open to change until a second implementation has mainnet channels; changes
+after that would strand channels. Discussion: the spec PR linked above, or an
+issue on the repository.

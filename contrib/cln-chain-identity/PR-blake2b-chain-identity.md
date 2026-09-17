@@ -1,5 +1,28 @@
 # PR proposal for privkeyio/lightning: a chain identity for the BLAKE2b chain
 
+> **Status, 2026-09-17: this series is being withdrawn and reworked. Do not
+> apply it as it stands.**
+>
+> It gives the BLAKE2b chain a `chain_hash` of its own. That design has been
+> withdrawn on both sides in favour of keeping the genesis hash both chains
+> share and separating them where it matters: `option_blake2b` as an even
+> feature bit at `init`, a gossip floor at the activation height,
+> `option_unified_sigs` in `channel_type`, and the BOLT 11 invoice prefix. See
+> `docs/blake2b-chain-identity.md` section 8.
+>
+> Applying it now is worse than doing nothing: a build carrying it advertises a
+> `chain_hash` no one else uses and will not peer with either chain. That is
+> measured, not predicted.
+>
+> What survives the rework: the invoice prefix (split out of patch `0001`), the
+> BOLT 11 error-message fix (`0014`), and the gossip height rule, which is new.
+> What does not: the `chain_hash` itself, and the wallet restamp series
+> (`0004`, `0006`, `0009`, `0012`, `0013`, `0015`), whose gate is unreachable
+> once `chain_hash` equals block 0.
+>
+> The rest of this document describes the series as proposed, and is kept for
+> the history rather than as a current recommendation.
+
 Target: `privkeyio/lightning`, branch `blake2b-unified` (head `24d027310`),
 which is where `v26.06.7-blake2b.4` and the unified-sigs work live. Retargeted
 from `v26.06.7-blake2b`, which is still at `893f767e8` and is not where the
