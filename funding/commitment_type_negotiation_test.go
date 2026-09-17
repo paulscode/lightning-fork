@@ -694,4 +694,102 @@ func TestUnifiedSigsNegotiation(t *testing.T) {
 		features := lnwire.RawFeatureVector(*chanType)
 		require.False(t, features.IsSet(lnwire.UnifiedSigsRequired))
 	})
+
+	// The rest of these are about a type the caller named. Asking for
+	// "anchors" is asking for the shape of the transactions; which chain
+	// their signatures are bound to is not part of that choice, and was
+	// silently being dropped.
+	anchorsPlain := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		lnwire.StaticRemoteKeyRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+	))
+
+	t.Run("a named type still gets the bit", func(t *testing.T) {
+		t.Parallel()
+
+		// Before this was fixed, `--channel_type anchors` between two
+		// of these nodes opened a channel that closed with `01 01` in
+		// the witness, while the default for that same commitment type
+		// closed with `21 21`. Nothing reported the difference.
+		chanType, commitType, err := negotiateCommitmentType(
+			&anchorsPlain, bothSupport, bothSupport,
+		)
+		require.NoError(t, err)
+		require.Equal(
+			t, lnwallet.CommitmentTypeAnchorsZeroFeeHtlcTx,
+			commitType,
+		)
+
+		features := lnwire.RawFeatureVector(*chanType)
+		require.True(t, features.IsSet(lnwire.UnifiedSigsRequired),
+			"a channel opened by naming its commitment type is "+
+				"not bound to this chain, while the same type "+
+				"chosen by default is")
+	})
+
+	t.Run("a named type, peer cannot do it", func(t *testing.T) {
+		t.Parallel()
+
+		// Adding the bit must not turn a channel that would have
+		// opened into an error. A peer that cannot do it gets the
+		// plain type.
+		chanType, commitType, err := negotiateCommitmentType(
+			&anchorsPlain, bothSupport, noUnified,
+		)
+		require.NoError(t, err)
+		require.Equal(
+			t, lnwallet.CommitmentTypeAnchorsZeroFeeHtlcTx,
+			commitType,
+		)
+
+		features := lnwire.RawFeatureVector(*chanType)
+		require.False(t, features.IsSet(lnwire.UnifiedSigsRequired))
+	})
+
+	t.Run("a named taproot type does not get it", func(t *testing.T) {
+		t.Parallel()
+
+		taprootPlain := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+			lnwire.SimpleTaprootChannelsRequiredFinal,
+		))
+
+		// Adding it here would refuse the channel outright, since
+		// taproot plus the bit is an error. Asking for a taproot
+		// channel must still give one.
+		chanType, commitType, err := negotiateCommitmentType(
+			&taprootPlain, bothSupport, bothSupport,
+		)
+		require.NoError(t, err)
+		require.Equal(
+			t, lnwallet.CommitmentTypeSimpleTaprootFinal,
+			commitType,
+		)
+
+		features := lnwire.RawFeatureVector(*chanType)
+		require.False(t, features.IsSet(lnwire.UnifiedSigsRequired))
+	})
+
+	t.Run("the tweakless fall-back carries it too", func(t *testing.T) {
+		t.Parallel()
+
+		// A channel reached by falling back needs binding to this
+		// chain exactly as much as one reached directly. Only the
+		// anchors branch used to add the bit.
+		noAnchors := lnwire.NewFeatureVector(
+			lnwire.NewRawFeatureVector(
+				lnwire.ExplicitChannelTypeOptional,
+				lnwire.StaticRemoteKeyOptional,
+				lnwire.UnifiedSigsOptional,
+			), lnwire.Features,
+		)
+
+		chanType, commitType, err := negotiateCommitmentType(
+			nil, noAnchors, noAnchors,
+		)
+		require.NoError(t, err)
+		require.Equal(t, lnwallet.CommitmentTypeTweakless, commitType)
+
+		features := lnwire.RawFeatureVector(*chanType)
+		require.True(t, features.IsSet(lnwire.UnifiedSigsRequired))
+	})
 }

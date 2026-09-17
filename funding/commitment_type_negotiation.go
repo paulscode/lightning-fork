@@ -15,6 +15,44 @@ var (
 		"not supported")
 )
 
+// withUnifiedSigs returns chanType with option_unified_sigs set, when both
+// peers can do it and the type is one it applies to.
+//
+// This exists because the bit is not something the operator chooses. It binds
+// the channel's bilateral signatures to this chain, so it belongs on every
+// channel that can carry it, and a caller naming a commitment type is naming
+// the shape of the transactions rather than which chain they are for.
+//
+// Without this, asking for a type by name produced a channel whose signatures
+// were plain SIGHASH_ALL while the default for that same commitment type
+// produced 0x21. Confirmed on chain before it was fixed: `--channel_type
+// anchors` between two of these nodes closed with `01 01` in the witness.
+// Nothing reported the difference, and privkeyio's build refuses such a type
+// outright, so the channel was both unbound and unable to interoperate.
+//
+// Taproot is excluded deliberately, for the reason explicitNegotiateCommitment-
+// Type gives: there the commitment signature is a MuSig2 partial signature over
+// a BIP341 digest, so opting in is a wire change rather than a hash type.
+func withUnifiedSigs(chanType lnwire.ChannelType, local,
+	remote *lnwire.FeatureVector) lnwire.ChannelType {
+
+	if !hasFeatures(local, remote, lnwire.UnifiedSigsOptional) {
+		return chanType
+	}
+
+	features := lnwire.RawFeatureVector(chanType)
+	if features.IsSet(lnwire.SimpleTaprootChannelsRequiredFinal) ||
+		features.IsSet(lnwire.SimpleTaprootChannelsRequiredStaging) {
+
+		return chanType
+	}
+
+	withBit := features.Clone()
+	withBit.Set(lnwire.UnifiedSigsRequired)
+
+	return lnwire.ChannelType(*withBit)
+}
+
 // negotiateCommitmentType negotiates the commitment type of a newly opened
 // channel. If a desiredChanType is provided, explicit negotiation for said type
 // will be attempted if the set of both local and remote features support it.
@@ -33,6 +71,15 @@ func negotiateCommitmentType(desiredChanType *lnwire.ChannelType, local,
 	)
 
 	chanTypeRequested := desiredChanType != nil
+
+	// A requested type names the shape of the transactions; the chain the
+	// signatures are bound to is not the caller's to leave off. Done here
+	// rather than in the RPC layer because it depends on what the peer
+	// supports, which only this side of the funding flow knows.
+	if chanTypeRequested {
+		augmented := withUnifiedSigs(*desiredChanType, local, remote)
+		desiredChanType = &augmented
+	}
 
 	switch {
 	case explicitNegotiation && chanTypeRequested:
@@ -496,16 +543,12 @@ func implicitNegotiateCommitmentType(local,
 	// If both peers are signalling support for anchor commitments with
 	// zero-fee HTLC transactions, we'll use this type.
 	if hasFeatures(local, remote, lnwire.AnchorsZeroFeeHtlcTxOptional) {
-		bits := []lnwire.FeatureBit{
-			lnwire.AnchorsZeroFeeHtlcTxRequired,
-			lnwire.StaticRemoteKeyRequired,
-		}
-		if hasFeatures(local, remote, lnwire.UnifiedSigsOptional) {
-			bits = append(bits, lnwire.UnifiedSigsRequired)
-		}
-		chanType := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
-			bits...,
-		))
+		chanType := withUnifiedSigs(
+			lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+				lnwire.AnchorsZeroFeeHtlcTxRequired,
+				lnwire.StaticRemoteKeyRequired,
+			)), local, remote,
+		)
 
 		return &chanType, lnwallet.CommitmentTypeAnchorsZeroFeeHtlcTx
 	}
@@ -517,15 +560,26 @@ func implicitNegotiateCommitmentType(local,
 	// If both nodes are signaling the proper feature bit for tweakless
 	// commitments, we'll use that.
 	if hasFeatures(local, remote, lnwire.StaticRemoteKeyOptional) {
-		chanType := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
-			lnwire.StaticRemoteKeyRequired,
-		))
+		chanType := withUnifiedSigs(
+			lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+				lnwire.StaticRemoteKeyRequired,
+			)), local, remote,
+		)
 
 		return &chanType, lnwallet.CommitmentTypeTweakless
 	}
 
 	// Otherwise we'll fall back to the legacy type.
-	chanType := lnwire.ChannelType(*lnwire.NewRawFeatureVector())
+	//
+	// These two fall-backs carry the bit for the same reason the anchors
+	// branch above does. It is not a property of the commitment type: it
+	// changes the digest every bilateral signature commits to, and a
+	// channel reached by falling back needs binding to this chain exactly
+	// as much as one reached directly.
+	chanType := withUnifiedSigs(
+		lnwire.ChannelType(*lnwire.NewRawFeatureVector()), local, remote,
+	)
+
 	return &chanType, lnwallet.CommitmentTypeLegacy
 }
 
