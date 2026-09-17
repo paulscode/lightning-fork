@@ -17,7 +17,7 @@ import (
 )
 
 // serviceFor builds a service over a fake local node, with the journal in a
-// temporary directory. The Bitcoin side is a Remote over fakes.
+// temporary directory. The SHA256 side is a Remote over fakes.
 func serviceFor(t *testing.T, cfg Config, f *fakeNode, r *Remote) *service {
 	t.Helper()
 
@@ -51,26 +51,26 @@ func TestDirectionsAreWiredTheRightWayRound(t *testing.T) {
 		byName[sd.name] = sd
 	}
 
-	toBitcoin, ok := byName["toBitcoin"]
+	toSHA256, ok := byName["toSHA256"]
 	if !ok {
-		t.Fatal("toBitcoin was not wired")
+		t.Fatal("toSHA256 was not wired")
 	}
-	if toBitcoin.invert {
-		t.Error("toBitcoin should quote the posted rate directly")
+	if toSHA256.invert {
+		t.Error("toSHA256 should quote the posted rate directly")
 	}
-	if toBitcoin.dir != inventory.Draining {
-		t.Error("toBitcoin spends the Bitcoin side, so it drains")
+	if toSHA256.dir != inventory.Draining {
+		t.Error("toSHA256 spends the SHA256 side, so it drains")
 	}
 
-	toBlake2b, ok := byName["toBlake2b"]
+	toBLAKE2b, ok := byName["toBLAKE2b"]
 	if !ok {
-		t.Fatal("toBlake2b was not wired")
+		t.Fatal("toBLAKE2b was not wired")
 	}
-	if !toBlake2b.invert {
-		t.Error("toBlake2b pays in BTCB2, so it quotes the reciprocal")
+	if !toBLAKE2b.invert {
+		t.Error("toBLAKE2b pays in BLAKE2b coin, so it quotes the reciprocal")
 	}
-	if toBlake2b.dir != inventory.Replenishing {
-		t.Error("toBlake2b puts back what the other direction spends")
+	if toBLAKE2b.dir != inventory.Replenishing {
+		t.Error("toBLAKE2b puts back what the other direction spends")
 	}
 }
 
@@ -80,7 +80,7 @@ func TestADisabledDirectionIsNamed(t *testing.T) {
 	t.Parallel()
 
 	cfg := usable()
-	cfg.ToBlake2b = false
+	cfg.ToBLAKE2b = false
 
 	svc := serviceFor(t, cfg, &fakeNode{synced: true},
 		remote(nil, nil, nil))
@@ -93,7 +93,7 @@ func TestADisabledDirectionIsNamed(t *testing.T) {
 	if err == nil {
 		t.Fatal("routing should fail when no node can decode")
 	}
-	if !strings.Contains(err.Error(), "toBlake2b") {
+	if !strings.Contains(err.Error(), "toBLAKE2b") {
 		t.Errorf("the refusal should name the disabled direction: %v",
 			err)
 	}
@@ -207,7 +207,7 @@ func TestSpacingRefusesUntilBothChainsAreMeasured(t *testing.T) {
 	// Feed one chain only. The refusal must now name the other.
 	now := time.Now()
 	for i := range 200 {
-		svc.lfChain.Add(chainrate.Block{
+		svc.b2bChain.Add(chainrate.Block{
 			Height: int32(800_000 + i),
 			Time:   now.Add(time.Duration(i) * 10 * time.Minute),
 		})
@@ -217,7 +217,7 @@ func TestSpacingRefusesUntilBothChainsAreMeasured(t *testing.T) {
 	if err == nil {
 		t.Fatal("spacing should still refuse with one chain missing")
 	}
-	if !strings.Contains(err.Error(), "Bitcoin") {
+	if !strings.Contains(err.Error(), "SHA256") {
 		t.Errorf("the refusal should name the missing chain: %v", err)
 	}
 }

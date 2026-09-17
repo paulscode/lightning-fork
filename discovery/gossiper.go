@@ -211,6 +211,17 @@ type Config struct {
 	// chain shares with Bitcoin.
 	ChainHash chainhash.Hash
 
+	// MinAnnouncementHeight is the lowest funding height a
+	// channel_announcement may name. Zero disables the check.
+	//
+	// This chain shares a chain_hash with the chain that did not upgrade
+	// its proof of work, so ChainHash above does not tell their gossip
+	// apart. A funding output older than the change exists for both, and
+	// this node cannot see where it is spent, so a channel announced
+	// against one would never leave the graph. Set to the activation
+	// height, which is where the two chains stop sharing outputs.
+	MinAnnouncementHeight uint32
+
 	// Graph is the subsystem which is responsible for managing the
 	// topology of lightning network. After incoming channel, node, channel
 	// updates announcements are validated they are sent to the router in
@@ -471,7 +482,19 @@ func newRejectCacheKey(v lnwire.GossipVersion, cid uint64,
 // cache.
 func sourceToPub(pk *btcec.PublicKey) [33]byte {
 	var pub [33]byte
+
+	// A message with no source still has to be rejectable. This runs on
+	// the gossip path, which takes whatever a peer sends, and a nil
+	// dereference here would take the node down rather than drop one
+	// announcement. Everything that reaches the cache under a zero key is
+	// a message nobody can be blamed for, which is the correct amount of
+	// blame.
+	if pk == nil {
+		return pub
+	}
+
 	copy(pub[:], pk.SerializeCompressed())
+
 	return pub
 }
 
@@ -2696,6 +2719,41 @@ func (d *AuthenticatedGossiper) handleChanAnnouncement(ctx context.Context,
 		_, _ = d.recentRejects.Put(key, &cachedReject{})
 
 		completeGossipResult(nMsg.errPromise, err)
+		return nil, false
+	}
+
+	// A funding output from before the proof of work changed exists for
+	// nodes that did not upgrade too, and its spend may happen where this
+	// node cannot see it, so a channel announced against one would sit in
+	// the graph forever.
+	//
+	// This chain and the chain that did not upgrade share a chain_hash by
+	// design, so the check above does not separate them and this is what
+	// keeps their gossip apart. A channel funded past the activation
+	// elsewhere fails its funding output lookup here anyway; one funded
+	// before it would not.
+	//
+	// It applies to this node's own announcements as well, which is
+	// intended: a channel of ours funded before the activation is in the
+	// same position.
+	if min := d.cfg.MinAnnouncementHeight; min != 0 &&
+		scid.BlockHeight < min {
+
+		err := fmt.Errorf("ignoring ChannelAnnouncement1 for "+
+			"short_chan_id=%v: funded at height %d, before the "+
+			"proof of work changed at %d", scid.ToUint64(),
+			scid.BlockHeight, min)
+		log.Debugf(err.Error())
+
+		key := newRejectCacheKey(
+			ann.GossipVersion(),
+			scid.ToUint64(),
+			sourceToPub(nMsg.source),
+		)
+		_, _ = d.recentRejects.Put(key, &cachedReject{})
+
+		completeGossipResult(nMsg.errPromise, err)
+
 		return nil, false
 	}
 

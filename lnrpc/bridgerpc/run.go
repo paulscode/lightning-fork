@@ -124,8 +124,8 @@ func (s *service) sample(ctx context.Context) {
 		read func(context.Context) (BlockInfo, error)
 		obs  *chainrate.Observer
 	}{
-		{"blake2b", s.local.BestBlock, s.lfChain},
-		{"bitcoin", s.remote.BestBlock, s.btcChain},
+		{"blake2b", s.local.BestBlock, s.b2bChain},
+		{"bitcoin", s.remote.BestBlock, s.shaChain},
 	} {
 		info, err := src.read(ctx)
 		if err != nil {
@@ -271,7 +271,7 @@ const backfillBlocks = 150
 // the bridge refuses every swap throughout. The headers already exist; reading
 // them turns that wait into a few seconds.
 //
-// A failure is logged and not fatal. The Bitcoin node serves these through
+// A failure is logged and not fatal. The SHA256 node serves these through
 // ChainKit, which a stock lnd only has when built with the chainrpc tag, so a
 // node without it falls back to the slow path rather than stopping the bridge
 // from running at all.
@@ -285,8 +285,8 @@ func (s *service) backfill(ctx context.Context) {
 		at   func(context.Context, int32) (BlockInfo, error)
 		obs  *chainrate.Observer
 	}{
-		{"blake2b", s.local.BestBlock, s.local.BlockAt, s.lfChain},
-		{"bitcoin", s.remote.BestBlock, s.remote.BlockAt, s.btcChain},
+		{"blake2b", s.local.BestBlock, s.local.BlockAt, s.b2bChain},
+		{"bitcoin", s.remote.BestBlock, s.remote.BlockAt, s.shaChain},
 	} {
 		tip, err := src.tip(ctx)
 		if err != nil {

@@ -20,13 +20,13 @@ import (
 // failure this file exists to catch.
 func usable() Config {
 	return Config{
-		Enabled:             true,
-		BitcoinRPCHost:      "127.0.0.1:10010",
-		BitcoinMacaroonPath: "/tmp/admin.macaroon",
-		ToBitcoin:           true,
-		ToBlake2b:           true,
-		FixedRate:           0.00308078,
-		Spread:              0.01,
+		Enabled:            true,
+		SHA256RPCHost:      "127.0.0.1:10010",
+		SHA256MacaroonPath: "/tmp/admin.macaroon",
+		ToSHA256:           true,
+		ToBLAKE2b:          true,
+		FixedRate:          0.00308078,
+		Spread:             0.01,
 	}
 }
 
@@ -61,18 +61,18 @@ func TestValidateRefusals(t *testing.T) {
 		{
 			name: "no direction enabled",
 			edit: func(c *Config) {
-				c.ToBitcoin, c.ToBlake2b = false, false
+				c.ToSHA256, c.ToBLAKE2b = false, false
 			},
 			want: "neither direction",
 		},
 		{
-			name: "no Bitcoin node",
-			edit: func(c *Config) { c.BitcoinRPCHost = "" },
+			name: "no SHA256 node",
+			edit: func(c *Config) { c.SHA256RPCHost = "" },
 			want: "rpchost",
 		},
 		{
 			name: "no macaroon",
-			edit: func(c *Config) { c.BitcoinMacaroonPath = "" },
+			edit: func(c *Config) { c.SHA256MacaroonPath = "" },
 			want: "macaroonpath",
 		},
 		{
@@ -167,11 +167,11 @@ func TestReachabilityAgreesWithMargin(t *testing.T) {
 	c := usable()
 	r := c.resolve()
 
-	in, err := atTargetSpacing(r.lfChain)
+	in, err := atTargetSpacing(r.b2bChain)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := atTargetSpacing(r.btcChain)
+	out, err := atTargetSpacing(r.shaChain)
 	if err != nil {
 		t.Fatal(err)
 	}

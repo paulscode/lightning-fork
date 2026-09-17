@@ -34,14 +34,14 @@ func validateBridgeConfig(cfg *Config, networkDir string) error {
 	}
 	sub.Journal = CleanAndExpandPath(sub.Journal)
 
-	if sub.BitcoinTLSCertPath != "" {
-		sub.BitcoinTLSCertPath = CleanAndExpandPath(
-			sub.BitcoinTLSCertPath,
+	if sub.SHA256TLSCertPath != "" {
+		sub.SHA256TLSCertPath = CleanAndExpandPath(
+			sub.SHA256TLSCertPath,
 		)
 	}
-	if sub.BitcoinMacaroonPath != "" {
-		sub.BitcoinMacaroonPath = CleanAndExpandPath(
-			sub.BitcoinMacaroonPath,
+	if sub.SHA256MacaroonPath != "" {
+		sub.SHA256MacaroonPath = CleanAndExpandPath(
+			sub.SHA256MacaroonPath,
 		)
 	}
 

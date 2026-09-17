@@ -11,27 +11,31 @@ import (
 )
 
 // Lightning Fork follows the Bitcoin BLAKE2b chain (Bitcoin Knots v29.4.1),
-// which hard-forked from Bitcoin at mainnet height 961640 on 2026-08-30
-// without changing the genesis block, the address format or the key
-// derivation. That leaves two chains sharing one genesis hash, so the genesis
-// hash can no longer serve as the Lightning network identifier: a node on the
-// other chain would pass every check that compares it.
+// whose proof of work changed at mainnet height 961640 on 2026-08-30 without
+// changing the genesis block, the address format or the key derivation.
 //
-// Two identities are therefore kept apart on purpose:
+// chain_hash stays the genesis hash both chains share. An earlier design gave
+// this chain a chain_hash of its own, on the reasoning that a shared genesis
+// cannot tell two networks apart. That was reversed on 2026-09-17 in favour of
+// isolating at the two layers where it actually matters, which is both
+// narrower and does not require every node to agree on a new identifier:
 //
-//   - Params.GenesisHash stays the true genesis of the shared history. The
-//     wallet backend identifies the connected node's network by it, and the
-//     node reports the same chain name either way.
-//   - ChainHash is the BOLT chain_hash this daemon advertises in init,
-//     open_channel, gossip, channel backups and offers. On mainnet it is the
-//     hash of the first BLAKE2b block, which is checkpointed and already the
-//     discriminator the wallet ecosystem for this chain uses. Test networks
-//     restart and move their activation height, so they use a tagged hash of
-//     their genesis instead.
+//   - Channels. option_unified_sigs is a required bit in channel_type, so a
+//     node that cannot produce the unified opt-in signature hash cannot agree
+//     a channel type in either direction.
+//   - Gossip. channel_announcement for a short_channel_id below the
+//     activation height is ignored: that funding output exists for nodes that
+//     did not upgrade too, and its spend may happen where this node cannot
+//     see it.
 //
-// Whether the connected backend really is on the BLAKE2b chain is a separate
-// question answered at startup by reading the block header at the activation
-// height (see blake2b_check.go).
+// See the specification at lightning-blake2b/bolts#1.
+//
+// Two consequences worth keeping in mind. Nothing in the chain identity
+// distinguishes the two chains any more, so a wallet or a backup from the
+// other one is caught by its own contents rather than by a hash comparison.
+// And whether the connected backend really follows this chain is answered at
+// startup by reading the block header at the activation height, which is why
+// the activation constants below are still here (see blake2b_check.go).
 
 const (
 	// Blake2bMainnetActivationHeight is the height of the first BLAKE2b
@@ -98,7 +102,7 @@ var BitcoinTestNetParams = BitcoinNetParams{
 	Params:     &bitcoinCfg.TestNet3Params,
 	RPCPort:    "18334",
 	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  SyntheticChainHash(bitcoinCfg.TestNet3Params.GenesisHash),
+	ChainHash:  *bitcoinCfg.TestNet3Params.GenesisHash,
 	InvoiceHRP: invoiceHRPTestnet,
 }
 
@@ -108,7 +112,7 @@ var BitcoinTestNet4Params = BitcoinNetParams{
 	Params:     &bitcoinCfg.TestNet4Params,
 	RPCPort:    "48334",
 	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  SyntheticChainHash(bitcoinCfg.TestNet4Params.GenesisHash),
+	ChainHash:  *bitcoinCfg.TestNet4Params.GenesisHash,
 	InvoiceHRP: invoiceHRPTestnet,
 }
 
@@ -118,7 +122,7 @@ var BitcoinMainNetParams = BitcoinNetParams{
 	Params:                  &bitcoinCfg.MainNetParams,
 	RPCPort:                 "8334",
 	CoinType:                keychain.CoinTypeBitcoin,
-	ChainHash:               *Blake2bMainnetActivationHash,
+	ChainHash:               *bitcoinCfg.MainNetParams.GenesisHash,
 	InvoiceHRP:              invoiceHRPMainnet,
 	Blake2bActivationHeight: Blake2bMainnetActivationHeight,
 	Blake2bActivationHash:   Blake2bMainnetActivationHash,
@@ -130,7 +134,7 @@ var BitcoinSimNetParams = BitcoinNetParams{
 	Params:     &bitcoinCfg.SimNetParams,
 	RPCPort:    "18556",
 	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  SyntheticChainHash(bitcoinCfg.SimNetParams.GenesisHash),
+	ChainHash:  *bitcoinCfg.SimNetParams.GenesisHash,
 	InvoiceHRP: invoiceHRPSimnet,
 }
 
@@ -139,7 +143,7 @@ var BitcoinSigNetParams = BitcoinNetParams{
 	Params:     &bitcoinCfg.SigNetParams,
 	RPCPort:    "38332",
 	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  SyntheticChainHash(bitcoinCfg.SigNetParams.GenesisHash),
+	ChainHash:  *bitcoinCfg.SigNetParams.GenesisHash,
 	InvoiceHRP: invoiceHRPSignet,
 }
 
@@ -149,7 +153,7 @@ var BitcoinRegTestNetParams = BitcoinNetParams{
 	Params:     &bitcoinCfg.RegressionNetParams,
 	RPCPort:    "18334",
 	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  SyntheticChainHash(bitcoinCfg.RegressionNetParams.GenesisHash),
+	ChainHash:  *bitcoinCfg.RegressionNetParams.GenesisHash,
 	InvoiceHRP: invoiceHRPRegtest,
 }
 
@@ -160,7 +164,11 @@ func IsTestnet(params *BitcoinNetParams) bool {
 		params.Params.Net == bitcoinWire.TestNet4
 }
 
-// SyntheticChainHash derives the BOLT chain_hash used on a network that has
+// SyntheticChainHash derives the chain_hash this daemon advertised before
+// 2026-09-17, kept so that a backup taken then can still be recognised rather
+// than refused as being for another chain. Nothing advertises it any more.
+//
+// It derives the BOLT chain_hash used on a network that has
 // no stable activation block: a BIP-340 tagged hash of the network's genesis
 // hash. It is stable across testnet restarts, distinct from the genesis hash
 // every SHA256d implementation advertises, and distinct per network.

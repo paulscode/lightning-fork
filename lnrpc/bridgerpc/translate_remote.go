@@ -13,7 +13,7 @@ import (
 // cannot act on an answer it does not believe, and an operator should look.
 var ErrNodeContradiction = errors.New("the node contradicted itself")
 
-// The Bitcoin side of a swap is a stock lnd reached over gRPC, so its answers
+// The SHA256 side of a swap is a stock lnd reached over gRPC, so its answers
 // arrive as lnrpc messages rather than as registry structures. The rules are
 // the same as for the local side in translate.go, and are restated here rather
 // than shared because the two inputs have nothing in common but their meaning.

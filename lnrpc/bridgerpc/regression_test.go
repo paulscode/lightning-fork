@@ -479,7 +479,7 @@ func TestSampleIgnoresAnEmptyTip(t *testing.T) {
 
 			svc.sample(context.Background())
 
-			if _, err := svc.lfChain.Estimate(
+			if _, err := svc.b2bChain.Estimate(
 				time.Now(),
 			); err == nil {
 
@@ -496,7 +496,7 @@ func TestResumeReportsASwapNoDirectionCanPay(t *testing.T) {
 	t.Parallel()
 
 	cfg := usable()
-	cfg.ToBlake2b = false
+	cfg.ToBLAKE2b = false
 
 	svc := serviceFor(t, cfg, &fakeNode{synced: true},
 		remote(nil, nil, nil))
@@ -568,16 +568,16 @@ func TestDialRefusesUnusableCredentials(t *testing.T) {
 
 	for name, cfg := range map[string]*Config{
 		"no address": {
-			BitcoinMacaroonPath: empty,
+			SHA256MacaroonPath: empty,
 		},
 		"no such certificate": {
-			BitcoinRPCHost:      "127.0.0.1:10009",
-			BitcoinTLSCertPath:  filepath.Join(dir, "missing.cert"),
-			BitcoinMacaroonPath: empty,
+			SHA256RPCHost:      "127.0.0.1:10009",
+			SHA256TLSCertPath:  filepath.Join(dir, "missing.cert"),
+			SHA256MacaroonPath: empty,
 		},
 		"no such macaroon": {
-			BitcoinRPCHost: "127.0.0.1:10009",
-			BitcoinMacaroonPath: filepath.Join(
+			SHA256RPCHost: "127.0.0.1:10009",
+			SHA256MacaroonPath: filepath.Join(
 				dir, "missing.macaroon",
 			),
 		},
@@ -585,7 +585,7 @@ func TestDialRefusesUnusableCredentials(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := dialBitcoinNode(cfg)
+			_, err := dialSHA256Node(cfg)
 			if err == nil {
 				t.Fatal("wanted a refusal")
 			}
@@ -605,10 +605,10 @@ func TestDialRefusesUnusableCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err := dialBitcoinNode(&Config{
-			BitcoinRPCHost:      "127.0.0.1:10009",
-			BitcoinTLSCertPath:  cert,
-			BitcoinMacaroonPath: empty,
+		_, err := dialSHA256Node(&Config{
+			SHA256RPCHost:      "127.0.0.1:10009",
+			SHA256TLSCertPath:  cert,
+			SHA256MacaroonPath: empty,
 		})
 		if err == nil || !strings.Contains(err.Error(), "empty") {
 			t.Errorf("an empty macaroon should be refused by "+
@@ -662,7 +662,7 @@ func TestActiveCountsNothingWhenNothingIsDriving(t *testing.T) {
 func TestTheLoggerBridgeHandlesEveryLevel(t *testing.T) {
 	t.Parallel()
 
-	l := bridgeLogger("toBitcoin")
+	l := bridgeLogger("toSHA256")
 
 	var wg sync.WaitGroup
 	for range 4 {
@@ -759,7 +759,7 @@ func TestTheMacaroonRefusesToTravelInTheClear(t *testing.T) {
 
 	if !cred.RequireTransportSecurity() {
 		t.Error("the macaroon would be sent over an unencrypted " +
-			"connection, which hands the Bitcoin node's authority " +
+			"connection, which hands the SHA256 node's authority " +
 			"to anyone listening")
 	}
 
@@ -781,7 +781,7 @@ func TestTheLoggerBridgeActuallyRenders(t *testing.T) {
 	UseLogger(btclog.NewSLogger(btclog.NewDefaultHandler(io.Discard)))
 	t.Cleanup(func() { UseLogger(before) })
 
-	l := bridgeLogger("toBitcoin")
+	l := bridgeLogger("toSHA256")
 
 	l.Debug("debug", "k", 1)
 	l.Info("info", "k", 2)
@@ -976,7 +976,7 @@ func sidedService(t *testing.T, balance uint64) *service {
 		}
 
 		accepts := "lnblake"
-		if sd.name == "toBitcoin" {
+		if sd.name == "toSHA256" {
 			accepts = "lnbc"
 		}
 		sd.out = &fakeOutDecoder{accepts: accepts}
@@ -1010,9 +1010,9 @@ func TestHeadroomCountsOnlyItsOwnSide(t *testing.T) {
 
 	svc := sidedService(t, held)
 
-	// A swap paying out on BLAKE2b. In real units this is a BTCB2 amount,
-	// which is roughly three hundred times a Bitcoin one of the same
-	// value: subtracting it from the Bitcoin side is not a smaller
+	// A swap paying out on BLAKE2b. In real units this is a BLAKE2b amount,
+	// which is roughly three hundred times a SHA256 one of the same
+	// value: subtracting it from the SHA256 side is not a smaller
 	// mistake, it is a different quantity.
 	now := time.Now()
 	err := svc.journal.Put(context.Background(), store.Record{
@@ -1032,7 +1032,7 @@ func TestHeadroomCountsOnlyItsOwnSide(t *testing.T) {
 		}
 
 		want := uint64(held)
-		if sd.name == "toBlake2b" {
+		if sd.name == "toBLAKE2b" {
 			want = held - 4_000_000
 		}
 		if got != want {
@@ -1154,26 +1154,26 @@ func TestSwapBoundsCapTheSameValueBothWays(t *testing.T) {
 		caps[sd.name] = sd.quoter.Policy.MaxSwapMsat
 	}
 
-	// toBitcoin pays in BTC, so its cap is the configured number.
-	// toBlake2b pays in BTCB2, worth 0.003 BTC each, so the same value is
+	// toSHA256 pays in BTC, so its cap is the configured number.
+	// toBLAKE2b pays in BLAKE2b coin, worth 0.003 BTC each, so the same value is
 	// a much larger number of them.
 	wantB2 := uint64(float64(cfg.MaxSwapMsat) / cfg.FixedRate)
 
-	if caps["toBitcoin"] != cfg.MaxSwapMsat {
-		t.Errorf("toBitcoin cap %d, wanted %d", caps["toBitcoin"],
+	if caps["toSHA256"] != cfg.MaxSwapMsat {
+		t.Errorf("toSHA256 cap %d, wanted %d", caps["toSHA256"],
 			cfg.MaxSwapMsat)
 	}
-	if caps["toBlake2b"] != wantB2 {
-		t.Errorf("toBlake2b cap %d msat of BTCB2, wanted %d: the two "+
-			"directions cap the same value, and a BTCB2 "+
-			"millisatoshi is not a Bitcoin one",
-			caps["toBlake2b"], wantB2)
+	if caps["toBLAKE2b"] != wantB2 {
+		t.Errorf("toBLAKE2b cap %d msat of BLAKE2b, wanted %d: the two "+
+			"directions cap the same value, and a BLAKE2b "+
+			"millisatoshi is not a SHA256 one",
+			caps["toBLAKE2b"], wantB2)
 	}
 }
 
 // sizeInventory compares a balance against a minimum swap. The balance is in
 // the units of the chain that side pays on, so the minimum has to be the
-// side's own converted one and not the configured Bitcoin figure.
+// side's own converted one and not the configured SHA256 figure.
 func TestSizingUsesTheSidesOwnMinimum(t *testing.T) {
 	t.Parallel()
 
@@ -1191,8 +1191,8 @@ func TestSizingUsesTheSidesOwnMinimum(t *testing.T) {
 		}
 	}
 
-	// A BTCB2 balance that clears the Bitcoin figure but not the real
-	// BTCB2 minimum. Sizing against it would call the side stocked while
+	// A BLAKE2b balance that clears the SHA256 figure but not the real
+	// BLAKE2b minimum. Sizing against it would call the side stocked while
 	// it cannot fund one swap.
 	held := uint64(2_000_000)
 	if held >= reverse.quoter.Policy.MinSwapMsat {
@@ -1207,8 +1207,8 @@ func TestSizingUsesTheSidesOwnMinimum(t *testing.T) {
 	svc.sizeInventory(context.Background())
 
 	if reverse.isSized() {
-		t.Errorf("a BTCB2 balance of %d was taken as a working "+
-			"balance because it cleared a Bitcoin floor of %d",
+		t.Errorf("a BLAKE2b balance of %d was taken as a working "+
+			"balance because it cleared a SHA256 floor of %d",
 			held, cfg.MinSwapMsat)
 	}
 }
@@ -1489,7 +1489,7 @@ func TestStatusNamesASideThatCannotPay(t *testing.T) {
 
 	// One side funded, the other empty.
 	for _, sd := range svc.sides {
-		if sd.name == "toBitcoin" {
+		if sd.name == "toSHA256" {
 			sd.balance = func(context.Context) (uint64, error) {
 				return 900_000_000, nil
 			}
@@ -1509,12 +1509,12 @@ func TestStatusNamesASideThatCannotPay(t *testing.T) {
 
 	var named bool
 	for _, r := range resp.Refusals {
-		if strings.Contains(r, "toBlake2b") &&
+		if strings.Contains(r, "toBLAKE2b") &&
 			strings.Contains(r, "outbound capacity") {
 
 			named = true
 		}
-		if strings.Contains(r, "toBitcoin") &&
+		if strings.Contains(r, "toSHA256") &&
 			strings.Contains(r, "outbound capacity") {
 
 			t.Errorf("a funded side was reported as unable to "+

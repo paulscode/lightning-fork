@@ -29,8 +29,8 @@ var ErrNoDeps = errors.New("the bridge was not given access to this node")
 // Local is this node, as the two halves of a swap see it.
 //
 // The same value satisfies both interfaces because both directions need both:
-// a swap to Bitcoin receives here and pays there, and a swap the other way
-// receives there and pays here.
+// a swap to the SHA256 chain receives here and pays there, and one the
+// other way receives there and pays here.
 type Local struct {
 	deps *Deps
 }

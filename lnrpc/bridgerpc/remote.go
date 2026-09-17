@@ -27,7 +27,7 @@ import (
 // ErrInvoice is returned when a payment request cannot be used.
 var ErrInvoice = errors.New("the invoice cannot be used")
 
-// Remote is the Bitcoin Lightning node, reached over gRPC.
+// Remote is the SHA256 node, reached over gRPC.
 //
 // It uses lnd's own generated clients, which are already linked into this
 // binary. The bridge module ships its own copy and importing that one panics
@@ -42,7 +42,7 @@ type Remote struct {
 	chain    chainrpc.ChainKitClient
 }
 
-// NewRemote wraps a connection to the Bitcoin node.
+// NewRemote wraps a connection to the SHA256 node.
 func NewRemote(conn grpc.ClientConnInterface) *Remote {
 	return &Remote{
 		main:     lnrpc.NewLightningClient(conn),
@@ -416,7 +416,7 @@ func (r *Remote) Check(ctx context.Context) error {
 // has to be found here rather than by a swap that has already accepted
 // someone's money. Being merely behind is different: it is temporary, it is
 // already refused at quote time, and refusing to start on it would mean a
-// Bitcoin node restart takes this one down too.
+// SHA256 node restart takes this one down too.
 func (r *Remote) Reachable(ctx context.Context) (BlockInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -445,7 +445,7 @@ func (r *Remote) Balance(ctx context.Context) (uint64, error) {
 		ctx, &lnrpc.ListChannelsRequest{ActiveOnly: true},
 	)
 	if err != nil {
-		return 0, fmt.Errorf("reading the Bitcoin node's channels: %w",
+		return 0, fmt.Errorf("reading the SHA256 node's channels: %w",
 			err)
 	}
 
@@ -461,7 +461,7 @@ func (r *Remote) Balance(ctx context.Context) (uint64, error) {
 			continue
 		}
 		if uint64(spendable) > math.MaxInt64/1000 {
-			return 0, fmt.Errorf("the Bitcoin node reports an "+
+			return 0, fmt.Errorf("the SHA256 node reports an "+
 				"implausible balance of %d sat", spendable)
 		}
 
@@ -479,13 +479,13 @@ func (r *Remote) Balance(ctx context.Context) (uint64, error) {
 func (r *Remote) BestBlock(ctx context.Context) (BlockInfo, error) {
 	info, err := r.main.GetInfo(ctx, &lnrpc.GetInfoRequest{})
 	if err != nil {
-		return BlockInfo{}, fmt.Errorf("reading the Bitcoin node's "+
+		return BlockInfo{}, fmt.Errorf("reading the SHA256 node's "+
 			"tip: %w", err)
 	}
 
 	h := info.GetBlockHeight()
 	if h > math.MaxInt32 {
-		return BlockInfo{}, fmt.Errorf("the Bitcoin node reports an "+
+		return BlockInfo{}, fmt.Errorf("the SHA256 node reports an "+
 			"implausible height %d", h)
 	}
 
@@ -511,7 +511,7 @@ func (r *Remote) BlockAt(ctx context.Context, height int32) (BlockInfo, error) {
 	// whole daemon down for a history read it can do without.
 	if r == nil || r.chain == nil {
 		return BlockInfo{}, errors.New("no chain client for the " +
-			"Bitcoin node")
+			"SHA256 node")
 	}
 	if height < 0 {
 		return BlockInfo{}, fmt.Errorf("height %d is not a block",
@@ -522,7 +522,7 @@ func (r *Remote) BlockAt(ctx context.Context, height int32) (BlockInfo, error) {
 		ctx, &chainrpc.GetBlockHashRequest{BlockHeight: int64(height)},
 	)
 	if err != nil {
-		return BlockInfo{}, fmt.Errorf("the Bitcoin node's hash for "+
+		return BlockInfo{}, fmt.Errorf("the SHA256 node's hash for "+
 			"height %d: %w", height, err)
 	}
 
@@ -532,13 +532,13 @@ func (r *Remote) BlockAt(ctx context.Context, height int32) (BlockInfo, error) {
 		},
 	)
 	if err != nil {
-		return BlockInfo{}, fmt.Errorf("the Bitcoin node's header at "+
+		return BlockInfo{}, fmt.Errorf("the SHA256 node's header at "+
 			"height %d: %w", height, err)
 	}
 
 	raw := hdr.GetRawBlockHeader()
 	if len(raw) < 80 {
-		return BlockInfo{}, fmt.Errorf("the Bitcoin node returned a "+
+		return BlockInfo{}, fmt.Errorf("the SHA256 node returned a "+
 			"%d byte header at height %d", len(raw), height)
 	}
 

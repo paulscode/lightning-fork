@@ -64,16 +64,43 @@ func (e *ErrBackupWrongChain) Error() string {
 }
 
 // checkBackupChain refuses any backup whose chain hash is not ours.
+//
+// The chain hash this daemon advertised before 2026-09-17 is accepted as well.
+// Until then this chain had a chain_hash of its own, derived from the first
+// BLAKE2b block on mainnet and from a tagged genesis elsewhere, and a backup
+// written by that build carries it. Refusing those would mean an operator who
+// upgrades cannot restore from a backup they took the day before, which is the
+// moment a backup is most likely to be needed.
+//
+// It is not a way onto this node for a channel from the chain that did not
+// upgrade: that chain never advertised these values, and its backups carry the
+// shared genesis hash, which is now also ours. What actually keeps those
+// channels apart is option_unified_sigs in channel_type, and a restored
+// channel is re-established with the peer under it like any other.
 func checkBackupChain(ours chainhash.Hash,
 	backups ...chanbackup.Single) error {
 
+	// Two of them, because the old scheme differed by network: mainnet
+	// advertised the id of the first BLAKE2b block, and every other
+	// network a tagged hash of its genesis.
+	legacy := map[chainhash.Hash]struct{}{
+		chainreg.SyntheticChainHash(&ours):     {},
+		*chainreg.Blake2bMainnetActivationHash: {},
+	}
+
 	for _, backup := range backups {
-		if backup.ChainHash != ours {
-			return &ErrBackupWrongChain{
-				Backup: backup.ChainHash, Ours: ours,
-			}
+		if backup.ChainHash == ours {
+			continue
+		}
+		if _, ok := legacy[backup.ChainHash]; ok {
+			continue
+		}
+
+		return &ErrBackupWrongChain{
+			Backup: backup.ChainHash, Ours: ours,
 		}
 	}
+
 	return nil
 }
 
@@ -283,13 +310,20 @@ func (c *chanDBRestorer) RestoreChansFromSingles(backups ...chanbackup.Single) e
 	if firstChanHeight == math.MaxUint32 {
 		chainHash := channelShells[0].Chan.ChainHash
 		switch {
-		// A backup from this daemon on the BLAKE2b mainnet cannot hold
-		// a channel funded before the chain existed.
-		case chainHash.IsEqual(chainreg.Blake2bMainnetActivationHash):
-			firstChanHeight = chainreg.Blake2bMainnetActivationHeight
+		// A channel of this daemon's cannot have been funded before
+		// the proof of work changed, so mainnet starts there however
+		// the backup names the chain.
+		//
+		// Both cases, because the name changed: backups written before
+		// 2026-09-17 carry the id of the first BLAKE2b block, and ones
+		// written since carry the genesis hash shared with the chain
+		// that did not upgrade. Neither can hold a channel older than
+		// the activation, because this daemon has never followed that
+		// chain.
+		case chainHash.IsEqual(chainreg.Blake2bMainnetActivationHash),
+			chainHash.IsEqual(chaincfg.MainNetParams.GenesisHash):
 
-		case chainHash.IsEqual(chaincfg.MainNetParams.GenesisHash):
-			firstChanHeight = mainnetSCBLaunchBlock
+			firstChanHeight = chainreg.Blake2bMainnetActivationHeight
 
 		case chainHash.IsEqual(chaincfg.TestNet3Params.GenesisHash):
 			firstChanHeight = testnetSCBLaunchBlock

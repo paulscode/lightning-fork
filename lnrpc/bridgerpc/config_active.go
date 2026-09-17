@@ -36,20 +36,27 @@ type Config struct {
 	// Enabled turns the bridge on. It is off by default and stays off
 	// until an operator says otherwise: a node carrying this code is not
 	// the same thing as a node offering to swap other people's money.
-	Enabled bool `long:"enabled" description:"Offer cross-chain swaps between this chain and Bitcoin. Requires a Bitcoin Lightning node and funded channels on both sides."`
+	Enabled bool `long:"enabled" description:"Offer cross-chain swaps between this chain and the SHA256 chain. Requires a node there and funded channels on both sides."`
 
-	// BitcoinRPCHost is the Bitcoin Lightning node, as host:port.
+	// SHA256RPCHost is the Lightning node on the SHA256 chain, as
+	// host:port.
 	//
-	// A Lightning node, not a Bitcoin chain node: it talks to whatever
-	// Bitcoin node the operator already runs. Nothing here needs a second
-	// copy of the chain.
-	BitcoinRPCHost string `long:"bitcoin.rpchost" description:"The Bitcoin Lightning node (LND) to bridge through, as host:port. This is a Lightning node, not a second Bitcoin node."`
+	// A Lightning node, not a chain node: it talks to whatever SHA256 node
+	// the operator already runs. Nothing here needs a second copy of a
+	// chain.
+	//
+	// Named for the proof of work rather than for a currency. lnd's own
+	// bitcoin.* options already mean the chain this node follows, which
+	// here is the BLAKE2b one, so bitcoin.rpchost would be ambiguous in
+	// the same config file as well as taking a side on a question this
+	// code has no need to answer.
+	SHA256RPCHost string `long:"sha256.rpchost" description:"The Lightning node on the SHA256 chain to bridge through, as host:port. This is a Lightning node, not a second chain node."`
 
-	// BitcoinTLSCertPath is that node's TLS certificate.
-	BitcoinTLSCertPath string `long:"bitcoin.tlscertpath" description:"Path to the Bitcoin Lightning node's TLS certificate."`
+	// SHA256TLSCertPath is that node's TLS certificate.
+	SHA256TLSCertPath string `long:"sha256.tlscertpath" description:"Path to the SHA256 node's TLS certificate."`
 
-	// BitcoinMacaroonPath is a macaroon for that node.
-	BitcoinMacaroonPath string `long:"bitcoin.macaroonpath" description:"Path to a macaroon for the Bitcoin Lightning node. It needs invoice and offchain write."`
+	// SHA256MacaroonPath is a macaroon for that node.
+	SHA256MacaroonPath string `long:"sha256.macaroonpath" description:"Path to a macaroon for the SHA256 node. It needs invoice and offchain write."`
 
 	// Journal is where swaps are recorded.
 	//
@@ -58,36 +65,37 @@ type Config struct {
 	// running loses the record of an HTLC that is still out there.
 	Journal string `long:"journal" description:"Path to the swap journal. Defaults to bridge/swaps.journal under the network directory. Back this up: it records swaps in flight."`
 
-	// ToBitcoin serves swaps that pay out on Bitcoin.
-	ToBitcoin bool `long:"tobitcoin" description:"Serve swaps that receive on this chain and pay out on Bitcoin. Needs outbound Bitcoin channel capacity."`
+	// ToSHA256 serves swaps that pay out on the SHA256 chain.
+	ToSHA256 bool `long:"tosha256" description:"Serve swaps that receive on this chain and pay out on the SHA256 chain. Needs outbound capacity there."`
 
-	// ToBlake2b serves swaps that pay out on this chain.
-	ToBlake2b bool `long:"toblake2b" description:"Serve swaps that receive on Bitcoin and pay out on this chain. Needs outbound capacity here."`
+	// ToBLAKE2b serves swaps that pay out on this chain.
+	ToBLAKE2b bool `long:"toblake2b" description:"Serve swaps that receive on the SHA256 chain and pay out on this chain. Needs outbound capacity here."`
 
 	// FixedRate is what the operator will trade at, in outgoing units per
-	// incoming unit for the toBitcoin direction: BTC per BTCB2.
+	// incoming unit for the toSHA256 direction: SHA256 coin per BLAKE2b
+	// coin.
 	//
 	// There is deliberately no default. A wrong rate loses money on every
 	// swap and does it quietly, so the bridge refuses to guess one; for a
 	// market this thin an operator's own posted rate is the price, and it
 	// has to be their number.
-	FixedRate float64 `long:"fixedrate" description:"What you will trade at, as BTC per BTCB2. There is no default: a wrong rate loses money silently, so this must be set deliberately."`
+	FixedRate float64 `long:"fixedrate" description:"What you will trade at, as SHA256 coin per BLAKE2b coin. There is no default: a wrong rate loses money silently, so this must be set deliberately."`
 
 	// Spread is the fraction charged on top of the rate.
 	Spread float64 `long:"spread" description:"The fraction you keep, on top of the rate. Routing fees come out of this. Default 0.01 (1%)."`
 
-	// MaxSwapMsat caps a single swap, in Bitcoin millisatoshis.
+	// MaxSwapMsat caps a single swap, in SHA256 millisatoshis.
 	//
-	// Bitcoin either way round, because an operator thinks in one
-	// currency. The swap packages bound the outgoing leg in the units of
+	// The same chain either way round, because an operator thinks in one
+	// unit. The swap packages bound the outgoing leg in the units of
 	// the chain that leg is on, which is a different unit per direction,
-	// so this is converted for the direction that pays in BTCB2. One
+	// so this is converted for the direction that pays in BLAKE2b coin. One
 	// number used raw for both would cap two different amounts of value:
 	// at any plausible rate, a couple of hundred times apart.
-	MaxSwapMsat uint64 `long:"maxswapmsat" description:"The most a single swap may be, in Bitcoin millisatoshis. The same value is applied in both directions, converted at your rate."`
+	MaxSwapMsat uint64 `long:"maxswapmsat" description:"The most a single swap may be, in SHA256 millisatoshis. The same value is applied in both directions, converted at your rate."`
 
-	// MinSwapMsat floors a single swap, in Bitcoin millisatoshis.
-	MinSwapMsat uint64 `long:"minswapmsat" description:"The least a single swap may be, in Bitcoin millisatoshis. The same value is applied in both directions, converted at your rate."`
+	// MinSwapMsat floors a single swap, in SHA256 millisatoshis.
+	MinSwapMsat uint64 `long:"minswapmsat" description:"The least a single swap may be, in SHA256 millisatoshis. The same value is applied in both directions, converted at your rate."`
 
 	// OutgoingCLTVLimit caps the total CLTV of the outgoing route, in
 	// blocks of the outgoing chain.
@@ -154,8 +162,8 @@ type resolved struct {
 	margin    margin.Policy
 	inventory inventory.Policy
 	rate      rate.Policy
-	lfChain   chainrate.Params
-	btcChain  chainrate.Params
+	b2bChain  chainrate.Params
+	shaChain  chainrate.Params
 }
 
 // resolve applies the defaults and the operator's overrides.
@@ -165,8 +173,8 @@ func (c *Config) resolve() resolved {
 		margin:    margin.DefaultPolicy,
 		inventory: inventory.DefaultPolicy,
 		rate:      rate.DefaultPolicy,
-		lfChain:   chainrate.BlakeParams,
-		btcChain:  chainrate.BitcoinParams,
+		b2bChain:  chainrate.BlakeParams,
+		shaChain:  chainrate.BitcoinParams,
 	}
 
 	r.quote.OutgoingCLTVLimit = DefaultOutgoingCLTVLimit
@@ -233,26 +241,26 @@ func (c *Config) Validate() error {
 		return nil
 	}
 
-	if !c.ToBitcoin && !c.ToBlake2b {
+	if !c.ToSHA256 && !c.ToBLAKE2b {
 		return fmt.Errorf("%w: the bridge is enabled but neither "+
 			"direction is, so it would refuse every swap; set "+
-			"bridgerpc.tobitcoin, bridgerpc.toblake2b, or both",
+			"bridgerpc.tosha256, bridgerpc.toblake2b, or both",
 			ErrConfig)
 	}
-	if c.BitcoinRPCHost == "" {
-		return fmt.Errorf("%w: no Bitcoin Lightning node; set "+
-			"bridgerpc.bitcoin.rpchost to the LND that holds your "+
-			"Bitcoin channels", ErrConfig)
+	if c.SHA256RPCHost == "" {
+		return fmt.Errorf("%w: no Lightning node on the SHA256 chain; "+
+			"set bridgerpc.sha256.rpchost to the node that holds "+
+			"your channels there", ErrConfig)
 	}
-	if c.BitcoinMacaroonPath == "" {
-		return fmt.Errorf("%w: no macaroon for the Bitcoin Lightning "+
-			"node; set bridgerpc.bitcoin.macaroonpath", ErrConfig)
+	if c.SHA256MacaroonPath == "" {
+		return fmt.Errorf("%w: no macaroon for the SHA256 node; set "+
+			"bridgerpc.sha256.macaroonpath", ErrConfig)
 	}
 	if c.FixedRate <= 0 {
 		return fmt.Errorf("%w: no rate; set bridgerpc.fixedrate to "+
-			"what you will trade at, in BTC per BTCB2. There is no "+
-			"default because a wrong one loses money on every swap "+
-			"and does it quietly", ErrConfig)
+			"what you will trade at, in SHA256 coin per BLAKE2b "+
+			"coin. There is no default because a wrong one loses "+
+			"money on every swap and does it quietly", ErrConfig)
 	}
 	if c.Spread < 0 {
 		return fmt.Errorf("%w: a negative spread (%g) pays people to "+
@@ -289,7 +297,7 @@ func (c *Config) Validate() error {
 	if !r.rate.Valid() {
 		return fmt.Errorf("%w: the rate policy is unusable", ErrConfig)
 	}
-	if !r.lfChain.Valid() || !r.btcChain.Valid() {
+	if !r.b2bChain.Valid() || !r.shaChain.Valid() {
 		return fmt.Errorf("%w: a chain observer is unusable", ErrConfig)
 	}
 
@@ -338,8 +346,8 @@ func (c *Config) checkReachable(r resolved) error {
 		// has to be outlived on the incoming one.
 		in, out chainrate.Params
 	}{
-		{"toBitcoin", c.ToBitcoin, r.lfChain, r.btcChain},
-		{"toBlake2b", c.ToBlake2b, r.btcChain, r.lfChain},
+		{"toSHA256", c.ToSHA256, r.b2bChain, r.shaChain},
+		{"toBLAKE2b", c.ToBLAKE2b, r.shaChain, r.b2bChain},
 	} {
 		if !dir.enabled {
 			continue

@@ -48,7 +48,7 @@ type side struct {
 	dir inventory.Direction
 
 	// invert is set on the direction whose rate is the reciprocal of the
-	// configured one. The rate is posted as BTC per BTCB2, so the
+	// configured one. The rate is posted as SHA256 coin per BLAKE2b coin, so the
 	// direction paying out in BTCB2 uses one over it.
 	invert bool
 
@@ -123,16 +123,16 @@ type service struct {
 
 	// disabled names directions that are configured off, so an invoice for
 	// one can be refused by name. "No enabled direction can pay this"
-	// sends an operator looking at their nodes; "toBlake2b is configured
+	// sends an operator looking at their nodes; "toBLAKE2b is configured
 	// but not enabled" sends them to the line they changed.
 	disabled []string
 
-	// lfChain and btcChain measure how fast each chain is running, which
+	// b2bChain and shaChain measure how fast each chain is running, which
 	// is what turns a wall-clock safety margin into a number of blocks.
 	// Guarded because the poller writes them and quotes read them.
 	chainMu  sync.Mutex
-	lfChain  *chainrate.Observer
-	btcChain *chainrate.Observer
+	b2bChain *chainrate.Observer
+	shaChain *chainrate.Observer
 
 	// sideOf remembers which direction each swap belongs to, so that what
 	// is already committed can be counted per side.
@@ -182,36 +182,36 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 		return nil, fmt.Errorf("opening the swap journal %s: %w",
 			cfg.Journal, err)
 	}
-	if s.lfChain, err = chainrate.New(s.res.lfChain); err != nil {
+	if s.b2bChain, err = chainrate.New(s.res.b2bChain); err != nil {
 		s.close()
 
 		return nil, fmt.Errorf("the BLAKE2b chain observer: %w", err)
 	}
-	if s.btcChain, err = chainrate.New(s.res.btcChain); err != nil {
+	if s.shaChain, err = chainrate.New(s.res.shaChain); err != nil {
 		s.close()
 
 		return nil, fmt.Errorf("the Bitcoin chain observer: %w", err)
 	}
 
-	// toBitcoin receives here and pays on Bitcoin, so it drains the
-	// Bitcoin side. toBlake2b puts back what the other one spends.
-	if cfg.ToBitcoin {
+	// toSHA256 receives here and pays on the SHA256 chain, so it drains the
+	// SHA256 side. toBLAKE2b puts back what the other one spends.
+	if cfg.ToSHA256 {
 		s.sides = append(s.sides, s.build(
-			"toBitcoin", local, remote, remote.Balance,
+			"toSHA256", local, remote, remote.Balance,
 			inventory.Draining, false,
 		))
 	} else {
-		s.disabled = append(s.disabled, "toBitcoin")
+		s.disabled = append(s.disabled, "toSHA256")
 	}
-	if cfg.ToBlake2b {
-		// The rate is posted as BTC per BTCB2, so the direction that
+	if cfg.ToBLAKE2b {
+		// The rate is posted as SHA256 coin per BLAKE2b coin, so the direction that
 		// pays out in BTCB2 quotes its reciprocal.
 		s.sides = append(s.sides, s.build(
-			"toBlake2b", remote, local, local.Balance,
+			"toBLAKE2b", remote, local, local.Balance,
 			inventory.Replenishing, true,
 		))
 	} else {
-		s.disabled = append(s.disabled, "toBlake2b")
+		s.disabled = append(s.disabled, "toBLAKE2b")
 	}
 
 	return s, nil
@@ -227,13 +227,13 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 		invert: invert, inventory: s.res.inventory,
 	}
 
-	// The swap bounds are configured in Bitcoin millisatoshis and applied
+	// The swap bounds are configured in SHA256 millisatoshis and applied
 	// to the outgoing leg, which is BTCB2 on this direction. One number
 	// used raw for both would cap two different amounts of value.
 	policy := s.res.quote
 	if invert {
-		policy.MinSwapMsat = s.inBTCB2(policy.MinSwapMsat)
-		policy.MaxSwapMsat = s.inBTCB2(policy.MaxSwapMsat)
+		policy.MinSwapMsat = s.inBLAKE2bMsat(policy.MinSwapMsat)
+		policy.MaxSwapMsat = s.inBLAKE2bMsat(policy.MaxSwapMsat)
 	}
 
 	sd.quoter = &quote.Quoter{
@@ -257,13 +257,13 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 	return sd
 }
 
-// inBTCB2 converts an amount of Bitcoin millisatoshis into BTCB2 ones at the
+// inBLAKE2bMsat converts an amount of SHA256 millisatoshis into BLAKE2b ones at the
 // posted rate, which is quoted as Bitcoin per BTCB2.
 //
 // Saturating rather than wrapping: a cap that overflowed to a small number
 // would refuse everything, and one that wrapped to a huge number would cap
 // nothing at all, which is the worse of the two.
-func (s *service) inBTCB2(btcMsat uint64) uint64 {
+func (s *service) inBLAKE2bMsat(btcMsat uint64) uint64 {
 	if btcMsat == 0 || s.cfg.FixedRate <= 0 {
 		return btcMsat
 	}
@@ -329,8 +329,8 @@ func (s *service) pricer(sd *side) quote.Pricer {
 
 // spacing reports both chains' current block rates, incoming first.
 //
-// invert names which chain is which: the toBitcoin direction receives on
-// BLAKE2b, and toBlake2b receives on Bitcoin.
+// invert names which chain is which: the toSHA256 direction receives on
+// BLAKE2b, and toBLAKE2b receives on the SHA256 chain.
 func (s *service) spacing(invert bool) func(context.Context) (driver.Rates,
 	error) {
 
@@ -339,14 +339,14 @@ func (s *service) spacing(invert bool) func(context.Context) (driver.Rates,
 		defer s.chainMu.Unlock()
 
 		now := time.Now()
-		lf, err := s.lfChain.Estimate(now)
+		lf, err := s.b2bChain.Estimate(now)
 		if err != nil {
 			return driver.Rates{}, fmt.Errorf("the BLAKE2b "+
 				"chain's spacing: %w", err)
 		}
-		btc, err := s.btcChain.Estimate(now)
+		btc, err := s.shaChain.Estimate(now)
 		if err != nil {
-			return driver.Rates{}, fmt.Errorf("the Bitcoin "+
+			return driver.Rates{}, fmt.Errorf("the SHA256 "+
 				"chain's spacing: %w", err)
 		}
 
@@ -552,7 +552,7 @@ func (s *service) sizeInventory(ctx context.Context) {
 		// would refuse the direction thereafter.
 		// The side's own minimum, not the configured one: held is in
 		// the units of the chain this side pays on, and the configured
-		// bound is in Bitcoin. Comparing them raw asks whether a BTCB2
+		// bound is in Bitcoin. Comparing them raw asks whether a BLAKE2b
 		// balance clears a Bitcoin floor, which is not a question.
 		floor := sd.quoter.Policy.MinSwapMsat
 		if held < floor {

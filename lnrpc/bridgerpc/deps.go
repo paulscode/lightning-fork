@@ -17,7 +17,7 @@ import (
 // The translation to those types happens behind the build tag.
 //
 // These are the local node's half of the swap. The bridge needs both halves of
-// both interfaces, and the other half is a Bitcoin node reached over gRPC.
+// both interfaces, and the other half is a SHA256 node reached over gRPC.
 type Deps struct {
 	// AddHoldInvoice creates an invoice on this node that will not settle
 	// until told to, and returns the payment request.

@@ -12,16 +12,24 @@ import (
 // TestBlake2bChainIdentity pins the constants that identify the Bitcoin
 // BLAKE2b chain at the Lightning layer.
 func TestBlake2bChainIdentity(t *testing.T) {
-	// The mainnet chain hash is the first BLAKE2b block, and it is not the
-	// genesis hash.
+	// chain_hash is the genesis hash both chains share. This chain had one
+	// of its own until 2026-09-17; isolating at chain_hash was dropped in
+	// favour of doing it where it matters, in channel_type and in gossip,
+	// so a node here and a node that did not upgrade now advertise the
+	// same chain_hash on purpose.
 	require.Equal(t,
-		"0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb",
+		"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
 		BitcoinMainNetParams.ChainHash.String())
-	require.Equal(t, *Blake2bMainnetActivationHash, BitcoinMainNetParams.ChainHash)
-	require.NotEqual(t, *chaincfg.MainNetParams.GenesisHash,
+	require.Equal(t, *chaincfg.MainNetParams.GenesisHash,
 		BitcoinMainNetParams.ChainHash)
+
+	// The activation constants stay: they are what the startup check reads
+	// to confirm the backend really follows this chain, which is now the
+	// only thing that answers that question.
 	require.Equal(t, uint32(961640), BitcoinMainNetParams.Blake2bActivationHeight)
 	require.NotNil(t, BitcoinMainNetParams.Blake2bActivationHash)
+	require.NotEqual(t, BitcoinMainNetParams.ChainHash,
+		*BitcoinMainNetParams.Blake2bActivationHash)
 
 	// The genesis hash itself is untouched: the wallet backend still
 	// identifies the node by it.
@@ -36,9 +44,9 @@ func TestBlake2bChainIdentity(t *testing.T) {
 	}
 	seen := map[chainhash.Hash]string{}
 	for _, p := range all {
-		// Every network has a chain hash that differs from its genesis
-		// and from every other network's.
-		require.NotEqual(t, *p.Params.GenesisHash, p.ChainHash, p.Name)
+		// Every network advertises its own genesis as its chain hash,
+		// and no two networks share one.
+		require.Equal(t, *p.Params.GenesisHash, p.ChainHash, p.Name)
 		require.NotEqual(t, chainhash.Hash{}, p.ChainHash, p.Name)
 		if prev, dup := seen[p.ChainHash]; dup {
 			t.Fatalf("%s and %s share a chain hash", prev, p.Name)

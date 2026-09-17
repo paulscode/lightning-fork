@@ -87,7 +87,7 @@ type Server struct {
 	// local is this node, as both halves of a swap.
 	local *Local
 
-	// remote is the Bitcoin Lightning node, and conn the connection to it.
+	// remote is the SHA256 node, and conn the connection to it.
 	remote *Remote
 	conn   *grpc.ClientConn
 
@@ -141,7 +141,7 @@ func (s *Server) Start() error {
 		return nil
 	}
 
-	conn, dialErr := dialBitcoinNode(s.cfg)
+	conn, dialErr := dialSHA256Node(s.cfg)
 	if dialErr != nil {
 		return dialErr
 	}
@@ -174,12 +174,12 @@ func (s *Server) Start() error {
 	if err != nil {
 		_ = conn.Close()
 
-		return fmt.Errorf("the bridge cannot use the Bitcoin node at "+
-			"%s: %w", s.cfg.BitcoinRPCHost, err)
+		return fmt.Errorf("the bridge cannot use the SHA256 node at "+
+			"%s: %w", s.cfg.SHA256RPCHost, err)
 	}
 	if !local.SyncedToChain || !remote.SyncedToChain {
 		log.Infof("Bridge will refuse to quote until both nodes catch "+
-			"up (this node synced=%v at height %d, Bitcoin node "+
+			"up (this node synced=%v at height %d, SHA256 node "+
 			"synced=%v at height %d)", local.SyncedToChain,
 			local.Height, remote.SyncedToChain, remote.Height)
 	}
@@ -199,8 +199,8 @@ func (s *Server) Start() error {
 	s.svc = svc
 	s.mu.Unlock()
 
-	log.Infof("Bridge is up, serving %d direction(s) through the Bitcoin "+
-		"node at %s", len(svc.sides), s.cfg.BitcoinRPCHost)
+	log.Infof("Bridge is up, serving %d direction(s) through the SHA256 "+
+		"node at %s", len(svc.sides), s.cfg.SHA256RPCHost)
 
 	return nil
 }

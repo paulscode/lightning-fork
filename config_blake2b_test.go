@@ -38,7 +38,12 @@ func TestApplyBlake2bChainConfig(t *testing.T) {
 		require.NoError(t, applyBlake2bChainConfig(cfg))
 		require.Equal(t, uint32(961640),
 			cfg.ActiveNetParams.Blake2bActivationHeight)
-		require.Equal(t, *chainreg.Blake2bMainnetActivationHash,
+		// chain_hash is the genesis hash shared with the chain that
+		// did not upgrade; the activation hash is what the startup
+		// check reads, not what is advertised.
+		require.Equal(t, *chaincfg.MainNetParams.GenesisHash,
+			cfg.ActiveNetParams.ChainHash)
+		require.NotEqual(t, *chainreg.Blake2bMainnetActivationHash,
 			cfg.ActiveNetParams.ChainHash)
 		require.Equal(t, "blake", zpay32.InvoiceHRP(&chaincfg.MainNetParams))
 	})

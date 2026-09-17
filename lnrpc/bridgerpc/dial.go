@@ -46,15 +46,15 @@ func (m macaroonCredential) GetRequestMetadata(context.Context, ...string) (
 // listening.
 func (m macaroonCredential) RequireTransportSecurity() bool { return true }
 
-// dialBitcoinNode connects to the Bitcoin Lightning node.
+// dialSHA256Node connects to the SHA256 node.
 //
 // It returns as soon as the configuration is usable, which is not the same as
 // the node being reachable: gRPC connects lazily, so a wrong address or a node
 // that is down shows up on the first call rather than here. Remote.Check is
 // what turns that into a startup failure instead of a failed swap.
-func dialBitcoinNode(cfg *Config) (*grpc.ClientConn, error) {
-	if cfg.BitcoinRPCHost == "" {
-		return nil, fmt.Errorf("%w: no Bitcoin Lightning node address",
+func dialSHA256Node(cfg *Config) (*grpc.ClientConn, error) {
+	if cfg.SHA256RPCHost == "" {
+		return nil, fmt.Errorf("%w: no SHA256 node address",
 			ErrConfig)
 	}
 
@@ -63,26 +63,26 @@ func dialBitcoinNode(cfg *Config) (*grpc.ClientConn, error) {
 	// authority issued for that name, which for a loopback or LAN address
 	// is a weaker thing than it sounds.
 	creds, err := credentials.NewClientTLSFromFile(
-		cfg.BitcoinTLSCertPath, "",
+		cfg.SHA256TLSCertPath, "",
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading the Bitcoin node's TLS "+
-			"certificate %s: %w", ErrConfig, cfg.BitcoinTLSCertPath,
+		return nil, fmt.Errorf("%w: reading the SHA256 node's TLS "+
+			"certificate %s: %w", ErrConfig, cfg.SHA256TLSCertPath,
 			err)
 	}
 
-	mac, err := os.ReadFile(cfg.BitcoinMacaroonPath)
+	mac, err := os.ReadFile(cfg.SHA256MacaroonPath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading the Bitcoin node's "+
-			"macaroon %s: %w", ErrConfig, cfg.BitcoinMacaroonPath,
+		return nil, fmt.Errorf("%w: reading the SHA256 node's "+
+			"macaroon %s: %w", ErrConfig, cfg.SHA256MacaroonPath,
 			err)
 	}
 	if len(mac) == 0 {
-		return nil, fmt.Errorf("%w: the Bitcoin node's macaroon %s is "+
-			"empty", ErrConfig, cfg.BitcoinMacaroonPath)
+		return nil, fmt.Errorf("%w: the SHA256 node's macaroon %s is "+
+			"empty", ErrConfig, cfg.SHA256MacaroonPath)
 	}
 
-	conn, err := grpc.NewClient(cfg.BitcoinRPCHost,
+	conn, err := grpc.NewClient(cfg.SHA256RPCHost,
 		grpc.WithTransportCredentials(creds),
 		grpc.WithPerRPCCredentials(macaroonCredential{
 			hex: hex.EncodeToString(mac),
@@ -93,8 +93,8 @@ func dialBitcoinNode(cfg *Config) (*grpc.ClientConn, error) {
 		),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: dialling the Bitcoin node at %s: "+
-			"%w", ErrConfig, cfg.BitcoinRPCHost, err)
+		return nil, fmt.Errorf("%w: dialling the SHA256 node at %s: "+
+			"%w", ErrConfig, cfg.SHA256RPCHost, err)
 	}
 
 	return conn, nil

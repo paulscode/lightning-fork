@@ -15,7 +15,15 @@ import (
 // is refused before any of it is mapped into the database.
 func TestCheckBackupChain(t *testing.T) {
 	ours := chainreg.BitcoinMainNetParams.ChainHash
-	bitcoin := *chaincfg.MainNetParams.GenesisHash
+
+	// Since 2026-09-17 this chain advertises the genesis hash it shares
+	// with the chain that did not upgrade, so a mainnet genesis hash is
+	// ours rather than foreign. What keeps that chain's channels out is
+	// option_unified_sigs in channel_type, not this comparison.
+	require.Equal(t, *chaincfg.MainNetParams.GenesisHash, ours)
+
+	// Another network is still foreign.
+	foreign := *chaincfg.TestNet3Params.GenesisHash
 
 	require.NoError(t, checkBackupChain(ours))
 	require.NoError(t, checkBackupChain(ours,
@@ -25,12 +33,12 @@ func TestCheckBackupChain(t *testing.T) {
 
 	err := checkBackupChain(ours,
 		chanbackup.Single{ChainHash: ours},
-		chanbackup.Single{ChainHash: bitcoin},
+		chanbackup.Single{ChainHash: foreign},
 	)
 	require.Error(t, err)
 	var wrong *ErrBackupWrongChain
 	require.True(t, errors.As(err, &wrong), err)
-	require.Equal(t, bitcoin, wrong.Backup)
+	require.Equal(t, foreign, wrong.Backup)
 	require.Equal(t, ours, wrong.Ours)
 	require.Contains(t, err.Error(), "BLAKE2b")
 

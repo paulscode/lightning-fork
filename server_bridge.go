@@ -350,7 +350,7 @@ func (s *server) bridgeChannelBalance(_ context.Context) (uint64, error) {
 // spendableOutbound is what a set of channels can actually send.
 //
 // Split from its caller so the rule can be tested without a node. It is the
-// same rule the Bitcoin side applies to its own channels, and the two must
+// same rule the SHA256 side applies to its own channels, and the two must
 // agree: a bridge that measures its two sides differently prices one of them
 // against a quantity the other does not mean.
 func spendableOutbound(channels []*channeldb.OpenChannel,
