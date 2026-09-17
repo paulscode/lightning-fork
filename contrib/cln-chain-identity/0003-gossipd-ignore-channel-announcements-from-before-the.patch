@@ -1,4 +1,4 @@
-From ced4c5254f0a7dc6b9ca51da95c50c795729c506 Mon Sep 17 00:00:00 2001
+From 85319dce34520f86431d85b31564223ca58e06b5 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Thu, 17 Sep 2026 13:03:59 -0500
 Subject: [PATCH 3/7] gossipd: ignore channel announcements from before the

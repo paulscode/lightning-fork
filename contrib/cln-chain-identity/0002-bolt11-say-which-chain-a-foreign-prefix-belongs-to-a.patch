@@ -1,4 +1,4 @@
-From 3f0091c60ac65a5eafed85a00066a5d12a41214b Mon Sep 17 00:00:00 2001
+From cba375437515fc8ba089f5442db09d146a1b318b Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 15:17:50 -0500
 Subject: [PATCH 2/7] bolt11: say which chain a foreign prefix belongs to, and
@@ -17,15 +17,15 @@ chain, this node follows another, and here is its prefix.
 Invalid invstring from listinvoices discarded the decoder's reason
 entirely. pay.c two files over has always included it. Now both do.
 ---
- common/bolt11.c      | 19 ++++++++++++++++++-
+ common/bolt11.c      | 25 ++++++++++++++++++++++++-
  lightningd/invoice.c |  8 +++++++-
- 2 files changed, 25 insertions(+), 2 deletions(-)
+ 2 files changed, 31 insertions(+), 2 deletions(-)
 
 diff --git a/common/bolt11.c b/common/bolt11.c
-index bc851ed49..b7b39b1d6 100644
+index bc851ed49..89cf5fb77 100644
 --- a/common/bolt11.c
 +++ b/common/bolt11.c
-@@ -803,9 +803,26 @@ struct bolt11 *bolt11_decode_nosig(const tal_t *ctx, const char *str,
+@@ -803,9 +803,32 @@ struct bolt11 *bolt11_decode_nosig(const tal_t *ctx, const char *str,
  					   must_be_chain->network_name);
  	} else {
  		b11->chain = chainparams_by_lightning_hrp(prefix + 2);
@@ -34,8 +34,14 @@ index bc851ed49..b7b39b1d6 100644
 +			/* On a chain that took a new prefix, the old one is
 +			 * still the commonest thing a user will paste, so
 +			 * say what it is rather than that we do not know
-+			 * it.  "Unknown chain bc" is true and unhelpful. */
-+			if (chainparams->legacy_lightning_hrp
++			 * it.  "Unknown chain bc" is true and unhelpful.
++			 *
++			 * chainparams is checked because decoding does not
++			 * require a configured network: the daemon always has
++			 * one, but the fuzz target for this function does not,
++			 * and dereferencing it there is a null read. */
++			if (chainparams
++			    && chainparams->legacy_lightning_hrp
 +			    && streq(prefix + 2,
 +				     chainparams->legacy_lightning_hrp))
 +				return decode_fail(b11, fail,

@@ -1,4 +1,4 @@
-From 96da1d9190983c99b38259ed50e531e6e1313fac Mon Sep 17 00:00:00 2001
+From efd4c2d9a3aff29a1f9f49f1989c283fb40f4127 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Thu, 17 Sep 2026 13:13:53 -0500
 Subject: [PATCH 7/7] tests: the invoice prefix, in the fixtures and the

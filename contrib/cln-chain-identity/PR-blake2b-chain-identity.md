@@ -90,10 +90,25 @@ That is the whole of what this series is for.
 6. `tests: skip the five that carry foreign-chain BOLT 11 fixtures`
 7. `tests: the invoice prefix, in the fixtures and the assertions`
 
+## Unit tests
+
+`make check-units` fails on exactly one target, `fuzz-open_channel`, and it
+fails the same way on `24d027310` with nothing applied, so it is not this
+series. Every other target passes, including the three this series touches.
+
+Running them is what found a bug worth recording. The commit that says which
+chain a foreign prefix belongs to read `chainparams->legacy_lightning_hrp`
+while decoding, and decoding does not require a configured network: the daemon
+always has one, but `fuzz-bolt11` does not, so that was a null read and the
+target segfaulted. Upstream never dereferences `chainparams` there. It is
+guarded now, and the target passes.
+
+That bug was in the previous series too, unnoticed, because the unit tests were
+never run against it.
+
 ## Still to verify before this is ready to merge
 
-The full python suite has not been run against this series. The prefix change
-reaches further into the tests than it looks, because the bookkeeper's
-`coin_type` is the lightning prefix rather than the address prefix, and commits
-6 and 7 are what was needed the last time; whether that is still all of it
-wants a run rather than an assumption.
+The full python suite. The prefix change reaches further into the tests than it
+looks, because the bookkeeper's `coin_type` is the lightning prefix rather than
+the address prefix, and commits 6 and 7 are what was needed the last time;
+whether that is still all of it wants a run rather than an assumption.

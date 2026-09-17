@@ -98,6 +98,14 @@ here anyway; one funded before it would not.
 
 The rule applies to this node's own announcements as well, which is intended:
 a channel of ours funded before the activation is in the same position.
+The rule applies to announcements as they arrive. It does not remove entries a
+node already holds: both implementations load their graph from a local store
+without re-checking it, so a pre-activation channel accepted before the rule
+existed stays until it is pruned as a zombie. An operator who wants it gone
+sooner can delete the gossip store and resync. This is worth knowing rather
+than worth engineering around, since the store is rebuilt from the network
+anyway.
+
 
 ## 4. Channels: `option_unified_sigs`, bit 70 in `channel_type`
 

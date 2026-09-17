@@ -1,4 +1,4 @@
-From dc13b7414a90d22d7a22eac2b750fbcb2c83191a Mon Sep 17 00:00:00 2001
+From c789bf531651c39e4264110044db0c9543094298 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Thu, 17 Sep 2026 13:03:05 -0500
 Subject: [PATCH 1/7] bitcoin: give the BLAKE2b chain its own invoice prefix
@@ -24,10 +24,11 @@ written with it.
 testnet3 keeps `tb` and is left alone: it shares that prefix with testnet4 in
 this table, and only testnet4 is a chain this fork runs on.
 ---
- bitcoin/chainparams.c | 12 ++++++++----
- bitcoin/chainparams.h |  5 +++++
- plugins/offers.c      | 31 +++++++++++++++++++++++++++----
- 3 files changed, 40 insertions(+), 8 deletions(-)
+ bitcoin/chainparams.c      | 12 ++++++++----
+ bitcoin/chainparams.h      |  5 +++++
+ plugins/offers.c           | 31 +++++++++++++++++++++++++++----
+ wallet/account_migration.c | 10 ++++++++--
+ 4 files changed, 48 insertions(+), 10 deletions(-)
 
 diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
 index 9ce3b0520..d0ea3ee3d 100644
@@ -138,6 +139,34 @@ index e6f192b76..aee261944 100644
  		/* Now find last '1', which separates hrp from data */
  		const char *delim = memrchr(buffer + tok_copy.start, '1',
  					    tok_copy.end - tok_copy.start);
+diff --git a/wallet/account_migration.c b/wallet/account_migration.c
+index f913c14ab..552a8625d 100644
+--- a/wallet/account_migration.c
++++ b/wallet/account_migration.c
+@@ -423,7 +423,10 @@ void migrate_from_account_db(struct lightningd *ld, struct db *db)
+ 		 * use it was to inject your own events, and nobody did that
+ 		 * and it would be a nightmare to support */
+ 		if (ev->currency
+-		    && !streq(ev->currency, chainparams->lightning_hrp)) {
++		    && !streq(ev->currency, chainparams->lightning_hrp)
++		    && !(chainparams->legacy_lightning_hrp
++			 && streq(ev->currency,
++				  chainparams->legacy_lightning_hrp))) {
+ 			log_broken(ld->log, "IGNORING foreign currency chain event (%s, currency %s)",
+ 				   ev->tag, ev->currency);
+ 			continue;
+@@ -519,7 +522,10 @@ void migrate_from_account_db(struct lightningd *ld, struct db *db)
+ 		 * use it was to inject your own events, and nobody did that
+ 		 * and it would be a nightmare to support */
+ 		if (ev->currency
+-		    && !streq(ev->currency, chainparams->lightning_hrp)) {
++		    && !streq(ev->currency, chainparams->lightning_hrp)
++		    && !(chainparams->legacy_lightning_hrp
++			 && streq(ev->currency,
++				  chainparams->legacy_lightning_hrp))) {
+ 			log_broken(ld->log, "IGNORING foreign currency channel event (%s, currency %s)",
+ 				   ev->tag, ev->currency);
+ 			continue;
 -- 
 2.43.0
 

@@ -1,4 +1,4 @@
-From 3303af7313ca8d943ec71b244d0d9e1009568b07 Mon Sep 17 00:00:00 2001
+From 3d56681053f4e74ad140bf9e677957adcd5dc094 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Thu, 17 Sep 2026 13:12:51 -0500
 Subject: [PATCH 5/7] doc: the chain identity, rewritten for the design that
@@ -21,16 +21,16 @@ already implemented.
 Kept identical to Lightning Fork's copy except where an implementation detail
 differs, which is the point of writing it down at all.
 ---
- doc/blake2b-chain-identity.md | 354 ++++++++++++++++++++++++++++++++++
- 1 file changed, 354 insertions(+)
+ doc/blake2b-chain-identity.md | 362 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 362 insertions(+)
  create mode 100644 doc/blake2b-chain-identity.md
 
 diff --git a/doc/blake2b-chain-identity.md b/doc/blake2b-chain-identity.md
 new file mode 100644
-index 000000000..3b75fc605
+index 000000000..34b9da290
 --- /dev/null
 +++ b/doc/blake2b-chain-identity.md
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,362 @@
 +# Lightning on the Bitcoin BLAKE2b chain: identity constants
 +
 +This is the set of values a Lightning implementation needs to run on the
@@ -134,6 +134,14 @@ index 000000000..3b75fc605
 +
 +The rule applies to this node's own announcements as well, which is intended:
 +a channel of ours funded before the activation is in the same position.
++The rule applies to announcements as they arrive. It does not remove entries a
++node already holds: both implementations load their graph from a local store
++without re-checking it, so a pre-activation channel accepted before the rule
++existed stays until it is pruned as a zombie. An operator who wants it gone
++sooner can delete the gossip store and resync. This is worth knowing rather
++than worth engineering around, since the store is rebuilt from the network
++anyway.
++
 +
 +## 4. Channels: `option_unified_sigs`, bit 70 in `channel_type`
 +
