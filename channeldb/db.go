@@ -31,6 +31,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb/migration33"
 	"github.com/lightningnetwork/lnd/channeldb/migration34"
 	"github.com/lightningnetwork/lnd/channeldb/migration35"
+	"github.com/lightningnetwork/lnd/channeldb/migration36"
 	"github.com/lightningnetwork/lnd/channeldb/migration_01_to_11"
 	"github.com/lightningnetwork/lnd/clock"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
@@ -318,6 +319,15 @@ var (
 			// optional migration package.
 			number:    35,
 			migration: migration35.MigrateWaitingProofStore,
+		},
+		{
+			// Moves channels out of the chain_hash this daemon
+			// used to advertise and into the genesis hash it
+			// advertises now. Without it, a node with channels
+			// opened under the old value cannot start against a
+			// build using the new one.
+			number:    36,
+			migration: migration36.MigrateChainHash,
 		},
 	}
 

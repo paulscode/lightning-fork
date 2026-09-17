@@ -269,6 +269,20 @@ If you implemented the old version:
 - **Move `option_blake2b` to the even bit** if you were sending the odd one.
   With the shared `chain_hash`, the odd bit separates nothing, because a peer
   that cannot read it ignores it by definition.
+- **Channels opened under the old value are migrated, not stranded.** lnd keys
+  channels by chain hash, so a node that opened channels before the change
+  cannot start against a build after it: the server fails with `no chain bucket
+  exists`. Lightning Fork's channeldb migration 36 moves them, and moves the
+  resolver reports of closed channels with them. It is a no-op on a database
+  that never held such a channel. **Back up `channel.db` before upgrading**:
+  lnd takes no backup of its own before a migration, and this one is one way.
+- **Upgrading is a flag day for whoever is on the other end of a channel.**
+  While one end has upgraded and the other has not, the two cannot peer at all:
+  they disagree about `chain_hash`, and the upgraded one sends an even feature
+  bit the other does not know. The channel is intact and unusable until both
+  move, and resumes once they have. Measured, both halves, in the lab's
+  chain-hash-migration scenario. There is nothing a migration can do about
+  this; it is what changing a chain identifier costs.
 - **Backups written under the old value are still restorable.** Lightning
   Fork accepts the legacy form per network alongside the current one, so a
   backup taken the day before an upgrade restores after it. It accepts each
