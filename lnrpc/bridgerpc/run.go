@@ -215,6 +215,10 @@ func (s *service) route(ctx context.Context, invoice string) (*side,
 // connection: abandoning the swap there would leave one leg paid and the other
 // held.
 func (s *service) drive(sd *side, hash node.Hash) {
+	// Before the goroutine, so a quote returning immediately after cannot
+	// read headroom without this swap counted against its own side.
+	s.remember(hash, sd)
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()

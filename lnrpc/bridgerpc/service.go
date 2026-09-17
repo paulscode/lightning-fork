@@ -20,6 +20,7 @@ import (
 	"github.com/paulscode/lightning-fork-bridge/rate"
 	"github.com/paulscode/lightning-fork-bridge/runner"
 	"github.com/paulscode/lightning-fork-bridge/store"
+	"github.com/paulscode/lightning-fork-bridge/swap"
 )
 
 // ErrNoDirection is returned when no enabled direction can pay an invoice.
@@ -131,6 +132,15 @@ type service struct {
 	chainMu  sync.Mutex
 	lfChain  *chainrate.Observer
 	btcChain *chainrate.Observer
+
+	// sideOf remembers which direction each swap belongs to, so that what
+	// is already committed can be counted per side.
+	//
+	// It is not in the journal, so it is rebuilt by asking the paying node
+	// to decode the invoice, and cached because that is a round trip and
+	// this is asked on every quote.
+	sideMu sync.Mutex
+	sideOf map[node.Hash]string
 
 	// ctx is the bridge's own lifetime, which a swap started by an RPC
 	// must outlive: the caller may hang up the moment after they pay, and
@@ -321,8 +331,14 @@ func (s *service) spacing(invert bool) func(context.Context) (driver.Rates,
 //
 // The balance alone is not the answer: what has already been promised to swaps
 // that have not finished is still on the node's books but is spoken for, and
-// quoting against it would promise the same funds twice. store.Committed is
-// that second part, and it is the one that is easy to forget.
+// quoting against it would promise the same funds twice.
+//
+// What is promised has to be counted per direction. The journal holds both,
+// and the two chains' millisatoshis are not the same unit, so summing all of
+// it and subtracting from one side's balance compares quantities that do not
+// mean the same thing. It is wrong in both directions and unsafe in one: the
+// chain whose unit is numerically larger has its commitments under-counted,
+// and the bridge promises more of it than it has left.
 func (s *service) headroom(sd *side) quote.Headroom {
 	return func(ctx context.Context) (uint64, error) {
 		held, err := sd.balance(ctx)
@@ -330,7 +346,7 @@ func (s *service) headroom(sd *side) quote.Headroom {
 			return 0, err
 		}
 
-		promised, err := store.Committed(ctx, s.journal)
+		promised, err := s.committedOn(ctx, sd)
 		if err != nil {
 			return 0, fmt.Errorf("reading what is already "+
 				"committed: %w", err)
@@ -341,6 +357,85 @@ func (s *service) headroom(sd *side) quote.Headroom {
 
 		return held - promised, nil
 	}
+}
+
+// committedOn is what this direction has already promised to pay out, in the
+// units of the chain it pays on.
+//
+// Only the states store.Committed counts, and for the same reason: a swap
+// merely quoted has no HTLC yet, but a payer can fund it at any moment, and
+// between "they might" and "they did" there is no chance to re-decide.
+func (s *service) committedOn(ctx context.Context, sd *side) (uint64, error) {
+	pending, err := s.journal.Pending(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("reading pending swaps: %w", err)
+	}
+
+	var total uint64
+	for _, rec := range pending {
+		switch rec.State {
+		case swap.Quoted, swap.Offered, swap.Funded, swap.Paying:
+		default:
+			continue
+		}
+
+		name, err := s.sideNameOf(ctx, rec.Hash, rec.Invoice)
+		if err != nil {
+			// A swap that cannot be attributed is counted against
+			// every side. Leaving it out of the one it belongs to
+			// would let the bridge promise those funds twice, and
+			// over-counting only refuses swaps it might have
+			// served.
+			total += rec.OutgoingMsat
+
+			continue
+		}
+		if name != sd.name {
+			continue
+		}
+
+		// Saturating, because an overflow here would report a small
+		// commitment for an enormous one, in the direction that
+		// oversells.
+		if total+rec.OutgoingMsat < total {
+			return 0, errors.New("committed amounts overflow")
+		}
+		total += rec.OutgoingMsat
+	}
+
+	return total, nil
+}
+
+// sideNameOf is which direction a swap belongs to, remembered once.
+func (s *service) sideNameOf(ctx context.Context, hash node.Hash,
+	invoice string) (string, error) {
+
+	s.sideMu.Lock()
+	name, ok := s.sideOf[hash]
+	s.sideMu.Unlock()
+
+	if ok {
+		return name, nil
+	}
+
+	sd, _, err := s.route(ctx, invoice)
+	if err != nil {
+		return "", err
+	}
+	s.remember(hash, sd)
+
+	return sd.name, nil
+}
+
+// remember records which direction a swap belongs to.
+func (s *service) remember(hash node.Hash, sd *side) {
+	s.sideMu.Lock()
+	defer s.sideMu.Unlock()
+
+	if s.sideOf == nil {
+		s.sideOf = make(map[node.Hash]string)
+	}
+	s.sideOf[hash] = sd.name
 }
 
 // close releases what newService opened. Safe to call twice.

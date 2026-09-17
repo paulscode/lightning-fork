@@ -25,6 +25,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/paulscode/lightning-fork-bridge/chainrate"
 	"github.com/paulscode/lightning-fork-bridge/inventory"
+	"github.com/paulscode/lightning-fork-bridge/node"
 	"github.com/paulscode/lightning-fork-bridge/store"
 	"github.com/paulscode/lightning-fork-bridge/swap"
 )
@@ -945,5 +946,182 @@ func TestLookupSwapOfAnUnknownHash(t *testing.T) {
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Errorf("answered %v, wanted NotFound", status.Code(err))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 7. Commitments are counted per direction.
+//
+// Both directions share one journal and the two chains' millisatoshis are not
+// the same unit, so summing all of it and subtracting from one side's balance
+// compares quantities that do not mean the same thing. Wrong both ways and
+// unsafe one way: the chain whose unit is numerically larger has its
+// commitments under-counted, and the bridge promises more of it than it has.
+//
+// Inherited from the standalone daemon, which does the same thing. Found by
+// reading for shared state, not by anything failing.
+// ---------------------------------------------------------------------------
+
+// sidedService wires each direction to a node that decodes only its own
+// invoices, which is how a swap is attributed to a direction.
+func sidedService(t *testing.T, balance uint64) *service {
+	t.Helper()
+
+	f := &fakeNode{synced: true, balance: balance}
+	svc := serviceFor(t, usable(), f, remote(nil, nil, nil))
+
+	for _, sd := range svc.sides {
+		sd.balance = func(context.Context) (uint64, error) {
+			return balance, nil
+		}
+
+		accepts := "lnblake"
+		if sd.name == "toBitcoin" {
+			accepts = "lnbc"
+		}
+		sd.out = &fakeOutDecoder{accepts: accepts}
+	}
+
+	return svc
+}
+
+// fakeOutDecoder decodes only invoices carrying its prefix.
+type fakeOutDecoder struct {
+	node.Outgoing
+
+	accepts string
+}
+
+func (f *fakeOutDecoder) Decode(_ context.Context, inv string) (node.Decoded,
+	error) {
+
+	if !strings.HasPrefix(inv, f.accepts) {
+		return node.Decoded{}, errors.New("not an invoice this node " +
+			"can pay")
+	}
+
+	return node.Decoded{AmountMsat: 1}, nil
+}
+
+func TestHeadroomCountsOnlyItsOwnSide(t *testing.T) {
+	t.Parallel()
+
+	const held = 10_000_000
+
+	svc := sidedService(t, held)
+
+	// A swap paying out on BLAKE2b. In real units this is a BTCB2 amount,
+	// which is roughly three hundred times a Bitcoin one of the same
+	// value: subtracting it from the Bitcoin side is not a smaller
+	// mistake, it is a different quantity.
+	now := time.Now()
+	err := svc.journal.Put(context.Background(), store.Record{
+		Hash: [32]byte{1}, State: swap.Funded, OutgoingCLTVLimit: 40,
+		Invoice: "lnblakert1payme", IncomingMsat: 3_000,
+		OutgoingMsat: 4_000_000, Rate: 1, Spread: 0.01,
+		Created: now, Updated: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, sd := range svc.sides {
+		got, err := svc.headroom(sd)(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want := uint64(held)
+		if sd.name == "toBlake2b" {
+			want = held - 4_000_000
+		}
+		if got != want {
+			t.Errorf("%s headroom %d, wanted %d: the pending swap "+
+				"pays out on BLAKE2b, so only that side's "+
+				"room is reduced", sd.name, got, want)
+		}
+	}
+}
+
+// A swap nothing can attribute is counted against every side. Leaving it out
+// of the one it belongs to would let the bridge promise those funds twice, and
+// over-counting only refuses swaps it might have served.
+func TestAnUnattributableSwapIsCountedAgainstEverySide(t *testing.T) {
+	t.Parallel()
+
+	const held = 10_000_000
+
+	svc := sidedService(t, held)
+
+	now := time.Now()
+	err := svc.journal.Put(context.Background(), store.Record{
+		Hash: [32]byte{2}, State: swap.Funded, OutgoingCLTVLimit: 40,
+		Invoice:      "something no node here can read",
+		IncomingMsat: 3_000, OutgoingMsat: 4_000_000, Rate: 1,
+		Spread: 0.01, Created: now, Updated: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, sd := range svc.sides {
+		got, err := svc.headroom(sd)(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != held-4_000_000 {
+			t.Errorf("%s headroom %d, wanted %d: a swap that "+
+				"cannot be attributed has to be counted "+
+				"everywhere rather than nowhere", sd.name, got,
+				held-4_000_000)
+		}
+	}
+}
+
+// A swap whose payment has already left is not a commitment. Paid and Failing
+// are still unfinished, so the journal returns them, but their outgoing money
+// has gone and the node's balance already reflects it: counting them again
+// would subtract the same funds twice and shrink the bridge's room for no
+// reason.
+//
+// Terminal states are excluded by the journal itself, so testing with those
+// would pass whether or not this filter existed. That is what the first
+// version of this test did.
+func TestASwapThatHasAlreadyPaidCommitsNothing(t *testing.T) {
+	t.Parallel()
+
+	const held = 10_000_000
+
+	svc := sidedService(t, held)
+
+	now := time.Now()
+	for i, st := range []swap.State{swap.Paid, swap.Failing} {
+		if st.Terminal() {
+			t.Fatalf("%v is terminal, so the journal filters it "+
+				"and this test would pass without the code it "+
+				"is written for", st)
+		}
+
+		err := svc.journal.Put(context.Background(), store.Record{
+			Hash: [32]byte{byte(10 + i)}, State: st,
+			OutgoingCLTVLimit: 40, Invoice: "lnblakert1done",
+			IncomingMsat: 3_000, OutgoingMsat: 4_000_000, Rate: 1,
+			Spread: 0.01, Created: now, Updated: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, sd := range svc.sides {
+		got, err := svc.headroom(sd)(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != held {
+			t.Errorf("%s headroom %d, wanted the whole %d: a swap "+
+				"whose payment has left commits nothing more",
+				sd.name, got, held)
+		}
 	}
 }
