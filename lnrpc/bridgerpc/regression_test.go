@@ -1261,3 +1261,103 @@ func TestFinishedSwapsAreForgotten(t *testing.T) {
 			"unfinished swap", size)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 9. A caller hanging up must not abandon a half-created swap.
+//
+// Quoting creates a hold invoice on this node and then records the swap. Run
+// on the caller's context, a caller who gives up between those two leaves the
+// node holding an invoice the journal has no record of.
+//
+// This is a regression: the standalone daemon's first adversarial pass found
+// exactly this and fixed it, and the same mistake was made again here.
+// ---------------------------------------------------------------------------
+
+func TestQuotingDoesNotUseTheCallersContext(t *testing.T) {
+	t.Parallel()
+
+	s := serverWith(t, true, &fakeNode{synced: true})
+	svc := serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+	svc.ctx = context.Background()
+	s.svc = svc
+
+	// A side whose decode records the state of the context at the moment
+	// it was handed one. Recording the context itself and reading it after
+	// Quote returns would see it already cancelled by Quote's own defer,
+	// which says nothing about what the work ran under.
+	var seen ctxState
+	for _, sd := range svc.sides {
+		sd.out = &ctxRecordingOut{seen: &seen}
+	}
+
+	// A caller who has already given up.
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _ = s.Quote(dead, &QuoteRequest{Invoice: "lnbcrt1payme"})
+
+	if !seen.called {
+		t.Fatal("the quote never reached a node")
+	}
+	if seen.err != nil {
+		t.Errorf("the quote ran on a context that was already done, "+
+			"so a caller hanging up abandons the swap partway: %v",
+			seen.err)
+	}
+}
+
+// ctxState is what a context looked like when the work was handed it.
+type ctxState struct {
+	called      bool
+	err         error
+	hasDeadline bool
+}
+
+// ctxRecordingOut records what the context looked like when a decode was given
+// one, then refuses so the quote stops there.
+type ctxRecordingOut struct {
+	node.Outgoing
+
+	seen *ctxState
+}
+
+func (c *ctxRecordingOut) Decode(ctx context.Context, _ string) (node.Decoded,
+	error) {
+
+	_, hasDeadline := ctx.Deadline()
+	*c.seen = ctxState{
+		called: true, err: ctx.Err(), hasDeadline: hasDeadline,
+	}
+
+	return node.Decoded{}, errors.New("not this node")
+}
+
+// The quote's own context must still be bounded, or a node that never answers
+// holds the quoter's lock indefinitely.
+func TestTheQuoteContextIsBounded(t *testing.T) {
+	t.Parallel()
+
+	s := serverWith(t, true, &fakeNode{synced: true})
+	svc := serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+	svc.ctx = context.Background()
+	s.svc = svc
+
+	var seen ctxState
+	for _, sd := range svc.sides {
+		sd.out = &ctxRecordingOut{seen: &seen}
+	}
+
+	_, _ = s.Quote(context.Background(), &QuoteRequest{
+		Invoice: "lnbcrt1payme",
+	})
+
+	if !seen.called {
+		t.Fatal("the quote never reached a node")
+	}
+	if !seen.hasDeadline {
+		t.Error("the quote runs on a context with no deadline, so a " +
+			"node that never answers holds the quoter's lock")
+	}
+}

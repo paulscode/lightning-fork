@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -19,6 +21,14 @@ import (
 	"google.golang.org/grpc/status"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
+
+// quoteTimeout bounds a quote, which talks to both nodes.
+//
+// Generous, because it covers decoding on two nodes and creating a hold
+// invoice, and the caller's own deadline ends their wait sooner. What it
+// exists for is the swap: the work has to finish or fail rather than be
+// abandoned halfway.
+const quoteTimeout = 60 * time.Second
 
 const (
 	// subServerName is the name of the sub rpc server. We'll use this name
@@ -71,6 +81,9 @@ type Server struct {
 
 	cfg *Config
 
+	// mu guards svc, which Start publishes and the methods read.
+	mu sync.RWMutex
+
 	// local is this node, as both halves of a swap.
 	local *Local
 
@@ -81,7 +94,17 @@ type Server struct {
 	// svc is the running bridge. Nil while the bridge is disabled or
 	// before Start has wired it, which every method checks: a quote
 	// answered without it would be a promise with nothing behind it.
+	//
+	// Read through service, never directly.
 	svc *service
+}
+
+// service is the running bridge, or nil if it is not up.
+func (s *Server) service() *service {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.svc
 }
 
 // A compile time check to ensure that Server fully implements the
@@ -167,8 +190,14 @@ func (s *Server) Start() error {
 
 		return err
 	}
+	// Started before it is published, so a caller that reaches Quote the
+	// instant the RPC server opens cannot find a service whose context is
+	// not set yet.
+	svc.start()
+
+	s.mu.Lock()
 	s.svc = svc
-	s.svc.start()
+	s.mu.Unlock()
 
 	log.Infof("Bridge is up, serving %d direction(s) through the Bitcoin "+
 		"node at %s", len(svc.sides), s.cfg.BitcoinRPCHost)
@@ -188,8 +217,8 @@ func (s *Server) Stop() error {
 	// talking over is closed. The node tears down the invoice registry and
 	// the router after this returns, and a swap still driving would find
 	// them gone mid-HTLC.
-	if s.svc != nil {
-		s.svc.stop()
+	if svc := s.service(); svc != nil {
+		svc.stop()
 	}
 	if s.conn != nil {
 		_ = s.conn.Close()
@@ -288,7 +317,8 @@ func errDisabled() error {
 func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 	error) {
 
-	if !s.cfg.Enabled || s.svc == nil {
+	svc := s.service()
+	if !s.cfg.Enabled || svc == nil {
 		return nil, errDisabled()
 	}
 
@@ -305,7 +335,17 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 			"to pay")
 	}
 
-	sd, _, err := s.svc.route(ctx, req.GetInvoice())
+	// Deliberately not the caller's context.
+	//
+	// Quoting creates a hold invoice on this node and records the swap.
+	// A caller who hangs up partway through would otherwise abandon it
+	// between those two, leaving the node holding an invoice the journal
+	// has no record of. The timeout is what bounds this instead, and the
+	// caller's own deadline still ends their wait.
+	ctx, cancel := context.WithTimeout(svc.ctx, quoteTimeout)
+	defer cancel()
+
+	sd, _, err := svc.route(ctx, req.GetInvoice())
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -325,7 +365,7 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	s.svc.drive(sd, q.Hash)
+	svc.drive(sd, q.Hash)
 
 	return &QuoteResponse{
 		HoldInvoice:  q.HoldInvoice,
@@ -344,7 +384,8 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
 	*Swap, error) {
 
-	if !s.cfg.Enabled || s.svc == nil {
+	svc := s.service()
+	if !s.cfg.Enabled || svc == nil {
 		return nil, errDisabled()
 	}
 	if len(req.GetHash()) != len(node.Hash{}) {
@@ -356,7 +397,7 @@ func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
 	var hash node.Hash
 	copy(hash[:], req.GetHash())
 
-	rec, err := s.svc.journal.Get(ctx, hash)
+	rec, err := svc.journal.Get(ctx, hash)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, status.Errorf(codes.NotFound, "no swap "+
@@ -411,27 +452,28 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		}
 	}
 
-	if s.svc == nil {
+	svc := s.service()
+	if svc == nil {
 		resp.Refusals = append(resp.Refusals, "the bridge is enabled "+
 			"but did not start; see the node's log")
 
 		return resp, nil
 	}
 
-	for _, sd := range s.svc.sides {
+	for _, sd := range svc.sides {
 		resp.Directions = append(resp.Directions, sd.name)
 	}
-	for _, name := range s.svc.disabled {
+	for _, name := range svc.disabled {
 		resp.Refusals = append(resp.Refusals, name+" is configured "+
 			"but not enabled")
 	}
-	resp.SwapsInFlight = uint32(s.svc.active())
+	resp.SwapsInFlight = uint32(svc.active())
 
 	// A chain the bridge cannot currently measure is a chain it cannot
 	// size an HTLC against, so every swap touching it is refused. That
 	// takes a few blocks from each chain after a restart, which looks
 	// identical to being broken unless it is said.
-	if _, err := s.svc.spacing(false)(ctx); err != nil {
+	if _, err := svc.spacing(false)(ctx); err != nil {
 		resp.Refusals = append(resp.Refusals, "still measuring block "+
 			"spacing, which takes a few blocks from each chain: "+
 			err.Error())
