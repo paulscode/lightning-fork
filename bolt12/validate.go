@@ -1073,6 +1073,19 @@ var bitcoinMainnetGenesisHash = [32]byte(*chaincfg.MainNetParams.GenesisHash)
 // getOfferChains returns the chains an offer is valid for. If offer_chains is
 // absent, the spec defaults to Bitcoin mainnet.
 func getOfferChains(o *Offer) [][32]byte {
+	return OfferChains(o)
+}
+
+// OfferChains is the chains an offer names, with the spec's default applied:
+// an absent offer_chains means Bitcoin mainnet.
+//
+// Exported because the same question is asked outside validation, when
+// deciding whether an offer is for this node's chain, and the two must give
+// the same answer. They did not before: this chain's chain_hash used to differ
+// from the mainnet genesis, so treating an absent field as "not ours" happened
+// to be right, and stopped being right the moment the two became the same
+// value.
+func OfferChains(o *Offer) [][32]byte {
 	chains := fn.MapOptionZ(
 		o.OfferChains.ValOpt(),
 		func(r ChainsRecord) [][32]byte { return r.Chains },

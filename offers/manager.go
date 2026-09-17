@@ -777,15 +777,21 @@ func namesChain(chains [][32]byte, chain [32]byte) bool {
 	return false
 }
 
-// offerChains lists the chains an offer names; an offer that names none is
-// for Bitcoin mainnet by the spec's default, which is not this chain.
+// offerChains lists the chains an offer names, with the spec's default
+// applied: an absent offer_chains means Bitcoin mainnet.
+//
+// That default used not to matter here. This chain advertised a chain_hash of
+// its own, so an offer naming no chain was for some other chain and reading
+// the absence as "not ours" was right by accident. Since 2026-09-17 this
+// chain's chain_hash is the mainnet genesis, so an offer that omits the field
+// names this chain, and most offers omit it. Keeping the old reading would
+// have refused the common case while ValidateOfferRead, which applies the
+// default, accepted it.
+//
+// It defers to bolt12.OfferChains rather than repeating the rule, because two
+// implementations of one default are what allowed them to disagree.
 func offerChains(o *bolt12.Offer) [][32]byte {
-	var chains [][32]byte
-	o.OfferChains.WhenSome(func(r tlv.RecordT[tlv.TlvType2, bolt12.ChainsRecord]) {
-		chains = append(chains, r.Val.Chains...)
-	})
-
-	return chains
+	return bolt12.OfferChains(o)
 }
 
 // requestChain returns the chain a request names, if it names one.

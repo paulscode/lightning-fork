@@ -130,9 +130,9 @@ func Decode(invoice string, net *chaincfg.Params, opts ...DecodeOption) (
 			isBitcoinInvoiceHRP(hrp[2:]) {
 
 			return nil, fmt.Errorf("invoice is for the SHA256 "+
-				"Bitcoin network (prefix %q), not for the Bitcoin "+
-				"BLAKE2b chain this node runs on (expected prefix "+
-				"ln%s)", hrp, expectedPrefix)
+				"chain (prefix %q), not the BLAKE2b chain this "+
+				"node follows (expected prefix ln%s)", hrp,
+				expectedPrefix)
 		}
 		return nil, fmt.Errorf(
 			"invoice not for current active network '%s'", net.Name)

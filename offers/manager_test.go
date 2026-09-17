@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightningnetwork/lnd/bolt12"
 	"github.com/lightningnetwork/lnd/clock"
@@ -569,7 +571,11 @@ func TestDecodeBolt12(t *testing.T) {
 	d, err = env.manager.DecodeBolt12(bitcoinStr)
 	require.NoError(t, err)
 	require.False(t, d.ForThisChain)
-	require.Empty(t, d.Chains)
+
+	// An absent offer_chains means Bitcoin mainnet, so it is reported as
+	// naming that rather than as naming nothing. This environment runs on
+	// a test chain, so mainnet is still not it.
+	require.Equal(t, [][32]byte{bitcoinMainnetGenesis()}, d.Chains)
 	require.ErrorIs(t, d.ValidationError, bolt12.ErrUnsupportedChain)
 
 	// A chain-less offer that also fails a check that runs before the
@@ -760,4 +766,47 @@ func (f *fakeKeyRing) DeriveKey(
 	return keychain.KeyDescriptor{
 		KeyLocator: loc, PubKey: f.key.PubKey(),
 	}, nil
+}
+
+// bitcoinMainnetGenesis is the hash an absent offer_chains defaults to.
+func bitcoinMainnetGenesis() [32]byte {
+	return [32]byte(*chaincfg.MainNetParams.GenesisHash)
+}
+
+// An offer that names no chain is for Bitcoin mainnet by the spec's default,
+// and since 2026-09-17 that is this chain's chain_hash. So on a node in
+// production such an offer is for this chain, and most offers omit the field.
+//
+// This is the case the old reading got wrong. It used to be right by accident:
+// while this chain advertised a chain_hash of its own, "names no chain" and
+// "not for this chain" happened to coincide.
+func TestOfferWithNoChainsIsForThisChainOnMainnet(t *testing.T) {
+	t.Parallel()
+
+	env := newTestEnv(t)
+	env.manager.cfg.ChainHash = bitcoinMainnetGenesis()
+
+	offer := &bolt12.Offer{
+		OfferIssuerID: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType22](
+				env.issuer.PubKey(),
+			),
+		),
+	}
+	raw, err := offer.Encode()
+	require.NoError(t, err)
+	str, err := bolt12.Encode(OfferHRP, raw)
+	require.NoError(t, err)
+
+	d, err := env.manager.DecodeBolt12(str)
+	require.NoError(t, err)
+
+	require.True(t, d.ForThisChain, "an offer that omits offer_chains is "+
+		"for Bitcoin mainnet by the spec's default, which is this "+
+		"chain's chain_hash; refusing it would refuse the common case")
+	require.NoError(t, d.ValidationError)
+
+	// And the two must agree. They disagreed before: the validator applied
+	// the default and this did not.
+	require.Equal(t, d.ValidationError == nil, d.ForThisChain)
 }

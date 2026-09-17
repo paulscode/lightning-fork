@@ -55,6 +55,24 @@ func TestBackupsFromBeforeTheChainHashChangeAreAccepted(t *testing.T) {
 			backup: *chaincfg.TestNet3Params.GenesisHash,
 		},
 		{
+			// The legacy form is per network. Accepting mainnet's
+			// everywhere would be laxer than the rule it replaces,
+			// and would restore a mainnet channel onto a regtest
+			// node.
+			name:   "mainnet's legacy hash is refused on regtest",
+			ours:   regtest,
+			backup: *chainreg.Blake2bMainnetActivationHash,
+		},
+		{
+			// The converse: the tagged form was never what mainnet
+			// advertised, so no mainnet backup carries it.
+			name: "the tagged form is refused on mainnet",
+			ours: mainnet,
+			backup: chainreg.SyntheticChainHash(
+				chaincfg.MainNetParams.GenesisHash,
+			),
+		},
+		{
 			name: "a backup naming nothing",
 			ours: mainnet, backup: chainhash.Hash{},
 		},

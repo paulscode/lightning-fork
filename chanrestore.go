@@ -58,9 +58,13 @@ type ErrBackupWrongChain struct {
 
 // Error implements the error interface.
 func (e *ErrBackupWrongChain) Error() string {
-	return fmt.Sprintf("channel backup is for chain %v but this daemon runs "+
-		"on the Bitcoin BLAKE2b chain (%v); channels of a node on another "+
-		"chain cannot be restored here", e.Backup, e.Ours)
+	// Both hashes are printed because they are now the same shape and one
+	// of them is the genesis hash this chain shares with the chain that
+	// did not upgrade, which is confusing to read without the other beside
+	// it.
+	return fmt.Sprintf("channel backup names chain %v, and this node "+
+		"follows the BLAKE2b chain, whose chain_hash is %v; a channel "+
+		"from another chain cannot be restored here", e.Backup, e.Ours)
 }
 
 // checkBackupChain refuses any backup whose chain hash is not ours.
@@ -80,19 +84,20 @@ func (e *ErrBackupWrongChain) Error() string {
 func checkBackupChain(ours chainhash.Hash,
 	backups ...chanbackup.Single) error {
 
-	// Two of them, because the old scheme differed by network: mainnet
-	// advertised the id of the first BLAKE2b block, and every other
-	// network a tagged hash of its genesis.
-	legacy := map[chainhash.Hash]struct{}{
-		chainreg.SyntheticChainHash(&ours):     {},
-		*chainreg.Blake2bMainnetActivationHash: {},
+	// Exactly the one this network used to advertise, and no other. The
+	// old scheme differed by network: mainnet used the id of the first
+	// BLAKE2b block, every other network a tagged hash of its genesis.
+	//
+	// Accepting both forms everywhere would be laxer than the rule it
+	// replaces: a mainnet backup would restore onto a regtest node, which
+	// the check refused before today and should still refuse.
+	legacy := chainreg.SyntheticChainHash(&ours)
+	if ours.IsEqual(chaincfg.MainNetParams.GenesisHash) {
+		legacy = *chainreg.Blake2bMainnetActivationHash
 	}
 
 	for _, backup := range backups {
-		if backup.ChainHash == ours {
-			continue
-		}
-		if _, ok := legacy[backup.ChainHash]; ok {
+		if backup.ChainHash == ours || backup.ChainHash == legacy {
 			continue
 		}
 
