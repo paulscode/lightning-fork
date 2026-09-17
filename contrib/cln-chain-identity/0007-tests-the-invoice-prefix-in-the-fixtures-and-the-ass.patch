@@ -1,0 +1,160 @@
+From 96da1d9190983c99b38259ed50e531e6e1313fac Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Thu, 17 Sep 2026 13:13:53 -0500
+Subject: [PATCH 7/7] tests: the invoice prefix, in the fixtures and the
+ assertions
+
+Changing the BOLT 11 prefix breaks every test that spells one out, and there
+are more of them than there look: the bookkeeper's coin_type is the lightning
+prefix rather than the address prefix, so its assertions move too.
+
+The pytest chainparams fixture gains `lightning_hrp`, which is what the tests
+should have been reading all along instead of `bip173_prefix`. Addresses are
+unchanged on this chain and invoices are not, so the two are no longer the same
+string and a test that conflates them passes for the wrong reason.
+
+Nothing here touches chain_hash or the wallet stamp. An earlier version of this
+series changed both and carried a `restamp-wallet-for-this-chain` option into
+these tests; that series is withdrawn and the option does not exist.
+---
+ contrib/pyln-testing/pyln/testing/fixtures.py |  5 +++++
+ tests/test_bookkeeper.py                      | 10 +++++-----
+ tests/test_invoices.py                        |  4 ++--
+ tests/test_xpay.py                            |  4 ++--
+ tests/utils.py                                |  4 ++--
+ 5 files changed, 16 insertions(+), 11 deletions(-)
+
+diff --git a/contrib/pyln-testing/pyln/testing/fixtures.py b/contrib/pyln-testing/pyln/testing/fixtures.py
+index 335667cfe..a96d45b39 100644
+--- a/contrib/pyln-testing/pyln/testing/fixtures.py
++++ b/contrib/pyln-testing/pyln/testing/fixtures.py
+@@ -854,6 +854,10 @@ def chainparams():
+     chainparams = {
+         "regtest": {
+             "bip173_prefix": "bcrt",
++            # The BOLT 11 prefix, which on this chain is not the address
++            # prefix: addresses are unchanged and invoices are not. See
++            # doc/blake2b-chain-identity.md.
++            "lightning_hrp": "blakert",
+             "elements": False,
+             "name": "regtest",
+             "p2sh_prefix": "2",
+@@ -863,6 +867,7 @@ def chainparams():
+         },
+         "liquid-regtest": {
+             "bip173_prefix": "ert",
++            "lightning_hrp": "ert",
+             "elements": True,
+             "name": "liquid-regtest",
+             "p2sh_prefix": "X",
+diff --git a/tests/test_bookkeeper.py b/tests/test_bookkeeper.py
+index de8b28c91..b008d0fad 100644
+--- a/tests/test_bookkeeper.py
++++ b/tests/test_bookkeeper.py
+@@ -896,7 +896,7 @@ def test_bookkeeper_custom_notifs(node_factory, chainparams):
+     assert events == [{'account': "nifty's secret stash",
+                        'blockheight': 111,
+                        'credit_msat': 180000000,
+-                       'currency': chainparams['bip173_prefix'],
++                       'currency': chainparams['lightning_hrp'],
+                        'debit_msat': 0,
+                        'outpoint': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0',
+                        'tag': 'deposit',
+@@ -905,7 +905,7 @@ def test_bookkeeper_custom_notifs(node_factory, chainparams):
+                       {'account': "nifty's secret stash",
+                        'blockheight': 111,
+                        'credit_msat': 0,
+-                       'currency': chainparams['bip173_prefix'],
++                       'currency': chainparams['lightning_hrp'],
+                        'debit_msat': 180000000,
+                        'outpoint': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0',
+                        'tag': 'withdrawal',
+@@ -915,7 +915,7 @@ def test_bookkeeper_custom_notifs(node_factory, chainparams):
+                       {'account': "nifty's secret stash",
+                        'blockheight': 111,
+                        'credit_msat': 124443000,
+-                       'currency': chainparams['bip173_prefix'],
++                       'currency': chainparams['lightning_hrp'],
+                        'debit_msat': 0,
+                        'outpoint': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:0',
+                        'tag': 'deposit',
+@@ -923,7 +923,7 @@ def test_bookkeeper_custom_notifs(node_factory, chainparams):
+                        'type': 'chain'},
+                       {'account': "nifty's secret stash",
+                        'credit_msat': 55557000,
+-                       'currency': chainparams['bip173_prefix'],
++                       'currency': chainparams['lightning_hrp'],
+                        'debit_msat': 0,
+                        'tag': 'onchain_fee',
+                        'timestamp': 1679955976,
+@@ -931,7 +931,7 @@ def test_bookkeeper_custom_notifs(node_factory, chainparams):
+                        'type': 'onchain_fee'},
+                       {'account': "nifty's secret stash",
+                        'credit_msat': 0,
+-                       'currency': chainparams['bip173_prefix'],
++                       'currency': chainparams['lightning_hrp'],
+                        'debit_msat': 55555000,
+                        'tag': 'onchain_fee',
+                        'timestamp': 1679955976,
+diff --git a/tests/test_invoices.py b/tests/test_invoices.py
+index 23505f71e..4f5a4ff41 100644
+--- a/tests/test_invoices.py
++++ b/tests/test_invoices.py
+@@ -26,7 +26,7 @@ def test_invoice(node_factory, chainparams):
+     after = int(time.time())
+     b11 = l1.rpc.decode(inv['bolt11'])
+     assert b11['type'] == 'bolt11 invoice'
+-    assert b11['currency'] == chainparams['bip173_prefix']
++    assert b11['currency'] == chainparams['lightning_hrp']
+     assert b11['created_at'] >= before
+     assert b11['created_at'] <= after
+     assert b11['payment_hash'] == inv['payment_hash']
+@@ -52,7 +52,7 @@ def test_invoice(node_factory, chainparams):
+     b11 = inv['bolt11']
+     # Amount usually comes after currency (bcrt in our case),
+     # but an any-amount invoices will have no amount
+-    assert b11.startswith("ln" + chainparams['bip173_prefix'])
++    assert b11.startswith("ln" + chainparams['lightning_hrp'])
+     # By bech32 rules, the last '1' digit is the separator
+     # between the human-readable and data parts. We want
+     # to match the "lnbcrt1" above with the '1' digit as the
+diff --git a/tests/test_xpay.py b/tests/test_xpay.py
+index f8e5e24de..c4e4e7de1 100644
+--- a/tests/test_xpay.py
++++ b/tests/test_xpay.py
+@@ -282,7 +282,7 @@ def test_xpay_fake_channeld(node_factory, bitcoind, chainparams, slow_mode):
+         inv = subprocess.check_output(["devtools/bolt11-cli",
+                                        "encode",
+                                        n.to_bytes(length=8, byteorder=sys.byteorder).hex() + '01' * 24,
+-                                       f"currency={chainparams['bip173_prefix']}",
++                                       f"currency={chainparams['lightning_hrp']}",
+                                        f"p={hash_hex}",
+                                        f"s={'00' * 32}",
+                                        "9=020000",  # option_basic_mpp
+@@ -628,7 +628,7 @@ def test_xpay_no_mpp(node_factory, chainparams):
+                                           "encode",
+                                           # secret for l3
+                                           "79893b45d1e57cf2ebf302af91aa52c9e573f638a61a83c6e603a331b53f452c",
+-                                          f"currency={chainparams['bip173_prefix']}",
++                                          f"currency={chainparams['lightning_hrp']}",
+                                           f"p={no_mpp['payment_hash']}",
+                                           f"s={no_mpp['payment_secret']}",
+                                           f"d=Paying l3 without mpp",
+diff --git a/tests/utils.py b/tests/utils.py
+index a760586d9..719cd3a5a 100644
+--- a/tests/utils.py
++++ b/tests/utils.py
+@@ -150,8 +150,8 @@ def check_coin_moves(n, account_id, expected_moves, chainparams):
+             raise ValueError(f'node_id not: {mv}')
+         if mv['timestamp'] <= 0:
+             raise ValueError(f'timestamp invalid: {mv}')
+-        if mv['coin_type'] != chainparams['bip173_prefix']:
+-            raise ValueError(f'coin_type not {chainparams["bip173_prefix"]}: {mv}')
++        if mv['coin_type'] != chainparams['lightning_hrp']:
++            raise ValueError(f'coin_type not {chainparams["lightning_hrp"]}: {mv}')
+         # chain moves should have blockheights
+         if mv['type'] == 'chain_mvt' and mv['account_id'] != 'external' and 'blockheight' not in mv:
+             raise ValueError(f'blockheight not set: {mv}')
+-- 
+2.43.0
+

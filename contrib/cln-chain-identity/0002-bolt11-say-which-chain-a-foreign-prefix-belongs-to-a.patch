@@ -1,8 +1,8 @@
-From 00c7b33cf2bf5f965cd0d9e1a1ee3c3fa6370ab2 Mon Sep 17 00:00:00 2001
+From 3f0091c60ac65a5eafed85a00066a5d12a41214b Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 15:17:50 -0500
-Subject: [PATCH 14/15] bolt11: say which chain a foreign prefix belongs to,
- and keep the reason
+Subject: [PATCH 2/7] bolt11: say which chain a foreign prefix belongs to, and
+ keep the reason
 
 Running the python suite turned up four different errors for one
 condition, an invoice for another chain, depending on which way it
@@ -22,11 +22,11 @@ entirely. pay.c two files over has always included it. Now both do.
  2 files changed, 25 insertions(+), 2 deletions(-)
 
 diff --git a/common/bolt11.c b/common/bolt11.c
-index 280696403..06582ad2f 100644
+index bc851ed49..b7b39b1d6 100644
 --- a/common/bolt11.c
 +++ b/common/bolt11.c
-@@ -805,9 +805,26 @@ struct bolt11 *bolt11_decode_nosig(const tal_t *ctx, const char *str,
- 					   must_be_chain->lightning_hrp);
+@@ -803,9 +803,26 @@ struct bolt11 *bolt11_decode_nosig(const tal_t *ctx, const char *str,
+ 					   must_be_chain->network_name);
  	} else {
  		b11->chain = chainparams_by_lightning_hrp(prefix + 2);
 -		if (!b11->chain)

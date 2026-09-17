@@ -1,0 +1,91 @@
+From ced4c5254f0a7dc6b9ca51da95c50c795729c506 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Thu, 17 Sep 2026 13:03:59 -0500
+Subject: [PATCH 3/7] gossipd: ignore channel announcements from before the
+ proof of work changed
+
+A funding output from below block 961,640 exists for nodes that did not upgrade
+too, and its spend may happen where this node cannot see it, so a channel
+announced against one would sit in the graph forever with nothing able to
+remove it.
+
+The chain_hash check just above cannot do this job. Both chains carry the
+genesis hash they share, deliberately, so it does not tell them apart; it only
+tells either of them from some third chain. This is the other half of what
+replaced giving the chain a chain_hash of its own, the first half being
+option_unified_sigs inside channel_type.
+
+A channel funded after the activation on the other chain is already refused,
+because its funding output does not exist here and the txout lookup fails. Only
+the ones funded before it need a rule.
+
+The height is a chainparams field rather than a constant so that the rule is
+off on every network that never changed its proof of work, where a floor would
+refuse every announcement there is.
+
+Placed exactly where BOLT 7 puts it, after the chain_hash clause and before the
+one about ancient channels, and it applies to this node's own announcements as
+well: a channel of ours funded before the activation is in the same position.
+---
+ bitcoin/chainparams.c    |  1 +
+ bitcoin/chainparams.h    |  4 ++++
+ gossipd/gossmap_manage.c | 16 ++++++++++++++++
+ 3 files changed, 21 insertions(+)
+
+diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
+index d0ea3ee3d..fcd3d739d 100644
+--- a/bitcoin/chainparams.c
++++ b/bitcoin/chainparams.c
+@@ -30,6 +30,7 @@ const struct chainparams networks[] = {
+      .onchain_hrp = "bc",
+      .lightning_hrp = "blake",
+      .legacy_lightning_hrp = "bc",
++     .blake2b_activation_height = 961640,
+      .bip70_name = "main",
+      .genesis_blockhash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
+ 				      0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63,
+diff --git a/bitcoin/chainparams.h b/bitcoin/chainparams.h
+index dbd4ca3b7..8a1e7c9fc 100644
+--- a/bitcoin/chainparams.h
++++ b/bitcoin/chainparams.h
+@@ -22,6 +22,10 @@ struct chainparams {
+ 	 * still accepts it, and legacy bookkeeper events were written with
+ 	 * it. */
+ 	const char *legacy_lightning_hrp;
++	/* The height at which this chain changed its proof of work, or 0 if
++	 * it never did. A channel funded below it exists for nodes that did
++	 * not upgrade too: see the gossip rule in gossmap_manage.c. */
++	const u32 blake2b_activation_height;
+ 	/*'bip70_name' is corresponding to the 'chain' field of
+ 	 * the API 'getblockchaininfo' */
+ 	const char *bip70_name;
+diff --git a/gossipd/gossmap_manage.c b/gossipd/gossmap_manage.c
+index 3676fa9ca..92b0f5d33 100644
+--- a/gossipd/gossmap_manage.c
++++ b/gossipd/gossmap_manage.c
+@@ -669,6 +669,22 @@ const char *gossmap_manage_channel_announcement(const tal_t *ctx,
+ 	if (!bitcoin_blkid_eq(&chain_hash, &chainparams->genesis_blockhash))
+ 		return NULL;
+ 
++	/* BOLT #7:
++	 *   - if the `short_channel_id`'s block height is below the BLAKE2b
++	 *     activation, 961,640:
++	 *     - MUST ignore the message: that funding output predates the
++	 *       change of proof of work and so exists for nodes that did not
++	 *       upgrade too, whose spends this receiver does not see.
++	 *
++	 * The chain_hash check above cannot do this. Both chains carry the
++	 * genesis hash they share, so it does not tell them apart; it only
++	 * tells either of them from some third chain.
++	 */
++	if (chainparams->blake2b_activation_height != 0
++	    && short_channel_id_blocknum(scid)
++	    < chainparams->blake2b_activation_height)
++		return NULL;
++
+ 	/* Immediately discard claims of ancient channels */
+ 	if (short_channel_id_blocknum(scid) < chainparams->when_lightning_became_cool)
+ 		return tal_fmt(ctx, "Unknown UTXO %s", fmt_short_channel_id(tmpctx, scid));
+-- 
+2.43.0
+

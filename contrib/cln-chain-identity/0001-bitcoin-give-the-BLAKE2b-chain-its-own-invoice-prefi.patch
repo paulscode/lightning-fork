@@ -1,0 +1,143 @@
+From dc13b7414a90d22d7a22eac2b750fbcb2c83191a Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Thu, 17 Sep 2026 13:03:05 -0500
+Subject: [PATCH 1/7] bitcoin: give the BLAKE2b chain its own invoice prefix
+
+`chain_hash` is the genesis hash both chains share, deliberately, so nothing in
+a BOLT 11 invoice says which of the two it is for. The prefix is the only place
+that can, and it is the last thing a user sees before paying.
+
+    mainnet   lnblake        testnet4  lntblake
+    signet    lntbsblake     regtest   lnblakert
+
+An invoice for the chain that did not upgrade is refused here, and an invoice
+minted here is refused there. That second half is the point: those nodes
+predate this chain and will never be updated, so a shared prefix would mean an
+invoice from here is decoded, found well formed, and paid on the other chain.
+
+`legacy_lightning_hrp` keeps the prefix each network had before, because
+refusing an invoice is not the same as failing to recognise one. `decode` still
+pulls `lnbc` and reports it as an invoice for another chain, rather than
+falling through as an unknown string, and the bookkeeper's older events were
+written with it.
+
+testnet3 keeps `tb` and is left alone: it shares that prefix with testnet4 in
+this table, and only testnet4 is a chain this fork runs on.
+---
+ bitcoin/chainparams.c | 12 ++++++++----
+ bitcoin/chainparams.h |  5 +++++
+ plugins/offers.c      | 31 +++++++++++++++++++++++++++----
+ 3 files changed, 40 insertions(+), 8 deletions(-)
+
+diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
+index 9ce3b0520..d0ea3ee3d 100644
+--- a/bitcoin/chainparams.c
++++ b/bitcoin/chainparams.c
+@@ -28,7 +28,8 @@ static u8 liquid_regtest_fee_asset[] = {
+ const struct chainparams networks[] = {
+     {.network_name = "bitcoin",
+      .onchain_hrp = "bc",
+-     .lightning_hrp = "bc",
++     .lightning_hrp = "blake",
++     .legacy_lightning_hrp = "bc",
+      .bip70_name = "main",
+      .genesis_blockhash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
+ 				      0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63,
+@@ -61,7 +62,8 @@ const struct chainparams networks[] = {
+      .is_elements = false},
+     {.network_name = "regtest",
+      .onchain_hrp = "bcrt",
+-     .lightning_hrp = "bcrt",
++     .lightning_hrp = "blakert",
++     .legacy_lightning_hrp = "bcrt",
+      .bip70_name = "regtest",
+      .genesis_blockhash = {{{.u.u8 = {0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b,
+ 				      0x59, 0xca, 0xaf, 0x12, 0x60, 0x43, 0xeb,
+@@ -87,7 +89,8 @@ const struct chainparams networks[] = {
+      .is_elements = false},
+     {.network_name = "signet",
+      .onchain_hrp = "tb",
+-     .lightning_hrp = "tbs",
++     .lightning_hrp = "tbsblake",
++     .legacy_lightning_hrp = "tbs",
+      .bip70_name = "signet",
+      // 00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6
+      .genesis_blockhash = {{{.u.u8 = {0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80,
+@@ -138,7 +141,8 @@ const struct chainparams networks[] = {
+      .is_elements = false},
+     {.network_name = "testnet4",
+      .onchain_hrp = "tb",
+-     .lightning_hrp = "tb",
++     .lightning_hrp = "tblake",
++     .legacy_lightning_hrp = "tb",
+      .bip70_name = "testnet4",
+      // 00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043
+      .genesis_blockhash = {{{.u.u8 = {0x43, 0xf0, 0x8b, 0xda, 0xb0, 0x50, 0xe3,
+diff --git a/bitcoin/chainparams.h b/bitcoin/chainparams.h
+index 05794f5c1..dbd4ca3b7 100644
+--- a/bitcoin/chainparams.h
++++ b/bitcoin/chainparams.h
+@@ -17,6 +17,11 @@ struct chainparams {
+ 	 */
+ 	const char *onchain_hrp;
+ 	const char *lightning_hrp;
++	/* The invoice prefix this network had before the BLAKE2b chain took
++	 * one of its own (doc/blake2b-chain-identity.md), or NULL. Decoding
++	 * still accepts it, and legacy bookkeeper events were written with
++	 * it. */
++	const char *legacy_lightning_hrp;
+ 	/*'bip70_name' is corresponding to the 'chain' field of
+ 	 * the API 'getblockchaininfo' */
+ 	const char *bip70_name;
+diff --git a/plugins/offers.c b/plugins/offers.c
+index e6f192b76..aee261944 100644
+--- a/plugins/offers.c
++++ b/plugins/offers.c
+@@ -577,6 +577,32 @@ static bool tok_pull(const char *buffer, jsmntok_t *tok, const char *lowerstr)
+ 	return true;
+ }
+ 
++/* Pull "ln" plus the prefix of any network this build knows, and the prefix a
++ * network carried before this chain took one of its own, so that an invoice
++ * for the chain that did not upgrade is still recognised as an invoice and
++ * refused with a reason rather than falling through as something unknown.
++ *
++ * Longest first, so that a prefix which extends another (blakert over blake,
++ * bcrt over bc) is tried before the shorter one swallows it.
++ */
++static bool tok_pull_bolt11_prefix(const char *buffer, jsmntok_t *tok)
++{
++	static const char *names[] = {
++		"regtest", "signet", "testnet4", "testnet", "bitcoin",
++	};
++	for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
++		const struct chainparams *p = chainparams_for_network(names[i]);
++		if (tok_pull(buffer, tok,
++			     tal_fmt(tmpctx, "ln%s", p->lightning_hrp)))
++			return true;
++		if (p->legacy_lightning_hrp
++		    && tok_pull(buffer, tok,
++				tal_fmt(tmpctx, "ln%s", p->legacy_lightning_hrp)))
++			return true;
++	}
++	return false;
++}
++
+ static enum likely_type guess_type(const char *buffer, const jsmntok_t *tok)
+ {
+ 	jsmntok_t tok_copy = *tok;
+@@ -605,10 +631,7 @@ static enum likely_type guess_type(const char *buffer, const jsmntok_t *tok)
+ 	 *    is the 'social' convention of a payment unit -- in the
+ 	 *    case of Bitcoin the unit is 'bitcoin' NOT satoshis.
+ 	 */
+-	if (tok_pull(buffer, &tok_copy, "lnbcrt")
+-	    || tok_pull(buffer, &tok_copy, "lnbc")
+-	    || tok_pull(buffer, &tok_copy, "lntbs")
+-	    || tok_pull(buffer, &tok_copy, "lntb")) {
++	if (tok_pull_bolt11_prefix(buffer, &tok_copy)) {
+ 		/* Now find last '1', which separates hrp from data */
+ 		const char *delim = memrchr(buffer + tok_copy.start, '1',
+ 					    tok_copy.end - tok_copy.start);
+-- 
+2.43.0
+
