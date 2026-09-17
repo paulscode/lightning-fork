@@ -28,11 +28,19 @@ var defaultSetDesc = setDesc{
 	// longer a second thing quietly covering for it. Reverting this to the
 	// odd bit would leave the two chains on one network.
 	//
-	// Safe for nodes already in the field. The check a peer applies is
-	// whether the bit is *known*, not whether the peer sets it too, and
-	// Blake2bRequired has been named in lnwire since before this, so an
-	// older build of this daemon accepts a newer one. privkeyio's Core
-	// Lightning already sets 68 and not 69.
+	// privkeyio's Core Lightning already sets 68 and not 69, and does not
+	// require a peer to, so this is also what lets this node talk to
+	// theirs: the last release, .9, does not know the bit at all and
+	// refuses them over it.
+	//
+	// It is *not* safe for nodes in the field, and an earlier version of
+	// this comment claimed otherwise. The check a peer applies is whether
+	// the bit is known rather than whether it is also set, but lnwire only
+	// learned the bit on 2026-09-15 and .9 was released on 2026-09-14, so
+	// no released build knows it. Upgrading past this is a flag day either
+	// way, because the chain_hash reversal on its own already is one:
+	// measured, a build with this bit removed still cannot peer with .9,
+	// which refuses it with "no common chain".
 	//
 	// Not set in invoices or offers: a payer that cannot read the bit must
 	// still be refused, and the invoice prefix does that.
