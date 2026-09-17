@@ -59,6 +59,15 @@ bit is right despite BOLT 9's usual direction of travel. The usual argument
 against starting at the compulsory end is that it refuses peers before there
 is anything to be compatible with. Here refusing them is the entire purpose.
 
+**Where this bit stands, as of 2026-09-17.** It is what both implementations
+do: privkeyio's released build sets 68 and not 69, and Lightning Fork now
+matches it. It is not, at the moment, written down in a specification.
+`lightning-blake2b/bolts#1` carried it as a MUST for part of that day and was
+then narrowed to `option_unified_sigs` and the gossip rule, dropping it. A
+second implementation should set 68 anyway, because without it nothing at
+`init` separates the two chains, but should expect the number and the wording
+to be settled somewhere before it is relied on.
+
 The `networks` TLV still carries `chain_hash`, and a peer that lists chains
 not including ours is still disconnected. That check no longer distinguishes
 the two chains, since both send the same value; it distinguishes both of them
