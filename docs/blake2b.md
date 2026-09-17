@@ -17,7 +17,7 @@ Four consensus changes shipped together:
   script restrictions, expiring by median time past on 2027-09-01.
 
 Three things deliberately did **not** change: the genesis block, the address
-format (`bc1…`), and key derivation. Every hard problem below follows from
+format (`bc1...`), and key derivation. Every hard problem below follows from
 that. Two chains share one genesis hash, one network name and one address
 format, so nothing a Lightning node normally checks can tell them apart.
 
@@ -47,7 +47,7 @@ change and what to do if you implemented the old values.
 
 Consequences:
 
-- A Bitcoin invoice (`lnbc…`) is refused with a message naming the SHA256
+- A Bitcoin invoice (`lnbc...`) is refused with a message naming the SHA256
   network. A Lightning Fork invoice is refused by every Bitcoin
   implementation, which is the intended failure.
 - A node on the SHA256d chain never gets as far as sending `open_channel` or
