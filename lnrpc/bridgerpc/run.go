@@ -51,6 +51,12 @@ func (s *service) start() {
 		defer s.wg.Done()
 		s.resume(s.ctx)
 	}()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.compact(s.ctx)
+	}()
 }
 
 // stop ends the pollers and waits for swaps in flight.
@@ -331,5 +337,58 @@ func (s *service) backfill(ctx context.Context) {
 			log.Infof("Bridge read %d %s blocks of history", added,
 				src.name)
 		}
+	}
+}
+
+// DefaultCompactInterval is how often the journal is rewritten without the
+// swaps that have finished.
+const DefaultCompactInterval = time.Hour
+
+// compact rewrites the journal without the swaps that have finished, until ctx
+// ends.
+//
+// The journal is append-only, so every state a swap passes through is another
+// line, and a node that runs for months replays all of them at startup.
+// Nothing else calls this, which is why it belongs here rather than in an
+// operator's memory. It matters more here than in the standalone daemon: this
+// journal lives in the lnd data directory, so an unbounded one is also an
+// unbounded backup.
+func (s *service) compact(ctx context.Context) {
+	if s.journal == nil {
+		return
+	}
+
+	every := s.compactEvery
+	if every <= 0 {
+		every = DefaultCompactInterval
+	}
+
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+
+		// Not while swaps are being driven. Compaction takes the
+		// journal's lock, and a swap blocked on writing its own state
+		// is a swap that is not watching an HTLC.
+		if n := s.active(); n > 0 {
+			log.Debugf("Bridge not compacting the journal yet, "+
+				"%d swap(s) in flight", n)
+
+			continue
+		}
+
+		if err := s.journal.Compact(ctx); err != nil {
+			log.Warnf("Bridge could not compact the journal: %v",
+				err)
+
+			continue
+		}
+		log.Debugf("Bridge compacted the journal")
 	}
 }

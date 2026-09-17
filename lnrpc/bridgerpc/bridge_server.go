@@ -479,5 +479,7 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 			err.Error())
 	}
 
+	resp.Refusals = append(resp.Refusals, svc.liquidityRefusals(ctx)...)
+
 	return resp, nil
 }

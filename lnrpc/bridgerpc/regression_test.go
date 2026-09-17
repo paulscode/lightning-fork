@@ -1361,3 +1361,202 @@ func TestTheQuoteContextIsBounded(t *testing.T) {
 			"node that never answers holds the quoter's lock")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 10. Two things the standalone daemon does that the port left behind.
+//
+// The fifth pass's lesson was to read what this was ported from. These are
+// what that found: a fix the daemon made after its own second pass, and a
+// check its health endpoint does that Status did not.
+// ---------------------------------------------------------------------------
+
+// The journal is append-only, so every state a swap passes through is another
+// line. Without compaction it grows for the life of the node, is replayed in
+// full at every start, and being inside the lnd data directory, is copied into
+// every backup.
+func TestTheJournalIsCompacted(t *testing.T) {
+	t.Parallel()
+
+	svc := serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Write a swap through several states, then finish it, so there is
+	// something for compaction to drop.
+	now := time.Now()
+	rec := store.Record{
+		Hash: [32]byte{7}, State: swap.Quoted, OutgoingCLTVLimit: 40,
+		Invoice: "lnblakert1payme", IncomingMsat: 3_000,
+		OutgoingMsat: 1_000, Rate: 1, Spread: 0.01,
+		Created: now, Updated: now,
+	}
+	for _, st := range []swap.State{
+		swap.Quoted, swap.Offered, swap.Funded, swap.Paying,
+		swap.Paid, swap.Settled,
+	} {
+		rec.State = st
+		rec.Updated = time.Now()
+		if err := svc.journal.Put(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	before := journalSize(t, svc.cfg.Journal)
+
+	// Compaction is a loop on a ticker, so call the work directly rather
+	// than waiting an hour for it.
+	if err := svc.journal.Compact(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if after := journalSize(t, svc.cfg.Journal); after >= before {
+		t.Errorf("the journal is %d bytes after compaction and was "+
+			"%d before, so finished swaps are never dropped and "+
+			"it grows for the life of the node", after, before)
+	}
+}
+
+// And start has to schedule it, or the above is a method nobody invokes. This
+// runs the real loop rather than calling the work directly, because calling
+// the work directly is exactly what would still pass if nothing scheduled it.
+func TestStartSchedulesCompaction(t *testing.T) {
+	t.Parallel()
+
+	svc := serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+	svc.compactEvery = 10 * time.Millisecond
+
+	now := time.Now()
+	rec := store.Record{
+		Hash: [32]byte{8}, State: swap.Quoted, OutgoingCLTVLimit: 40,
+		Invoice: "lnblakert1payme", IncomingMsat: 3_000,
+		OutgoingMsat: 1_000, Rate: 1, Spread: 0.01,
+		Created: now, Updated: now,
+	}
+	for _, st := range []swap.State{
+		swap.Quoted, swap.Offered, swap.Funded, swap.Paying,
+		swap.Paid, swap.Settled,
+	} {
+		rec.State = st
+		rec.Updated = time.Now()
+		if err := svc.journal.Put(context.Background(), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	before := journalSize(t, svc.cfg.Journal)
+
+	svc.start()
+	defer svc.stop()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if journalSize(t, svc.cfg.Journal) < before {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Errorf("the journal is still %d bytes after starting the bridge, "+
+		"so nothing schedules compaction and it grows for the life "+
+		"of the node", journalSize(t, svc.cfg.Journal))
+}
+
+func journalSize(t *testing.T, path string) int64 {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return info.Size()
+}
+
+// A bridge with no outbound capacity on a side is up, synced, correctly
+// configured, and refuses every swap that way. It is the most common thing to
+// be wrong and is guaranteed on a freshly created node, so Status has to say
+// it rather than leaving it to appear per quote as a number to interpret.
+func TestStatusNamesASideThatCannotPay(t *testing.T) {
+	t.Parallel()
+
+	s := serverWith(t, true, &fakeNode{synced: true})
+	svc := serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+	svc.ctx = context.Background()
+
+	// One side funded, the other empty.
+	for _, sd := range svc.sides {
+		if sd.name == "toBitcoin" {
+			sd.balance = func(context.Context) (uint64, error) {
+				return 900_000_000, nil
+			}
+
+			continue
+		}
+		sd.balance = func(context.Context) (uint64, error) {
+			return 0, nil
+		}
+	}
+	s.svc = svc
+
+	resp, err := s.Status(context.Background(), &StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var named bool
+	for _, r := range resp.Refusals {
+		if strings.Contains(r, "toBlake2b") &&
+			strings.Contains(r, "outbound capacity") {
+
+			named = true
+		}
+		if strings.Contains(r, "toBitcoin") &&
+			strings.Contains(r, "outbound capacity") {
+
+			t.Errorf("a funded side was reported as unable to "+
+				"pay: %v", r)
+		}
+	}
+	if !named {
+		t.Errorf("a side with nothing to pay with was not named: %v",
+			resp.Refusals)
+	}
+}
+
+// A balance that cannot be read is not zero, it is unknown, and the difference
+// is what an operator needs to see.
+func TestStatusNamesAnUnreadableBalance(t *testing.T) {
+	t.Parallel()
+
+	s := serverWith(t, true, &fakeNode{synced: true})
+	svc := serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+	svc.ctx = context.Background()
+
+	for _, sd := range svc.sides {
+		sd.balance = func(context.Context) (uint64, error) {
+			return 0, errors.New("node is unavailable")
+		}
+	}
+	s.svc = svc
+
+	resp, err := s.Status(context.Background(), &StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var named bool
+	for _, r := range resp.Refusals {
+		if strings.Contains(r, "cannot read") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("an unreadable paying balance was not reported: %v",
+			resp.Refusals)
+	}
+}

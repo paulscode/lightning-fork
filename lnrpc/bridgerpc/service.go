@@ -143,6 +143,11 @@ type service struct {
 	sideMu sync.Mutex
 	sideOf map[node.Hash]string
 
+	// compactEvery is how often the journal is rewritten. Zero means
+	// DefaultCompactInterval; a test sets it low so that the scheduling
+	// can be observed rather than only the compaction.
+	compactEvery time.Duration
+
 	// ctx is the bridge's own lifetime, which a swap started by an RPC
 	// must outlive: the caller may hang up the moment after they pay, and
 	// the HTLC does not go away with their connection.
@@ -588,4 +593,44 @@ func (s *service) sizeInventory(ctx context.Context) {
 			sd.name, sized.TargetOutgoingMsat,
 			sized.FloorOutgoingMsat)
 	}
+}
+
+// liquidityRefusals names the directions that cannot currently pay.
+//
+// A bridge with no outbound capacity on a side is up, synced, correctly
+// configured and refuses every swap that way. That is the most common thing to
+// be wrong, it is guaranteed to be wrong on a freshly created node, and
+// nothing else here would say so: the nodes answer, the chains measure, and
+// the refusal only appears per quote as a number the operator has to
+// interpret.
+//
+// Bounded, because this is the request that has to answer when things are
+// wrong: a node that accepts the connection and then says nothing must not
+// hang the one call asking why.
+func (s *service) liquidityRefusals(ctx context.Context) []string {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var out []string
+	for _, sd := range s.sides {
+		held, err := sd.balance(ctx)
+		if err != nil {
+			out = append(out, fmt.Sprintf("%s cannot read what "+
+				"the paying node can send, so it will refuse "+
+				"every swap: %v", sd.name, err))
+
+			continue
+		}
+
+		// The same floor sizing uses: below one swap there is nothing
+		// to serve, whatever the inventory policy would say.
+		if floor := sd.quoter.Policy.MinSwapMsat; held < floor {
+			out = append(out, fmt.Sprintf("%s has %d msat of "+
+				"outbound capacity against a %d msat minimum "+
+				"swap, so it will refuse every swap until the "+
+				"paying node has more", sd.name, held, floor))
+		}
+	}
+
+	return out
 }
