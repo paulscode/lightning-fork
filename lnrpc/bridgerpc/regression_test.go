@@ -823,3 +823,127 @@ func TestDriveTreatsBusyAndShutdownAsNormal(t *testing.T) {
 		t.Fatal("drive did not return")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 6. The poll loop and a live quote share the inventory policy.
+//
+// sizeInventory derives it from a real balance while a quote prices against
+// it, which is two goroutines on one struct. Unguarded, a quote can read a new
+// target beside an old floor: not a policy anyone chose, and the number it
+// produces prices real money. Found by looking for shared state rather than by
+// anything failing.
+// ---------------------------------------------------------------------------
+
+func TestQuotingWhileSizingIsNotARace(t *testing.T) {
+	f := &fakeNode{synced: true, balance: 900_000_000}
+	svc := serviceFor(t, usable(), f, remote(nil, nil, nil))
+
+	sd := svc.sides[0]
+	sd.balance = f.deps().ChannelBalance
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// The poll loop, sizing over and over.
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			sd.mu.Lock()
+			sd.sized = false
+			sd.mu.Unlock()
+
+			svc.sizeInventory(context.Background())
+		}
+	}()
+
+	// A caller quoting throughout.
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			r, err := svc.pricer(sd)(context.Background())
+			if err != nil {
+				continue
+			}
+
+			// Whatever policy was read, the spread it produced has
+			// to be a real one. A mixture of two policies can give
+			// a negative or absurd number, which is the failure
+			// this guards rather than the race detector's report.
+			if r.Spread < 0 || r.Spread >= 1 {
+				t.Errorf("a quote priced at a spread of %g, "+
+					"which is not a quote", r.Spread)
+
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+// A quote taken while the node is going down creates a hold invoice that will
+// not be driven until the next start. The journal means it is picked up rather
+// than lost, but promising a swap on the way out is worse than declining one.
+func TestQuotesAreRefusedWhileShuttingDown(t *testing.T) {
+	t.Parallel()
+
+	s := serverWith(t, true, &fakeNode{synced: true})
+	s.svc = serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.Quote(context.Background(), &QuoteRequest{
+		Invoice: "lnbcrt1payme",
+	})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("a quote during shutdown answered %v, wanted "+
+			"Unavailable", status.Code(err))
+	}
+}
+
+// A hash that is not a hash must be refused by length rather than silently
+// truncated or padded into one that names a different swap.
+func TestLookupSwapRefusesAMalformedHash(t *testing.T) {
+	t.Parallel()
+
+	s := serverWith(t, true, &fakeNode{synced: true})
+	s.svc = serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+
+	for name, hash := range map[string][]byte{
+		"empty":     nil,
+		"too short": make([]byte, 16),
+		"too long":  make([]byte, 33),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.LookupSwap(
+				context.Background(),
+				&LookupSwapRequest{Hash: hash},
+			)
+			if status.Code(err) != codes.InvalidArgument {
+				t.Errorf("answered %v, wanted InvalidArgument",
+					status.Code(err))
+			}
+		})
+	}
+}
+
+// An unknown swap is NotFound, not an internal error: asking about one that
+// was never quoted is an ordinary thing to do.
+func TestLookupSwapOfAnUnknownHash(t *testing.T) {
+	t.Parallel()
+
+	s := serverWith(t, true, &fakeNode{synced: true})
+	s.svc = serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(nil, nil, nil))
+
+	_, err := s.LookupSwap(context.Background(), &LookupSwapRequest{
+		Hash: make([]byte, 32),
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("answered %v, wanted NotFound", status.Code(err))
+	}
+}

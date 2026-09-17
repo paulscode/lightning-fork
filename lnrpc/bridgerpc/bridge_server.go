@@ -291,6 +291,15 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 	if !s.cfg.Enabled || s.svc == nil {
 		return nil, errDisabled()
 	}
+
+	// A quote taken while the node is going down creates a hold invoice
+	// that will not be driven until the next start. The journal means it
+	// is picked up rather than lost, but promising a swap on the way out
+	// is still worse than declining one.
+	if atomic.LoadInt32(&s.shutdown) != 0 {
+		return nil, status.Error(codes.Unavailable, "the bridge is "+
+			"shutting down and is not taking new swaps")
+	}
 	if req.GetInvoice() == "" {
 		return nil, status.Error(codes.InvalidArgument, "no invoice "+
 			"to pay")

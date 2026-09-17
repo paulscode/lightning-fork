@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/lnrpc/bridgerpc"
@@ -343,9 +344,21 @@ func (s *server) bridgeChannelBalance(_ context.Context) (uint64, error) {
 		return 0, fmt.Errorf("reading open channels: %w", err)
 	}
 
+	return spendableOutbound(channels, s.htlcSwitch.HasActiveLink), nil
+}
+
+// spendableOutbound is what a set of channels can actually send.
+//
+// Split from its caller so the rule can be tested without a node. It is the
+// same rule the Bitcoin side applies to its own channels, and the two must
+// agree: a bridge that measures its two sides differently prices one of them
+// against a quantity the other does not mean.
+func spendableOutbound(channels []*channeldb.OpenChannel,
+	active func(lnwire.ChannelID) bool) uint64 {
+
 	var outbound uint64
 	for _, channel := range channels {
-		if channel.IsPending {
+		if channel == nil || channel.IsPending {
 			continue
 		}
 
@@ -355,7 +368,7 @@ func (s *server) bridgeChannelBalance(_ context.Context) (uint64, error) {
 		// better funded than it is, and quote a spread too thin for
 		// what it can actually do.
 		chanID := lnwire.NewChanIDFromOutPoint(channel.FundingOutpoint)
-		if !s.htlcSwitch.HasActiveLink(chanID) {
+		if active != nil && !active(chanID) {
 			continue
 		}
 
@@ -375,5 +388,5 @@ func (s *server) bridgeChannelBalance(_ context.Context) (uint64, error) {
 		)
 	}
 
-	return outbound, nil
+	return outbound
 }

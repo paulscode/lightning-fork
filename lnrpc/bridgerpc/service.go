@@ -50,15 +50,55 @@ type side struct {
 	// direction paying out in BTCB2 uses one over it.
 	invert bool
 
+	// mu guards the inventory policy below.
+	//
+	// The poll loop derives it from a real balance while a quote is
+	// pricing against it, so this is two goroutines on one struct. Without
+	// the lock a quote can read a new target beside an old floor, which is
+	// not a policy anyone chose, and the number it produces prices real
+	// money.
+	mu sync.RWMutex
+
 	// inventory prices how drained this side is. It is per side because
 	// the two sides hold different amounts, on chains whose units are not
 	// the same: one policy for both would price one of them against the
 	// other's balance.
+	//
+	// Read through policy and written through setPolicy. Nothing touches
+	// it directly.
 	inventory inventory.Policy
 
 	// sized is set once the inventory bounds have been derived from a
 	// real balance, so it is done once rather than tracking the balance.
 	sized bool
+}
+
+// policy is this side's inventory policy, copied under the lock.
+//
+// A copy rather than a pointer: the caller prices against a whole policy, and
+// one that changed halfway through would mix two.
+func (sd *side) policy() inventory.Policy {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+
+	return sd.inventory
+}
+
+// setPolicy replaces the inventory policy and marks the side sized.
+func (sd *side) setPolicy(p inventory.Policy) {
+	sd.mu.Lock()
+	defer sd.mu.Unlock()
+
+	sd.inventory = p
+	sd.sized = true
+}
+
+// isSized reports whether the bounds have been derived from a real balance.
+func (sd *side) isSized() bool {
+	sd.mu.RLock()
+	defer sd.mu.RUnlock()
+
+	return sd.sized
 }
 
 // service is the bridge, running inside the node.
@@ -229,7 +269,7 @@ func (s *service) pricer(sd *side) quote.Pricer {
 			return rate.Reading{}, err
 		}
 
-		pos, err := sd.inventory.Spread(inventory.State{
+		pos, err := sd.policy().Spread(inventory.State{
 			OutgoingMsat: held, At: time.Now(),
 		}, sd.dir, time.Now())
 		if err != nil {
@@ -330,7 +370,7 @@ func (s *service) sizeInventory(ctx context.Context) {
 	}
 
 	for _, sd := range s.sides {
-		if sd.sized {
+		if sd.isSized() {
 			continue
 		}
 
@@ -363,30 +403,33 @@ func (s *service) sizeInventory(ctx context.Context) {
 			continue
 		}
 
-		sd.inventory.TargetOutgoingMsat = held
-		sd.inventory.FloorOutgoingMsat = held / DefaultFloorFraction
+		// Built whole and installed in one write, so a quote pricing
+		// concurrently sees either the old policy or the new one and
+		// never a mixture of the two.
+		sized := sd.policy()
+		sized.TargetOutgoingMsat = held
+		sized.FloorOutgoingMsat = held / DefaultFloorFraction
 		if s.cfg.InventoryFloorMsat != 0 {
-			sd.inventory.FloorOutgoingMsat = s.cfg.InventoryFloorMsat
+			sized.FloorOutgoingMsat = s.cfg.InventoryFloorMsat
 		}
 
 		// A policy derived from a balance still has to be one the
 		// package will take: the discount and rebalance cost were
 		// scaled against the operator's spread, and the floor has to
 		// stay below the target.
-		if err := sd.inventory.Valid(); err != nil {
+		if err := sized.Valid(); err != nil {
 			log.Warnf("Bridge could not size %s inventory from a "+
 				"balance of %d msat, so it keeps the default: "+
 				"%v", sd.name, held, err)
-			sd.inventory = s.res.inventory
 
 			continue
 		}
 
-		sd.sized = true
+		sd.setPolicy(sized)
 
 		log.Infof("Bridge sized %s against %d msat of paying "+
 			"balance, holding back %d msat for swaps in flight",
-			sd.name, sd.inventory.TargetOutgoingMsat,
-			sd.inventory.FloorOutgoingMsat)
+			sd.name, sized.TargetOutgoingMsat,
+			sized.FloorOutgoingMsat)
 	}
 }
