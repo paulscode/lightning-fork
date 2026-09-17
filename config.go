@@ -1965,6 +1965,15 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		cfg.TrickleDelay = 1
 	}
 
+	// The bridge sub-server's settings are interdependent in ways that are
+	// easy to get wrong and silent when they are: a configuration whose
+	// numbers are collectively incoherent starts cleanly and then refuses
+	// every swap. Checking here means an operator hears about it from the
+	// daemon rather than from swaps that never happen.
+	if err := validateBridgeConfig(&cfg, cfg.networkDir); err != nil {
+		return nil, mkErr("%v", err)
+	}
+
 	// All good, return the sanitized result.
 	return &cfg, nil
 }
