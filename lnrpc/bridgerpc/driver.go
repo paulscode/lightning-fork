@@ -37,9 +37,12 @@ func createNewSubServer(configRegistry lnrpc.SubServerConfigDispatcher) (
 
 	// Before we try to make the new bridge service instance, we'll perform
 	// some sanity checks on the arguments to ensure that they're usable.
+	// Without Deps there is no way to reach this node's invoices or its
+	// router, so the sub-server could accept a quote and then be unable to
+	// act on it. Refusing to start is the safe end of that.
 	if config.Deps == nil {
-		return nil, nil, fmt.Errorf("offers manager must be set to " +
-			"create bridgerpc")
+		return nil, nil, fmt.Errorf("the node did not give bridgerpc " +
+			"access to itself")
 	}
 
 	return New(config)

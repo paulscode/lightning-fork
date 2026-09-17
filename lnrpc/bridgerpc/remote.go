@@ -507,6 +507,12 @@ func (r *Remote) BestBlock(ctx context.Context) (BlockInfo, error) {
 // treats as "no history available" and falls back to learning from tips. That
 // is slow rather than wrong, so it is worth trying and not worth requiring.
 func (r *Remote) BlockAt(ctx context.Context, height int32) (BlockInfo, error) {
+	// Backfill runs inside the node, so a nil client here would take the
+	// whole daemon down for a history read it can do without.
+	if r == nil || r.chain == nil {
+		return BlockInfo{}, errors.New("no chain client for the " +
+			"Bitcoin node")
+	}
 	if height < 0 {
 		return BlockInfo{}, fmt.Errorf("height %d is not a block",
 			height)

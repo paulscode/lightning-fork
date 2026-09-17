@@ -34,6 +34,22 @@ type fakeMain struct {
 
 	payReq    *lnrpc.PayReq
 	payReqErr error
+
+	channels    *lnrpc.ListChannelsResponse
+	channelsErr error
+
+	// lastChannelsReq records what was asked for, so a test can check the
+	// request and not only the answer.
+	lastChannelsReq *lnrpc.ListChannelsRequest
+}
+
+func (f *fakeMain) ListChannels(_ context.Context,
+	in *lnrpc.ListChannelsRequest, _ ...grpc.CallOption) (
+	*lnrpc.ListChannelsResponse, error) {
+
+	f.lastChannelsReq = in
+
+	return f.channels, f.channelsErr
 }
 
 func (f *fakeMain) GetInfo(context.Context, *lnrpc.GetInfoRequest,
@@ -150,6 +166,14 @@ func (f *fakeRouter) TrackPaymentV2(context.Context,
 	return f.track, nil
 }
 
+// remoteWithChain is remote plus a ChainKit that serves block headers.
+func remoteWithChain(m *fakeMain, c *fakeChain) *Remote {
+	out := remote(m, nil, nil)
+	out.chain = c
+
+	return out
+}
+
 func remote(m *fakeMain, i *fakeInvoices, r *fakeRouter) *Remote {
 	if m == nil {
 		m = &fakeMain{}
@@ -161,7 +185,18 @@ func remote(m *fakeMain, i *fakeInvoices, r *fakeRouter) *Remote {
 		r = &fakeRouter{}
 	}
 
-	return &Remote{main: m, invoices: i, router: r}
+	// A chain client that refuses, so a test that does not care about
+	// history gets a clean refusal rather than a nil dereference, which is
+	// also what a node without ChainKit does.
+	return &Remote{
+		main: m, invoices: i, router: r,
+		chain: &fakeChain{at: func(int32) (int64, error) {
+			return 0, status.Error(
+				codes.Unimplemented,
+				"unknown service chainrpc.ChainKit",
+			)
+		}},
+	}
 }
 
 // A node still catching up must refuse to report a height.

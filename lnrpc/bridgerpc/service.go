@@ -342,16 +342,23 @@ func (s *service) sizeInventory(ctx context.Context) {
 
 			continue
 		}
-		if held == 0 {
-			// Not settled yet, so this is retried on every poll
-			// rather than taken as final. A peer whose link was
-			// not up at startup reads as zero, and sizing a
-			// direction as empty for the life of the process
-			// because of a few seconds of reconnection would
-			// refuse every swap on it thereafter.
-			log.Debugf("Bridge has nothing to pay with on %s yet, "+
-				"so it will refuse that direction until the "+
-				"paying node has outbound capacity", sd.name)
+		// A balance too small to fund one swap is not a working
+		// balance, and sizing against it would call the side fully
+		// stocked while it can pay nothing, quoting at the base spread
+		// on a position that deserves the widest. Below this the
+		// default stands and the read is retried, because the operator
+		// may be about to fund it.
+		//
+		// Retrying also covers the case that made this necessary: a
+		// peer whose link was not up at startup reads as zero, and
+		// treating that as the answer for the life of the process
+		// would refuse the direction thereafter.
+		if held < s.res.quote.MinSwapMsat {
+			log.Debugf("Bridge cannot pay a swap on %s yet (%d "+
+				"msat against a %d msat minimum), so it will "+
+				"refuse that direction until the paying node "+
+				"has outbound capacity", sd.name, held,
+				s.res.quote.MinSwapMsat)
 
 			continue
 		}

@@ -86,3 +86,69 @@ func TestNoGeneratedClientFromTheBridgeModule(t *testing.T) {
 		})
 	}
 }
+
+// An untagged build must not reach the bridge module at all.
+//
+// Stronger than the list above and worth asserting separately: the design
+// claim is that a node which will never bridge carries none of this, not
+// merely that it avoids three named packages. It is also the claim that keeps
+// the module out of everyone else's dependency graph, which is the reason the
+// sub-server is behind a tag in the first place.
+func TestUntaggedBuildsCarryNoneOfTheBridgeModule(t *testing.T) {
+	t.Parallel()
+
+	const module = "github.com/paulscode/lightning-fork-bridge"
+
+	for _, pkg := range []string{".", "../../cmd/lnd"} {
+		out, err := exec.Command("go", "list", "-deps", pkg).
+			CombinedOutput()
+		if err != nil {
+			t.Fatalf("go list -deps %s: %v\n%s", pkg, err, out)
+		}
+
+		for _, dep := range strings.Fields(string(out)) {
+			if dep == module || strings.HasPrefix(dep, module+"/") {
+				t.Errorf("an untagged build of %s reaches %s, "+
+					"so every node carries the bridge "+
+					"module whether or not it will ever "+
+					"bridge", pkg, dep)
+			}
+		}
+	}
+}
+
+// And a tagged build must reach only the packages that decide things, never
+// one that registers a proto file.
+func TestTaggedBuildsReachOnlyTheDecisionPackages(t *testing.T) {
+	t.Parallel()
+
+	const module = "github.com/paulscode/lightning-fork-bridge"
+
+	// The swap logic, and nothing that carries a generated client.
+	want := map[string]bool{
+		"chainrate": true, "driver": true, "inventory": true,
+		"margin": true, "node": true, "quote": true, "rate": true,
+		"runner": true, "store": true, "swap": true,
+	}
+
+	out, err := exec.Command(
+		"go", "list", "-deps", "-tags", "bridgerpc", "../../cmd/lnd",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps: %v\n%s", err, out)
+	}
+
+	for _, dep := range strings.Fields(string(out)) {
+		if !strings.HasPrefix(dep, module+"/") {
+			continue
+		}
+
+		name := strings.TrimPrefix(dep, module+"/")
+		if !want[name] {
+			t.Errorf("a tagged build reaches %s, which is not one "+
+				"of the packages that decide things; if it "+
+				"carries generated protobuf code this node "+
+				"will panic at startup", dep)
+		}
+	}
+}
