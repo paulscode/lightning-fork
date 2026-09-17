@@ -290,22 +290,26 @@ const (
 	SimpleTaprootChannelsOptionalStaging = 181
 
 	// Blake2bRequired is a required feature bit that indicates the node
-	// follows the Bitcoin BLAKE2b chain. Core Lightning's port of this
-	// chain (privkeyio/lightning) sets it in its init message, and BOLT 9
-	// obliges a peer that does not know an even bit to close the
-	// connection, so a node that does not name it here refuses every such
-	// peer before chain_hash is ever compared.
+	// follows the Bitcoin BLAKE2b proof of work rules from block 961,640
+	// onward. This is the bit this node sets; see defaultSetDesc.
 	//
-	// Knowing the bit is not the same as relying on it: what keeps this
-	// node off another chain is chain_hash, in the init networks list, in
-	// open_channel and in every channel announcement. This bit only says
-	// the node understands what the peer is declaring.
+	// It is what separates the two chains at init, and since the
+	// chain_hash reversal it is the only thing that does. Both chains
+	// carry the genesis hash they share, so chain_hash cannot tell them
+	// apart in init, in open_channel or in a channel announcement. BOLT 9
+	// obliges a peer that does not know an even bit to close the
+	// connection, so a node that has not been updated for this chain
+	// disconnects on seeing it, and does so without needing to know why.
+	//
+	// privkeyio's Core Lightning sets the same bit.
 	Blake2bRequired FeatureBit = 68
 
-	// Blake2bOptional is the optional form of Blake2bRequired. This node
-	// sets this one rather than the even bit: a peer that does not know it
-	// should ignore it and fall back to chain_hash, which is the check
-	// that actually separates the chains.
+	// Blake2bOptional is the optional form of Blake2bRequired.
+	//
+	// Not set by this node, and it should not be: an odd bit is ignored by
+	// a peer that cannot read it, which is the opposite of what is wanted
+	// here. It is named so that a peer advertising it is understood rather
+	// than refused.
 	Blake2bOptional FeatureBit = 69
 
 	// UnifiedSigsRequired is a required feature bit that indicates the

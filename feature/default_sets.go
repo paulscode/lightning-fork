@@ -10,14 +10,32 @@ type setDesc map[lnwire.FeatureBit]map[Set]struct{}
 // vectors. Each set is annotated with the corresponding identifier from BOLT 9
 // indicating where it should be advertised.
 var defaultSetDesc = setDesc{
-	// Odd, so a peer that does not know it ignores it. Declaring the chain
-	// at init is a courtesy to implementations that want it; what actually
-	// keeps this node off another chain is chain_hash. Not set in invoices
-	// or offers: a payer that cannot read the bit must still be refused,
-	// and the invoice prefix and chain_hash already do that.
-	lnwire.Blake2bOptional: {
-		SetInit:    {}, // I
-		SetNodeAnn: {}, // N
+	// Even, so a peer that does not know it must close the connection.
+	//
+	// This was the odd bit until the chain_hash reversal, on the reasoning
+	// that chain_hash was what kept this node off the other chain and the
+	// bit was a courtesy. chain_hash is now the genesis hash both chains
+	// share, so that reasoning is gone and nothing in init separates them
+	// on its own: two nodes on different chains agree on chain_hash, and an
+	// odd bit the other cannot read is ignored by definition.
+	//
+	// The even bit separates them symmetrically, using BOLT 1's existing
+	// rule rather than a new one, and needs no cooperation from the other
+	// side. Until this change the separation rested on
+	// RequirePeerNetworks, which is a heuristic: it drops any peer that
+	// sends no networks TLV, and sending it is optional.
+	//
+	// Safe for nodes already in the field. The check a peer applies is
+	// whether the bit is *known*, not whether the peer sets it too, and
+	// Blake2bRequired has been named in lnwire since before this, so an
+	// older build of this daemon accepts a newer one. privkeyio's Core
+	// Lightning already sets 68 and not 69.
+	//
+	// Not set in invoices or offers: a payer that cannot read the bit must
+	// still be refused, and the invoice prefix does that.
+	lnwire.Blake2bRequired: {
+		SetInit:    {}, // I+
+		SetNodeAnn: {}, // N+
 	},
 	// Signalled so a peer knows a unified-signing channel can be
 	// negotiated with this node. Whether one is depends on the channel
