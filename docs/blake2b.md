@@ -130,6 +130,34 @@ why), or `skipped` (integration builds only).
 Note that `lnd` unlocks the wallet before it builds the chain backend, so the
 check runs after wallet creation or unlock.
 
+## Upgrading past the chain_hash change
+
+Releases `0.21.3-beta-blake2b.6` through `.9` advertised a `chain_hash` of this
+chain's own. Builds after 2026-09-17 advertise the genesis hash both chains
+share. Two things follow, and an operator with channels needs both of them
+before upgrading.
+
+**Your channels are migrated, but back up first.** lnd keys channels by chain
+hash, so a node that opened channels under the old value would otherwise fail
+to start with `no chain bucket exists`. Channeldb migration 36 moves them, and
+moves the resolver reports of closed channels with them; it does nothing at all
+on a database that never held such a channel. It is one way: once migrated, the
+older release will not find its channels either. lnd takes no backup of its own
+before a migration, so copy `channel.db` out of
+`data/graph/<network>/` while the node is stopped, before starting the new
+build. If the migration finds anything it does not recognise it stops and
+changes nothing, because the whole of it runs in one transaction.
+
+**Upgrading is a flag day for whoever is on the other end of a channel.** While
+one end has upgraded and the other has not, the two cannot peer at all: they
+disagree about `chain_hash`, and the upgraded one sends an even feature bit the
+other does not know. The channel stays intact and stops being usable until both
+ends move, then resumes. Nothing in the migration can change this; it is what
+changing a chain identifier costs. If you have channels, agree a time with your
+peers rather than upgrading and hoping.
+
+Neither applies to a node with no channels, which can be upgraded whenever.
+
 ## Backends
 
 Only `bitcoin.node=bitcoind`, pointed at a Bitcoin Knots v29.4.1 or later
