@@ -26,9 +26,13 @@ type fakeNode struct {
 	// can tell "swallowed the error" from "never asked".
 	settles, cancels int
 
-	height int32
-	synced bool
-	htErr  error
+	height    int32
+	blockTime time.Time
+	synced    bool
+	htErr     error
+
+	balance    uint64
+	balanceErr error
 
 	payStatus PaymentStatus
 	payErr    error
@@ -78,8 +82,15 @@ func (f *fakeNode) deps() *Deps {
 
 			return f.lookup, f.lookupErr
 		},
-		BlockHeight: func(context.Context) (int32, bool, error) {
-			return f.height, f.synced, f.htErr
+		BestBlock: func(context.Context) (BlockInfo, error) {
+			return BlockInfo{
+				Height:        f.height,
+				Time:          f.blockTime,
+				SyncedToChain: f.synced,
+			}, f.htErr
+		},
+		ChannelBalance: func(context.Context) (uint64, error) {
+			return f.balance, f.balanceErr
 		},
 	}
 }

@@ -5,10 +5,15 @@ package bridgerpc
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/paulscode/lightning-fork-bridge/node"
+	"github.com/paulscode/lightning-fork-bridge/quote"
+	"github.com/paulscode/lightning-fork-bridge/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -68,6 +73,15 @@ type Server struct {
 
 	// local is this node, as both halves of a swap.
 	local *Local
+
+	// remote is the Bitcoin Lightning node, and conn the connection to it.
+	remote *Remote
+	conn   *grpc.ClientConn
+
+	// svc is the running bridge. Nil while the bridge is disabled or
+	// before Start has wired it, which every method checks: a quote
+	// answered without it would be a promise with nothing behind it.
+	svc *service
 }
 
 // A compile time check to ensure that Server fully implements the
@@ -95,16 +109,56 @@ func (s *Server) Start() error {
 	}
 
 	if !s.cfg.Enabled {
-		// Registered but not serving. The methods below refuse, which
-		// is a better answer than an unimplemented error: an operator
-		// who has not turned this on should be told so, not left
-		// wondering whether their build has it.
+		// Registered but not serving. The methods refuse with a
+		// reason, which is a better answer than an unimplemented
+		// error: an operator who has not turned this on should be told
+		// so, not left wondering whether their build has it.
 		log.Infof("Bridge is compiled in but not enabled")
 
 		return nil
 	}
 
-	log.Infof("Bridge starting")
+	conn, err := dialBitcoinNode(s.cfg)
+	if err != nil {
+		return err
+	}
+	s.conn = conn
+	s.remote = NewRemote(conn)
+
+	// Both nodes are checked before anything is served. Dialling succeeds
+	// against a node that is not there, so without this the first sign of
+	// a wrong address, a wrong macaroon or a node still syncing is a swap
+	// that has already accepted someone's money.
+	//
+	// This is a refusal to start rather than a warning. A bridge that
+	// cannot reach one of its two nodes cannot honour a quote, and
+	// starting anyway would mean advertising one.
+	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+
+	if err := s.local.Check(ctx); err != nil {
+		_ = conn.Close()
+
+		return fmt.Errorf("the bridge cannot use this node: %w", err)
+	}
+	if err := checkBitcoinNode(ctx, s.remote); err != nil {
+		_ = conn.Close()
+
+		return fmt.Errorf("the bridge cannot use the Bitcoin node at "+
+			"%s: %w", s.cfg.BitcoinRPCHost, err)
+	}
+
+	svc, err := newService(s.cfg, s.local, s.remote)
+	if err != nil {
+		_ = conn.Close()
+
+		return err
+	}
+	s.svc = svc
+	s.svc.start()
+
+	log.Infof("Bridge is up, serving %d direction(s) through the Bitcoin "+
+		"node at %s", len(svc.sides), s.cfg.BitcoinRPCHost)
 
 	return nil
 }
@@ -115,6 +169,17 @@ func (s *Server) Start() error {
 func (s *Server) Stop() error {
 	if atomic.AddInt32(&s.shutdown, 1) != 1 {
 		return nil
+	}
+
+	// Swaps in flight are waited for before the connection they are
+	// talking over is closed. The node tears down the invoice registry and
+	// the router after this returns, and a swap still driving would find
+	// them gone mid-HTLC.
+	if s.svc != nil {
+		s.svc.stop()
+	}
+	if s.conn != nil {
+		_ = s.conn.Close()
 	}
 
 	return nil
@@ -202,31 +267,97 @@ func errDisabled() error {
 }
 
 // Quote asks what a swap would cost and creates the hold invoice to pay for it.
-func (s *Server) Quote(_ context.Context, _ *QuoteRequest) (*QuoteResponse,
+//
+// The swap begins being driven before this returns. That is deliberate: the
+// hold invoice exists the moment the quote does, so somebody can pay it
+// immediately, and a swap nobody is watching between the quote and the first
+// poll is a swap whose incoming HTLC could lock in unobserved.
+func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 	error) {
 
-	if !s.cfg.Enabled {
+	if !s.cfg.Enabled || s.svc == nil {
 		return nil, errDisabled()
 	}
+	if req.GetInvoice() == "" {
+		return nil, status.Error(codes.InvalidArgument, "no invoice "+
+			"to pay")
+	}
 
-	// The swap logic, the rate oracle and the Bitcoin-side connection are
-	// not wired up yet. Refusing is the only honest answer: a quote
-	// commits this node's money, and there is nothing here that could
-	// honour one.
-	return nil, status.Error(codes.Unimplemented, "quoting is not wired "+
-		"up yet")
+	sd, _, err := s.svc.route(ctx, req.GetInvoice())
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+
+	q, err := sd.quoter.Quote(ctx, req.GetInvoice())
+	if err != nil {
+		// A refusal is the bridge declining to promise something, not
+		// a fault: too large, too small, not enough left on the paying
+		// side, or a chain it cannot currently measure. The caller
+		// gets the reason.
+		if errors.Is(err, quote.ErrRefused) {
+			return nil, status.Error(
+				codes.FailedPrecondition, err.Error(),
+			)
+		}
+
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	s.svc.drive(sd, q.Hash)
+
+	return &QuoteResponse{
+		HoldInvoice:  q.HoldInvoice,
+		Hash:         q.Hash[:],
+		IncomingMsat: q.IncomingMsat,
+		OutgoingMsat: q.OutgoingMsat,
+		Rate:         q.Rate,
+		Spread:       q.Spread,
+		CltvDelta:    q.CLTVDelta,
+		Direction:    sd.name,
+		ExpiresAt:    q.Expires.Unix(),
+	}, nil
 }
 
 // LookupSwap reports what the bridge believes about a swap.
-func (s *Server) LookupSwap(_ context.Context, _ *LookupSwapRequest) (*Swap,
-	error) {
+func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
+	*Swap, error) {
 
-	if !s.cfg.Enabled {
+	if !s.cfg.Enabled || s.svc == nil {
 		return nil, errDisabled()
 	}
+	if len(req.GetHash()) != len(node.Hash{}) {
+		return nil, status.Errorf(codes.InvalidArgument, "the hash "+
+			"must be %d bytes, got %d", len(node.Hash{}),
+			len(req.GetHash()))
+	}
 
-	return nil, status.Error(codes.Unimplemented, "swap lookup is not "+
-		"wired up yet")
+	var hash node.Hash
+	copy(hash[:], req.GetHash())
+
+	rec, err := s.svc.journal.Get(ctx, hash)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "no swap "+
+				"with hash %x", hash)
+		}
+
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	out := &Swap{
+		Hash:         rec.Hash[:],
+		State:        rec.State.String(),
+		IncomingMsat: rec.IncomingMsat,
+		OutgoingMsat: rec.OutgoingMsat,
+	}
+
+	// Only once there is one. An all-zero preimage settles nothing, and
+	// returning it would look like proof the destination was paid.
+	if rec.Preimage != (node.Preimage{}) {
+		out.Preimage = rec.Preimage[:]
+	}
+
+	return out, nil
 }
 
 // Status reports whether this node is in a position to serve swaps.
@@ -246,15 +377,43 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		return resp, nil
 	}
 
-	// Whether this node can be used at all is worth reporting before
-	// anything about the other side: an unsynced node refuses every swap,
-	// and the reason belongs here rather than in a log.
+	// Whether each node can be used at all comes first, and runs even when
+	// the bridge failed to start, because an unsynced or unreachable node
+	// is frequently the reason it did.
 	if err := s.local.Check(ctx); err != nil {
 		resp.Refusals = append(resp.Refusals, err.Error())
 	}
+	if s.remote != nil {
+		if err := s.remote.Check(ctx); err != nil {
+			resp.Refusals = append(resp.Refusals, err.Error())
+		}
+	}
 
-	resp.Refusals = append(resp.Refusals, "the Bitcoin side is not wired "+
-		"up yet, so no direction can be served")
+	if s.svc == nil {
+		resp.Refusals = append(resp.Refusals, "the bridge is enabled "+
+			"but did not start; see the node's log")
+
+		return resp, nil
+	}
+
+	for _, sd := range s.svc.sides {
+		resp.Directions = append(resp.Directions, sd.name)
+	}
+	for _, name := range s.svc.disabled {
+		resp.Refusals = append(resp.Refusals, name+" is configured "+
+			"but not enabled")
+	}
+	resp.SwapsInFlight = uint32(s.svc.active())
+
+	// A chain the bridge cannot currently measure is a chain it cannot
+	// size an HTLC against, so every swap touching it is refused. That
+	// takes a few blocks from each chain after a restart, which looks
+	// identical to being broken unless it is said.
+	if _, err := s.svc.spacing(false)(ctx); err != nil {
+		resp.Refusals = append(resp.Refusals, "still measuring block "+
+			"spacing, which takes a few blocks from each chain: "+
+			err.Error())
+	}
 
 	return resp, nil
 }

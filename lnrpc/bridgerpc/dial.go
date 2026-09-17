@@ -1,0 +1,114 @@
+//go:build bridgerpc
+// +build bridgerpc
+
+package bridgerpc
+
+import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+)
+
+// maxMessage is the largest reply accepted.
+//
+// lnd's own defaults are generous and a node with many channels can exceed
+// gRPC's 4 MiB default on calls the bridge does not make. Allowing more costs
+// nothing here.
+const maxMessage = 50 * 1024 * 1024
+
+// dialTimeout bounds setting the connection up, not reaching the node.
+const dialTimeout = 30 * time.Second
+
+// macaroonCredential presents a macaroon on every call.
+//
+// lnd expects it as hex in the "macaroon" metadata key. That is the whole of
+// what is needed here, so it is written out rather than pulling in the
+// macaroon service, which exists to mint and check them rather than to send
+// one.
+type macaroonCredential struct {
+	hex string
+}
+
+// GetRequestMetadata returns the macaroon header.
+func (m macaroonCredential) GetRequestMetadata(context.Context, ...string) (
+	map[string]string, error) {
+
+	return map[string]string{"macaroon": m.hex}, nil
+}
+
+// RequireTransportSecurity is true because a macaroon is a bearer token. Sent
+// in the clear it is the whole of that node's authority, handed to whoever is
+// listening.
+func (m macaroonCredential) RequireTransportSecurity() bool { return true }
+
+// dialBitcoinNode connects to the Bitcoin Lightning node.
+//
+// It returns as soon as the configuration is usable, which is not the same as
+// the node being reachable: gRPC connects lazily, so a wrong address or a node
+// that is down shows up on the first call rather than here. Remote.Check is
+// what turns that into a startup failure instead of a failed swap.
+func dialBitcoinNode(cfg *Config) (*grpc.ClientConn, error) {
+	if cfg.BitcoinRPCHost == "" {
+		return nil, fmt.Errorf("%w: no Bitcoin Lightning node address",
+			ErrConfig)
+	}
+
+	// The node's own self-signed certificate is the only root accepted.
+	// Using the system pool instead would accept any certificate a public
+	// authority issued for that name, which for a loopback or LAN address
+	// is a weaker thing than it sounds.
+	creds, err := credentials.NewClientTLSFromFile(
+		cfg.BitcoinTLSCertPath, "",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading the Bitcoin node's TLS "+
+			"certificate %s: %w", ErrConfig, cfg.BitcoinTLSCertPath,
+			err)
+	}
+
+	mac, err := os.ReadFile(cfg.BitcoinMacaroonPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading the Bitcoin node's "+
+			"macaroon %s: %w", ErrConfig, cfg.BitcoinMacaroonPath,
+			err)
+	}
+	if len(mac) == 0 {
+		return nil, fmt.Errorf("%w: the Bitcoin node's macaroon %s is "+
+			"empty", ErrConfig, cfg.BitcoinMacaroonPath)
+	}
+
+	conn, err := grpc.NewClient(cfg.BitcoinRPCHost,
+		grpc.WithTransportCredentials(creds),
+		grpc.WithPerRPCCredentials(macaroonCredential{
+			hex: hex.EncodeToString(mac),
+		}),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(maxMessage),
+			grpc.MaxCallSendMsgSize(maxMessage),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: dialling the Bitcoin node at %s: "+
+			"%w", ErrConfig, cfg.BitcoinRPCHost, err)
+	}
+
+	return conn, nil
+}
+
+// checkBitcoinNode confirms the node answers and has caught up with its chain.
+//
+// Worth doing before the bridge quotes anything. Dialling succeeds against a
+// node that is not there, so without this the first sign of a wrong address, a
+// wrong macaroon or a node still syncing is a swap that has already accepted
+// someone's money.
+func checkBitcoinNode(ctx context.Context, r *Remote) error {
+	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+
+	return r.Check(ctx)
+}

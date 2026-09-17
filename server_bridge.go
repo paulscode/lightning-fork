@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/invoices"
@@ -72,7 +73,9 @@ func (s *server) bridgeDeps(
 
 		LookupPayment: s.lookupBridgePayment,
 
-		BlockHeight: s.bridgeBlockHeight,
+		BestBlock: s.bridgeBestBlock,
+
+		ChannelBalance: s.bridgeChannelBalance,
 	}
 }
 
@@ -245,7 +248,8 @@ func (s *server) lookupBridgePayment(ctx context.Context, hash [32]byte) (
 	return bridgerpc.TranslatePayment(payment), nil
 }
 
-// bridgeBlockHeight is the tip this node sees, and whether it has caught up.
+// bridgeBestBlock is the tip this node sees, when it was mined, and whether
+// this node has caught up with it.
 //
 // The height comes from the chain backend rather than from the wallet's view,
 // so it is the freshest number available, and the sync flag says whether this
@@ -254,19 +258,31 @@ func (s *server) lookupBridgePayment(ctx context.Context, hash [32]byte) (
 // height, and a stale one says an HTLC has more time left than it does, which
 // is the direction that pays out against a claim that can no longer be
 // collected.
-func (s *server) bridgeBlockHeight(_ context.Context) (int32, bool, error) {
+//
+// The timestamp is the block's own, not when this node heard about it. Block
+// spacing is measured from it, and a node catching up sees a hundred blocks in
+// a minute, which local arrival times would read as a chain running a hundred
+// times too fast.
+func (s *server) bridgeBestBlock(_ context.Context) (bridgerpc.BlockInfo,
+	error) {
+
 	_, bestHeight, err := s.cc.ChainIO.GetBestBlock()
 	if err != nil {
-		return 0, false, fmt.Errorf("reading the best block: %w", err)
+		return bridgerpc.BlockInfo{}, fmt.Errorf("reading the best "+
+			"block: %w", err)
 	}
 
-	walletSynced, _, err := s.cc.Wallet.IsSynced()
+	info := bridgerpc.BlockInfo{Height: bestHeight}
+
+	walletSynced, bestHeaderTimestamp, err := s.cc.Wallet.IsSynced()
 	if err != nil {
-		return bestHeight, false, fmt.Errorf("reading wallet sync "+
-			"state: %w", err)
+		return info, fmt.Errorf("reading wallet sync state: %w", err)
+	}
+	if bestHeaderTimestamp > 0 {
+		info.Time = time.Unix(bestHeaderTimestamp, 0)
 	}
 	if !walletSynced {
-		return bestHeight, false, nil
+		return info, nil
 	}
 
 	// The router validates each block's channels when it is not assuming
@@ -276,9 +292,44 @@ func (s *server) bridgeBlockHeight(_ context.Context) (int32, bool, error) {
 	// whether this node is ready to price a swap.
 	if !s.cfg.Routing.AssumeChannelValid {
 		if uint32(bestHeight) != s.graphBuilder.SyncedHeight() {
-			return bestHeight, false, nil
+			return info, nil
 		}
 	}
 
-	return bestHeight, true, nil
+	info.SyncedToChain = true
+
+	return info, nil
+}
+
+// bridgeChannelBalance is what this node can still send over its channels.
+//
+// Local balance rather than total capacity: the inventory policy prices how
+// drained the paying side is, and what the far end holds is not something this
+// node can spend.
+func (s *server) bridgeChannelBalance(_ context.Context) (uint64, error) {
+	channels, err := s.chanStateDB.FetchAllOpenChannels()
+	if err != nil {
+		return 0, fmt.Errorf("reading open channels: %w", err)
+	}
+
+	var outbound uint64
+	for _, channel := range channels {
+		if channel.IsPending {
+			continue
+		}
+
+		// Only channels with a live link can carry a payment, so a
+		// peer that is offline holds balance the bridge cannot use.
+		// Counting it would have the inventory policy think it is
+		// better funded than it is, and quote a spread too thin for
+		// what it can actually do.
+		chanID := lnwire.NewChanIDFromOutPoint(channel.FundingOutpoint)
+		if !s.htlcSwitch.HasActiveLink(chanID) {
+			continue
+		}
+
+		outbound += uint64(channel.LocalCommitment.LocalBalance)
+	}
+
+	return outbound, nil
 }

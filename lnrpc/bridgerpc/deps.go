@@ -66,15 +66,20 @@ type Deps struct {
 	LookupPayment func(ctx context.Context, hash [32]byte) (PaymentStatus,
 		error)
 
-	// BlockHeight is the tip this node sees, and whether it has caught up
-	// with its chain.
+	// BestBlock is the tip this node sees.
 	//
 	// The sync flag is returned rather than acted on here so that the
 	// refusal lives with the rest of the bridge's policy, where it is
 	// tested. Every margin decision is a comparison against this height,
 	// and a stale one says an HTLC has more time left than it does.
-	BlockHeight func(ctx context.Context) (height int32, syncedToChain bool,
-		err error)
+	BestBlock func(ctx context.Context) (BlockInfo, error)
+
+	// ChannelBalance is what this node can still send over its channels.
+	//
+	// It is the side the bridge's own money leaves from, so it is what the
+	// inventory policy prices the spread against: a node with little
+	// outbound left should be charging more to part with what remains.
+	ChannelBalance func(ctx context.Context) (uint64, error)
 }
 
 // HoldInvoiceRequest is what the bridge asks the local node to create.
@@ -144,4 +149,20 @@ type PayRequest struct {
 	// in flight, not how long an HTLC that has already left takes to
 	// resolve on chain, which is what CLTVLimit bounds.
 	Timeout time.Duration
+}
+
+// BlockInfo is a chain tip as this node sees it.
+type BlockInfo struct {
+	// Height is the tip's height.
+	Height int32
+
+	// Time is when the tip was mined, which is the quantity block spacing
+	// is measured from. When this node heard about it is a different
+	// number and not the one wanted: a node catching up sees a hundred
+	// blocks in a minute, and using local arrival times would read that as
+	// a chain running a hundred times too fast.
+	Time time.Time
+
+	// SyncedToChain is whether this node has caught up.
+	SyncedToChain bool
 }

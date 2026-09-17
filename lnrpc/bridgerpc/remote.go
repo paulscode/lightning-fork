@@ -405,3 +405,56 @@ func (r *Remote) Check(ctx context.Context) error {
 
 	return nil
 }
+
+// Balance is what that node can still send over its channels.
+//
+// Local balance rather than capacity: what the far end holds is not something
+// the bridge can spend, and counting it would have the inventory policy think
+// the side is better funded than it is and quote a spread too thin for what it
+// can actually do.
+func (r *Remote) Balance(ctx context.Context) (uint64, error) {
+	bal, err := r.main.ChannelBalance(
+		ctx, &lnrpc.ChannelBalanceRequest{},
+	)
+	if err != nil {
+		return 0, fmt.Errorf("reading the Bitcoin node's outgoing "+
+			"balance: %w", err)
+	}
+
+	msat := bal.GetLocalBalance().GetMsat()
+	if msat > math.MaxInt64 {
+		return 0, fmt.Errorf("the Bitcoin node reports an implausible "+
+			"balance of %d msat", msat)
+	}
+
+	return msat, nil
+}
+
+// BestBlock is the tip that node sees, with the time it was mined.
+//
+// The block's own timestamp, not when the node heard about it: block spacing is
+// measured from it, and a node catching up sees a hundred blocks in a minute,
+// which arrival times would read as a chain running a hundred times too fast.
+func (r *Remote) BestBlock(ctx context.Context) (BlockInfo, error) {
+	info, err := r.main.GetInfo(ctx, &lnrpc.GetInfoRequest{})
+	if err != nil {
+		return BlockInfo{}, fmt.Errorf("reading the Bitcoin node's "+
+			"tip: %w", err)
+	}
+
+	h := info.GetBlockHeight()
+	if h > math.MaxInt32 {
+		return BlockInfo{}, fmt.Errorf("the Bitcoin node reports an "+
+			"implausible height %d", h)
+	}
+
+	out := BlockInfo{
+		Height:        int32(h),
+		SyncedToChain: info.GetSyncedToChain(),
+	}
+	if ts := info.GetBestHeaderTimestamp(); ts > 0 {
+		out.Time = time.Unix(ts, 0)
+	}
+
+	return out, nil
+}

@@ -58,7 +58,8 @@ func (l *Local) ready() error {
 	case l.deps.AddHoldInvoice == nil, l.deps.LookupInvoice == nil,
 		l.deps.SettleInvoice == nil, l.deps.CancelInvoice == nil,
 		l.deps.DecodeInvoice == nil, l.deps.PayInvoice == nil,
-		l.deps.LookupPayment == nil, l.deps.BlockHeight == nil:
+		l.deps.LookupPayment == nil, l.deps.BestBlock == nil,
+		l.deps.ChannelBalance == nil:
 
 		return ErrNoDeps
 	}
@@ -210,17 +211,39 @@ func (l *Local) BlockHeight(ctx context.Context) (int32, error) {
 		return 0, err
 	}
 
-	height, synced, err := l.deps.BlockHeight(ctx)
+	info, err := l.deps.BestBlock(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("reading this node's height: %w", err)
 	}
-	if !synced {
+	if !info.SyncedToChain {
 		// Refuse rather than return a height that may not be the
 		// present one.
-		return 0, fmt.Errorf("%w: at height %d", ErrNotSynced, height)
+		return 0, fmt.Errorf("%w: at height %d", ErrNotSynced,
+			info.Height)
 	}
 
-	return height, nil
+	return info.Height, nil
+}
+
+// BestBlock is the tip this node sees, with the time it was mined, for the
+// chain observer. Unlike BlockHeight it does not refuse while syncing: the
+// observer's job is to measure block spacing, and the blocks a catching-up
+// node reports were still mined when they say they were.
+func (l *Local) BestBlock(ctx context.Context) (BlockInfo, error) {
+	if err := l.ready(); err != nil {
+		return BlockInfo{}, err
+	}
+
+	return l.deps.BestBlock(ctx)
+}
+
+// Balance is what this node can still send over its channels.
+func (l *Local) Balance(ctx context.Context) (uint64, error) {
+	if err := l.ready(); err != nil {
+		return 0, err
+	}
+
+	return l.deps.ChannelBalance(ctx)
 }
 
 // Decode reads a payment request with this node's own decoder.
