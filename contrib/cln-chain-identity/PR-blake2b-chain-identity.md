@@ -52,8 +52,10 @@ where that text places it.
   on both implementations, with no warning. That gap is real and is
   deliberately left open: minting offers that name a chain the other
   implementation does not recognise would break fetching between us, and that
-  is not a thing to do unilaterally. It is section 6 of the document and an
-  open question on the PR.
+  is not a thing to do unilaterally. `doc/blake2b-chain-identity.md`, which
+  commit 5 adds, sets the gap out in full under "Offers: a known gap", and I
+  have raised it in a comment here as the one thing I would most like a view
+  on.
 - **It does not restamp wallets.** The previous series did. That check is
   reached only when the wallet is stamped with block 0 and the chain's
   `chain_hash` is not, so with the two equal it cannot fire. Measured: a wallet
