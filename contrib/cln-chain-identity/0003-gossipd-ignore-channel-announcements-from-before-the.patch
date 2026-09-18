@@ -1,4 +1,4 @@
-From 85319dce34520f86431d85b31564223ca58e06b5 Mon Sep 17 00:00:00 2001
+From 304c867bffe0e8152b8cc9b4b2ef31390a4fafe0 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Thu, 17 Sep 2026 13:03:59 -0500
 Subject: [PATCH 3/7] gossipd: ignore channel announcements from before the
@@ -33,7 +33,7 @@ well: a channel of ours funded before the activation is in the same position.
  3 files changed, 21 insertions(+)
 
 diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
-index d0ea3ee3d..fcd3d739d 100644
+index dbf7bd9f6..46695e5ac 100644
 --- a/bitcoin/chainparams.c
 +++ b/bitcoin/chainparams.c
 @@ -30,6 +30,7 @@ const struct chainparams networks[] = {

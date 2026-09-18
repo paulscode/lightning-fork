@@ -106,9 +106,40 @@ guarded now, and the target passes.
 That bug was in the previous series too, unnoticed, because the unit tests were
 never run against it.
 
-## Still to verify before this is ready to merge
+## The python suite
 
-The full python suite. The prefix change reaches further into the tests than it
-looks, because the bookkeeper's `coin_type` is the lightning prefix rather than
-the address prefix, and commits 6 and 7 are what was needed the last time;
-whether that is still all of it wants a run rather than an assumption.
+Run against the files the prefix reaches, on this series and on `24d027310`
+with nothing applied, and the two failure sets now match. That suite is failing
+a great deal on its own, before any of this: 85 of the tests in those files
+fail on plain upstream. What matters is that the series adds nothing to that,
+and it does not.
+
+Getting there took two fixes, both found by the run and neither visible without
+it. Both were in the previous series too.
+
+**The bookkeeper could not read its own history.** It decodes the BOLT 11
+strings it stored, with no chain check at all, and those were written with the
+old prefix. `chainparams_by_lightning_hrp` only knew current prefixes, so the
+decode failed and the migration aborted: `failed to parse bolt11 lnbcrt1...:
+Prefix bcrt is the SHA256d chain's`. That is accounting data lost on upgrade
+for every payment made before it. The lookup now falls back to the prefix a
+network used to carry, in a second pass so that a prefix still in use always
+wins: testnet3 uses `tb` today and testnet4 used to, and an invoice saying `tb`
+is testnet3's.
+
+This does not make an old invoice payable. A caller that cares which chain an
+invoice is for passes `must_be_chain`, and that path compares against
+`lightning_hrp` directly rather than coming through the lookup. Checked:
+`lnbcrt` is still refused on the pay path, and now decodes on the read path.
+
+**Two bookkeeper tests asserted the prefix as a literal.** `'currency': 'bcrt'`
+in eighteen places across `test_migration` and `test_migration_no_bkpr`, which
+the earlier series' test commit missed because it only changed the sites that
+went through `chainparams`. They read the fixture now.
+
+One test, `test_wallet.py::test_reserveinputs`, fails under `-n 4` and passes
+alone on both this series and plain upstream. Flaky, not a regression.
+
+## Still to verify
+
+The rest of the suite, beyond the files the prefix reaches.

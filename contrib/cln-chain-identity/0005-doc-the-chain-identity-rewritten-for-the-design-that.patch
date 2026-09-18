@@ -1,4 +1,4 @@
-From 3d56681053f4e74ad140bf9e677957adcd5dc094 Mon Sep 17 00:00:00 2001
+From f9afbd1601fd9925756a9e9686b488cd082438a1 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Thu, 17 Sep 2026 13:12:51 -0500
 Subject: [PATCH 5/7] doc: the chain identity, rewritten for the design that

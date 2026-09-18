@@ -1,4 +1,4 @@
-From 16922df519398ae03a89d12c8548b05c5fd8f833 Mon Sep 17 00:00:00 2001
+From 581263021fa45bc79f64b2daa4e7492b27966a15 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Thu, 17 Sep 2026 13:04:49 -0500
 Subject: [PATCH 4/7] tests: pin the invoice prefixes and the activation height
@@ -20,18 +20,18 @@ refuse every channel announcement it ever saw.
 There is no chain_hash here on purpose. It is the genesis hash both chains
 share, so there is nothing about it left to get wrong.
 ---
- bitcoin/test/run-chainparams-blake2b.c |  93 ++++++++++++++++++++++
- common/test/run-bolt11.c               | 106 +++++++++++++++++--------
+ bitcoin/test/run-chainparams-blake2b.c | 117 +++++++++++++++++++++++++
+ common/test/run-bolt11.c               | 106 +++++++++++++++-------
  plugins/test/run-decode_guess_type.c   |   5 ++
- 3 files changed, 173 insertions(+), 31 deletions(-)
+ 3 files changed, 197 insertions(+), 31 deletions(-)
  create mode 100644 bitcoin/test/run-chainparams-blake2b.c
 
 diff --git a/bitcoin/test/run-chainparams-blake2b.c b/bitcoin/test/run-chainparams-blake2b.c
 new file mode 100644
-index 000000000..db237c6f2
+index 000000000..b77c9f701
 --- /dev/null
 +++ b/bitcoin/test/run-chainparams-blake2b.c
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,117 @@
 +#include "config.h"
 +#include <assert.h>
 +#include <bitcoin/chainparams.h>
@@ -102,6 +102,30 @@ index 000000000..db237c6f2
 +		assert(p);
 +		assert(streq(p->network_name, expected[i].network));
 +	}
++
++	/* A prefix a network used to carry must still resolve, because stored
++	 * records were written with it. The bookkeeper decodes its own history
++	 * with no chain check, and refusing those loses accounting data for
++	 * every payment made before the upgrade: that is what this missed the
++	 * first time, and only Core Lightning's own test suite caught it. */
++	for (size_t i = 0; i < ARRAY_SIZE(expected); i++) {
++		const struct chainparams *p;
++
++		if (!expected[i].legacy_lightning_hrp)
++			continue;
++
++		p = chainparams_by_lightning_hrp(
++			expected[i].legacy_lightning_hrp);
++		assert(p);
++	}
++
++	/* And a prefix still in use wins over one that was retired. testnet3
++	 * uses "tb" today and testnet4 used to, so a lookup of "tb" has to be
++	 * testnet3's rather than whichever the table lists first. */
++	assert(streq(chainparams_by_lightning_hrp("tb")->network_name,
++		     "testnet"));
++	assert(streq(chainparams_by_lightning_hrp("tblake")->network_name,
++		     "testnet4"));
 +
 +	/* And no two networks may claim the same prefix, or an invoice would
 +	 * decode to whichever came first in the table. */
