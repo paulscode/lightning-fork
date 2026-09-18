@@ -142,6 +142,8 @@ went through `chainparams`. They read the fixture now.
 One test, `test_wallet.py::test_reserveinputs`, fails under `-n 4` and passes
 alone on both this series and plain upstream. Flaky, not a regression.
 
-## Still to verify
-
-The rest of the suite, beyond the files the prefix reaches.
+Since then the rest of the suite has been run the same way, every file on both
+sides: `test_connection`, `test_plugin`, `test_pay`, `test_closing`,
+`test_gossip`, `test_opening`, `test_askrene`, the splice family, the
+`unified_*` files and `test_blake2b_differentiation` among them. The failure
+sets match in every chunk. Nothing outstanding.
