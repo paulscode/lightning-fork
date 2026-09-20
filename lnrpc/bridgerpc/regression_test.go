@@ -975,9 +975,9 @@ func sidedService(t *testing.T, balance uint64) *service {
 			return balance, nil
 		}
 
-		accepts := "lnblake"
+		accepts := "sideB-"
 		if sd.name == "toSHA256" {
-			accepts = "lnbc"
+			accepts = "sideA-"
 		}
 		sd.out = &fakeOutDecoder{accepts: accepts}
 	}
@@ -985,7 +985,13 @@ func sidedService(t *testing.T, balance uint64) *service {
 	return svc
 }
 
-// fakeOutDecoder decodes only invoices carrying its prefix.
+// fakeOutDecoder decodes only invoices carrying its marker.
+//
+// The marker is a test discriminator and nothing more. It used to be the
+// chain's BOLT 11 prefix, which genuinely did tell the two chains apart; that
+// prefix was withdrawn, and both chains now mint "lnbc". The real decoder
+// therefore does not refuse an invoice for the other chain, and these markers
+// must not be read as if it did.
 type fakeOutDecoder struct {
 	node.Outgoing
 
@@ -1017,7 +1023,7 @@ func TestHeadroomCountsOnlyItsOwnSide(t *testing.T) {
 	now := time.Now()
 	err := svc.journal.Put(context.Background(), store.Record{
 		Hash: [32]byte{1}, State: swap.Funded, OutgoingCLTVLimit: 40,
-		Invoice: "lnblakert1payme", IncomingMsat: 3_000,
+		Invoice: "sideB-payme", IncomingMsat: 3_000,
 		OutgoingMsat: 4_000_000, Rate: 1, Spread: 0.01,
 		Created: now, Updated: now,
 	})
@@ -1104,7 +1110,7 @@ func TestASwapThatHasAlreadyPaidCommitsNothing(t *testing.T) {
 
 		err := svc.journal.Put(context.Background(), store.Record{
 			Hash: [32]byte{byte(10 + i)}, State: st,
-			OutgoingCLTVLimit: 40, Invoice: "lnblakert1done",
+			OutgoingCLTVLimit: 40, Invoice: "sideB-done",
 			IncomingMsat: 3_000, OutgoingMsat: 4_000_000, Rate: 1,
 			Spread: 0.01, Created: now, Updated: now,
 		})
@@ -1225,7 +1231,7 @@ func TestFinishedSwapsAreForgotten(t *testing.T) {
 	now := time.Now()
 	pending := store.Record{
 		Hash: [32]byte{1}, State: swap.Funded, OutgoingCLTVLimit: 40,
-		Invoice: "lnblakert1payme", IncomingMsat: 3_000,
+		Invoice: "sideB-payme", IncomingMsat: 3_000,
 		OutgoingMsat: 1_000, Rate: 1, Spread: 0.01,
 		Created: now, Updated: now,
 	}
@@ -1388,7 +1394,7 @@ func TestTheJournalIsCompacted(t *testing.T) {
 	now := time.Now()
 	rec := store.Record{
 		Hash: [32]byte{7}, State: swap.Quoted, OutgoingCLTVLimit: 40,
-		Invoice: "lnblakert1payme", IncomingMsat: 3_000,
+		Invoice: "sideB-payme", IncomingMsat: 3_000,
 		OutgoingMsat: 1_000, Rate: 1, Spread: 0.01,
 		Created: now, Updated: now,
 	}
@@ -1431,7 +1437,7 @@ func TestStartSchedulesCompaction(t *testing.T) {
 	now := time.Now()
 	rec := store.Record{
 		Hash: [32]byte{8}, State: swap.Quoted, OutgoingCLTVLimit: 40,
-		Invoice: "lnblakert1payme", IncomingMsat: 3_000,
+		Invoice: "sideB-payme", IncomingMsat: 3_000,
 		OutgoingMsat: 1_000, Rate: 1, Spread: 0.01,
 		Created: now, Updated: now,
 	}

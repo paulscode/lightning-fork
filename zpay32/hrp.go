@@ -1,6 +1,7 @@
 package zpay32
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -55,6 +56,27 @@ func legacyInvoiceHRP(net *chaincfg.Params) string {
 	defer legacyHRPMu.RUnlock()
 
 	return legacyInvoiceHRPs[net.Name]
+}
+
+// matchesLegacyHRP reports whether the part of an HRP after "ln" is this
+// network's withdrawn prefix, followed by either nothing or the amount, which
+// begins at the first digit.
+//
+// The boundary matters because one withdrawn prefix is another's prefix:
+// regtest's "blakert" begins with mainnet's "blake". Without it a regtest
+// invoice offered to a mainnet node would match here and then fail somewhere
+// downstream in amount parsing, reporting an unknown multiplier rather than
+// the wrong network. Upstream has the same shape of collision between "bc"
+// and "bcrt" and does report it that way; this path is new, so it does not
+// have to.
+func matchesLegacyHRP(rest, legacy string) bool {
+	if legacy == "" || !strings.HasPrefix(rest, legacy) {
+		return false
+	}
+
+	tail := rest[len(legacy):]
+
+	return tail == "" || (tail[0] >= '0' && tail[0] <= '9')
 }
 
 // InvoiceHRP returns the BOLT 11 currency prefix for the given network: the

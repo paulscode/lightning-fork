@@ -126,7 +126,7 @@ func Decode(invoice string, net *chaincfg.Params, opts ...DecodeOption) (
 		// still decodable, so that stored payment requests keep
 		// listing. Nothing is emitted under it: see zpay32/hrp.go.
 		legacy := legacyInvoiceHRP(net)
-		if legacy != "" && strings.HasPrefix(hrp[2:], legacy) {
+		if matchesLegacyHRP(hrp[2:], legacy) {
 			matchedPrefix = legacy
 		} else {
 			return nil, fmt.Errorf("invoice not for current "+

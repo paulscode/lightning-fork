@@ -146,3 +146,37 @@ func TestPrefixNoLongerSeparatesTheChains(t *testing.T) {
 	require.NoError(t, err, "the prefix does not separate the chains")
 	require.Equal(t, &chaincfg.MainNetParams, decoded.Net)
 }
+
+// TestLegacyPrefixShadowing covers one withdrawn prefix being a prefix of
+// another: regtest's "blakert" begins with mainnet's "blake". A regtest string
+// offered to a mainnet node must be refused on the network rather than
+// stumbling into amount parsing.
+func TestLegacyPrefixShadowing(t *testing.T) {
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	mint := func(hrp string, amt *lnwire.MilliSatoshi) string {
+		n := chaincfg.MainNetParams
+		n.Bech32HRPSegwit = hrp
+		inv := newHRPTestInvoice(t, &n, amt)
+		s, err := inv.Encode(signHRPTest(t, key))
+		require.NoError(t, err)
+		return s
+	}
+
+	withLegacyInvoiceHRP(t, &chaincfg.MainNetParams, "blake")
+	amt := lnwire.MilliSatoshi(100000)
+
+	for _, s := range []string{mint("blakert", nil), mint("blakert", &amt)} {
+		_, err := Decode(s, &chaincfg.MainNetParams)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "not for current active network")
+	}
+
+	// And the legitimate case still decodes, so the boundary check has not
+	// made the allowance useless.
+	for _, s := range []string{mint("blake", nil), mint("blake", &amt)} {
+		_, err := Decode(s, &chaincfg.MainNetParams)
+		require.NoError(t, err)
+	}
+}

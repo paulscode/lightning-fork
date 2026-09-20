@@ -37,27 +37,35 @@ separates them in the four places it actually matters:
 | `option_blake2b`, bit 68, even | set in `init` and `node_announcement` | Peering. A node that does not know the bit must hang up, per BOLT 1 |
 | Gossip height floor | 961,640 | `channel_announcement` below the activation is ignored |
 | `option_unified_sigs`, bit 70 | inside `channel_type` | Channels: both sides sign with `SIGHASH_UNIFIED` set |
-| Invoice prefix, mainnet | `lnblake` | BOLT 11 invoices |
-| Invoice prefix, testnet4 | `lntblake` | |
-| Invoice prefix, regtest | `lnblakert` | |
+| `option_blake2b` in the `9` field | **not implemented yet** | BOLT 11 invoices and BOLT 12 offers. Until it is, nothing in a payment artifact says which rules it belongs to |
 
-Until 2026-09-17 this daemon used a `chain_hash` of its own and that was what
-kept the chains apart. `docs/blake2b-chain-identity.md` section 8 explains the
-change and what to do if you implemented the old values.
+Two designs have been withdrawn: a `chain_hash` of this chain's own, until
+2026-09-17, and a BOLT 11 invoice prefix of its own, until 2026-09-19.
+`docs/blake2b-chain-identity.md` section 8 explains both and what to do if you
+ran either.
 
 Consequences:
 
-- A Bitcoin invoice (`lnbc...`) is refused with a message naming the SHA256
-  network. A Lightning Fork invoice is refused by every Bitcoin
-  implementation, which is the intended failure.
+- **An invoice is not refused on its prefix any more.** This daemon used to
+  mint `lnblake...` and refuse `lnbc...`; that was withdrawn, because the
+  prefix is BOLT 11's currency field and a change of proof of work is not a
+  change of currency. Both chains mint `lnbc...` now, so an invoice from
+  either decodes on either. What is meant to separate them is
+  `option_blake2b` as an even bit in the `9` field, which neither
+  implementation sets yet. Until it does, the only thing preventing a
+  cross-chain payment is that the two graphs do not meet, which is weaker
+  than a refusal: the payment fails for want of a route rather than being
+  declined. Invoices this daemon minted under the old prefix still decode, so
+  that `listinvoices` keeps working across the upgrade.
 - A node on the SHA256d chain never gets as far as sending `open_channel` or
   gossip: it disconnects at `init` on bit 68. Its announcements would not be
   ignored on `chain_hash` grounds if they did arrive, because it sends the
   same `chain_hash` this node does; what covers them is the height floor for
   pre-activation channels and the funding output lookup for the rest.
-- BOLT 12 offers are the gap: an offer names chains by `chain_hash`, so one
-  minted on either chain reads as valid and for this chain. See section 6 of
-  the chain-identity document.
+- BOLT 12 offers have the same gap, for the same reason: an offer names chains
+  by `chain_hash`, so one minted on either chain reads as valid and for this
+  chain. `option_blake2b` in `offer_features` is the fix and is not
+  implemented either. See "Offers" in `docs/blake2b-chain-identity.md`.
 - Channel backups (`channel.backup`) written by this daemon carry the shared
   chain hash, and backups written before the change carry the old value; both
   are accepted, per network. A backup from a Bitcoin `lnd` carries the same
