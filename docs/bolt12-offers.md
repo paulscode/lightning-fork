@@ -169,10 +169,15 @@ LND, Core Lightning and LDK, with this chain's hash in `offer_chains` and
 on this chain, and what description they ask for, is the pool's to say.
 
 Core Lightning on this chain (`privkeyio/lightning`, from `v26.06.7-blake2b.3`)
-parses the chain's block headers but, as released, keeps Bitcoin's chain
-hash and invoice prefixes, so the two nodes refuse each other at the
-first message. With the chain-identity patch series kept under
-`contrib/cln-chain-identity/` applied to it, the regtest lab has
-the two peer both ways, open a channel from each side, pay each other's
-BOLT 11 invoices and BOLT 12 offers, route a payment through a Lightning
-Fork node, and close cooperatively and by force.
+parses the chain's block headers and sets `option_blake2b`, so the two nodes
+peer. Both keep the shared chain hash and the ordinary BOLT 11 prefixes, and
+that is deliberate on both counts: neither is what separates the chains. The
+patch series kept under `contrib/cln-chain-identity/` adds the gossip floor at
+the activation height.
+
+With it applied, the regtest lab has the two peer both ways, open a channel
+from each side, pay each other's BOLT 11 invoices and BOLT 12 offers, route a
+payment through a Lightning Fork node, and close cooperatively and by force.
+That was measured against an earlier version of the series, which also gave
+the chain its own invoice prefix; that part has since been withdrawn on both
+sides, so the payment path no longer depends on it at all.

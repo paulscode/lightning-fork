@@ -12,21 +12,25 @@
 
 This is **Lightning Fork** (`github.com/paulscode/lightning-fork`), a fork of
 `lnd` that follows the **Bitcoin BLAKE2b chain** (Bitcoin Knots v29.4.1,
-mainnet activation at height 961640 on 2026-08-30) and refuses to run against,
-connect to, or pay any node on the SHA256d chain it shares a genesis block
-with. Read [docs/blake2b.md](docs/blake2b.md) for what differs from `lnd`:
-the chain hash and invoice prefix, the activation-header check, the `init`
-networks handshake, and the configuration options. It builds against
+mainnet activation at height 961640 on 2026-08-30). It refuses to run against
+a node on the SHA256d chain it shares a genesis block with, and refuses to
+connect to one. It does not refuse to *pay* one: an invoice carries nothing
+that says which of the two chains it belongs to, and what stops the payment is
+that the two graphs do not meet. Read
+[docs/blake2b.md](docs/blake2b.md) for what differs from `lnd`: the
+activation-header check, the `init` networks handshake, the feature bits, and
+the configuration options. It builds against
 [`paulscode/btcd-blake2b`](https://github.com/paulscode/btcd-blake2b), which
 parses the 164-byte header and computes the BLAKE2b block id.
 
 The identity constants another implementation needs to agree with are in
 [docs/blake2b-chain-identity.md](docs/blake2b-chain-identity.md): the feature
 bit that separates the two chains at `init`, the gossip height floor, which
-signatures opt into `SIGHASH_UNIFIED` and under which channel type, and the
-invoice prefixes. `chain_hash` is the genesis hash both chains share, and
-section 8 of that document covers the change away from a distinct one, since
-this daemon shipped the older design first.
+signatures opt into `SIGHASH_UNIFIED` and under which channel type, and what
+is still missing for invoices and offers. `chain_hash` is the genesis hash
+both chains share. Section 8 of that document covers the two designs this
+daemon shipped and then withdrew, a `chain_hash` of its own and a BOLT 11
+invoice prefix of its own, and what to do if you ran either.
 
 The node mints BOLT 12 offers and serves and pays them over onion
 messages, which is how a mining pool that pays to offers pays a miner.

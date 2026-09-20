@@ -25,6 +25,10 @@ import (
 // is listed, and a decode failure there fails the whole ListInvoices call
 // rather than skipping the one record. Emitting is unaffected: invoices minted
 // from here carry the ordinary prefix.
+//
+// This is a migration aid and is meant to be removed. It can go once no
+// supported upgrade path starts from a build that minted the withdrawn
+// prefixes. Until then, deleting it takes a node's invoice history with it.
 
 var (
 	legacyHRPMu sync.RWMutex
