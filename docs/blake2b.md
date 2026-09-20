@@ -255,6 +255,69 @@ version keep the hash type they were stored with, which the chain still
 accepts; they opt in once the channel they belong to is resolved and new
 descriptors are written.
 
+## Long coinbase maturity
+
+Knots deploys a temporary rule
+([bitcoinknots/bitcoin#419](https://github.com/bitcoinknots/bitcoin/pull/419))
+that raises the wait on newly mined coins from 100 blocks to 6480, roughly 45
+days at a ten minute block target. The release notes say a full year is being
+considered for October 2026, and after that withholding rewards entirely from
+blocks not produced through the miner's own DATUM Gateway.
+
+**Open channels are not affected.** A Lightning transaction spends the P2WSH
+funding output, not a coinbase, so the rule never touches a commitment, an HTLC
+or a close. There is nothing to do about existing channels and no reason to
+close one over this.
+
+### The rule has two faces
+
+Consensus refuses a spend only inside a deployment window, and only for coins
+mined at or after the start height. Relay is blunter: an upgraded node requires
+the full 6480 blocks of *every* coinbase spend it will accept into its mempool,
+whatever height the coin was mined at, and it keeps requiring it after the
+window closes. Knots' own wallet follows relay rather than consensus.
+
+Two consequences that surprise people:
+
+- A coinbase mined well before the fork, buried 200 blocks deep, is a
+  consensus-valid spend that no upgraded node will relay.
+- The relay rule is not height-gated. `CoinbaseMaturityLong` is a static
+  chainparam, so a node starts enforcing it the moment it is upgraded, not at
+  the flag day.
+
+### What this node does
+
+`funding/manager.go` waits the relay depth, not the consensus depth, before
+marking a channel funded by a coinbase transaction as usable. Waiting the
+shorter of the two would let you open a channel whose commitment and close
+transactions cannot relay, and a channel you cannot close on time is worse than
+one you cannot open yet. The depth comes from
+`chaincfg.Params.RelayCoinbaseMaturity()` in btcd-blake2b, which returns the
+ordinary 100 blocks on any network without the deployment.
+
+### Known gap: the node's own wallet
+
+**This node's wallet still offers freshly mined coins after 100
+confirmations.** Coin selection happens inside upstream
+`github.com/btcsuite/btcwallet`, which filters coinbase outputs against
+`chainParams.CoinbaseMaturity`, and that field has to stay at 100 because btcd
+also reads it for consensus validation. Our btcwallet fork is scoped to the
+`wallet/txauthor` submodule, so the module carrying the filter is not replaced
+and cannot be patched from here. Closing this means moving the fork onto the
+v0.16.19 base and replacing the whole module.
+
+Affected paths are every one that selects coins: `SendOutputs`, `CreateSimpleTx`,
+`FundPsbt`, `ListUnspentWitness`, and so channel opens funded from the node
+wallet.
+
+The failure mode is a rejected broadcast, not lost funds: the transaction is
+built, refused by the first node it reaches, and the operation fails. The coin
+is still there and becomes spendable on schedule.
+
+**Until this is closed, keep freshly mined coins out of this node's wallet.**
+Send mining payouts to a wallet that follows the rule, and move them in once
+they have 6480 confirmations.
+
 ## Verifying the constants yourself
 
 ```sh
