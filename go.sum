@@ -440,8 +440,8 @@ github.com/opencontainers/runc v1.1.14/go.mod h1:E4C2z+7BxR7GHXp0hAY53mek+x49X1L
 github.com/opentracing/opentracing-go v1.1.0/go.mod h1:UkNAQd3GIcIGf0SeVgPpRdFStlNbqXla1AfSYxPUl2o=
 github.com/ory/dockertest/v3 v3.10.0 h1:4K3z2VMe8Woe++invjaTB7VRyQXQy5UY+loujO4aNE4=
 github.com/ory/dockertest/v3 v3.10.0/go.mod h1:nr57ZbRWMqfsdGdFNLHz5jjNdDb7VVFnzAeW1n5N1Lg=
-github.com/paulscode/btcd-blake2b v0.25.1-blake2b.4 h1:YlR2FmYuZwPeI2HV2MPesagjAAnoZd3EeOlkT3g7kHU=
-github.com/paulscode/btcd-blake2b v0.25.1-blake2b.4/go.mod h1:qbPE+pEiR9643E1s1xu57awsRhlCIm1ZIi6FfeRA4KE=
+github.com/paulscode/btcd-blake2b v0.25.1-blake2b.5 h1:jSaSIjcXhuVU/DokhnLTV/eXJ+Qlx/RaTEHRdCNVK/k=
+github.com/paulscode/btcd-blake2b v0.25.1-blake2b.5/go.mod h1:qbPE+pEiR9643E1s1xu57awsRhlCIm1ZIi6FfeRA4KE=
 github.com/paulscode/btcwallet-blake2b/wallet/txauthor v1.3.5-blake2b.1 h1:uKixyabvwAbbp2xeTzozVoTA6e0eNk69HaI0YLere2o=
 github.com/paulscode/btcwallet-blake2b/wallet/txauthor v1.3.5-blake2b.1/go.mod h1:+tXJ3Ym0nlQc/iHSwW1qzjmPs3ev+UVWMbGgfV1OZqU=
 github.com/paulscode/lightning-fork-bridge v0.1.1 h1:zp9x65VoObrztKnzPauQtRH0Tc/GMUZGlqGVkf6FGHE=

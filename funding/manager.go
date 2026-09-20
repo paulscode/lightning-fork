@@ -1359,10 +1359,18 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 		// If it's a coinbase transaction, we need to wait for it to
 		// mature. We wait out an additional MinAcceptDepth on top of
 		// the coinbase maturity as an extra margin of safety.
-		maturity := f.cfg.Wallet.Cfg.NetParams.CoinbaseMaturity
+		//
+		// The relay depth rather than the consensus one, because a
+		// channel is only usable once we can spend the funding output,
+		// and that means getting a commitment or a close through the
+		// network's mempools, not merely past its block validation.
+		// Under the long maturity rule those differ by thousands of
+		// blocks, and marking the channel active on the shorter of the
+		// two would leave us unable to close it on time.
+		maturity := f.cfg.Wallet.Cfg.NetParams.RelayCoinbaseMaturity()
 		numCoinbaseConfs := uint32(maturity)
 
-		if channel.NumConfsRequired > maturity {
+		if uint32(channel.NumConfsRequired) > numCoinbaseConfs {
 			numCoinbaseConfs = uint32(channel.NumConfsRequired)
 		}
 
