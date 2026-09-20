@@ -122,12 +122,26 @@ a harness around it, but it is a gap and not an oversight.
 ## Measured
 
 In a regtest lab, against Lightning Fork (`github.com/paulscode/lightning-fork`,
-an LND port) which implements the same values: the two peer, agree
-`channel_type [12,22,70]`, exchange gossip, and close both cooperatively and by
-force with `0x21` in both witnesses. An HTLC held across a force close produces
-an HTLC-timeout transaction carrying `0xa3` from this node and `0x21` from the
-other.
+an LND port), with this series applied to `24d027310`. Run today, end to end:
+
+- The two peer, from each side.
+- A stock lnd hangs up on bit 68 and does not become a peer, which is the
+  separation doing its job without either of us deciding anything.
+- A channel opens from each side and gossip reaches both graphs.
+- **BOLT 11 payments work in both directions**, 100 sat one way and 200 sat the
+  other, and a payment routes through the lnd node to a second one.
+- **BOLT 12 offers are paid in both directions.**
+- A cooperative close from this side and a force close from the other both
+  settle, `["COOPERATIVE_CLOSE","LOCAL_FORCE_CLOSE"]`.
 
 The previous series reported that the two could not pay each other, each
 refusing the other's invoice on the prefix. That was a consequence of that
-series changing the prefix on one side only. It is not a property of this one.
+series changing the prefix on one side only, and it is gone: both ends mint
+`lnbcrt` and payments need nothing from either of us.
+
+Two caveats on that run, since they say what it does and does not cover. The
+signature hash types are not checked here; that is a separate scenario and this
+series does not touch signing. And the scenario had stopped running some time
+ago, against a Core Lightning pinned fifty commits before `OPT_BLAKE2B` existed,
+so it could never have peered; the lab is repaired and repinned, and this is
+the first run against the base this PR targets.
