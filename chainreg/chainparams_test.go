@@ -53,17 +53,21 @@ func TestBlake2bChainIdentity(t *testing.T) {
 		}
 		seen[p.ChainHash] = p.Name
 
-		// Invoice prefixes are letters only (the amount begins at the
-		// first digit), never a stock Bitcoin prefix, and never start
-		// with "bc" (visually confusable with lnbc...).
-		require.NotEmpty(t, p.InvoiceHRP, p.Name)
-		for _, r := range p.InvoiceHRP {
-			require.True(t, r >= 'a' && r <= 'z', "%s: %q", p.Name, p.InvoiceHRP)
+		// The chain does not have an invoice prefix of its own: that
+		// was withdrawn, because the prefix is BOLT 11's currency
+		// field. What is recorded per network is the prefix its
+		// invoices used to carry, accepted on decode only so that
+		// already-issued invoices still list. It must be letters only,
+		// because the amount begins at the first digit, and must not
+		// be a stock prefix, or decoding could not tell the two apart.
+		require.NotEmpty(t, p.LegacyInvoiceHRP, p.Name)
+		for _, r := range p.LegacyInvoiceHRP {
+			require.True(t, r >= 'a' && r <= 'z',
+				"%s: %q", p.Name, p.LegacyInvoiceHRP)
 		}
 		for _, stock := range []string{"bc", "tb", "tbs", "bcrt", "sb"} {
-			require.NotEqual(t, stock, p.InvoiceHRP, p.Name)
+			require.NotEqual(t, stock, p.LegacyInvoiceHRP, p.Name)
 		}
-		require.False(t, strings.HasPrefix(p.InvoiceHRP, "bc"), p.Name)
 	}
 
 	// Test networks are not pinned to an activation block.

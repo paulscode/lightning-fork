@@ -1,31 +1,25 @@
-From 304c867bffe0e8152b8cc9b4b2ef31390a4fafe0 Mon Sep 17 00:00:00 2001
+From 1f2bcb063bfbc55e240a28011c42bf2c719b012c Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Thu, 17 Sep 2026 13:03:59 -0500
-Subject: [PATCH 3/7] gossipd: ignore channel announcements from before the
+Subject: [PATCH 1/4] gossipd: ignore channel announcements from before the
  proof of work changed
 
-A funding output from below block 961,640 exists for nodes that did not upgrade
-too, and its spend may happen where this node cannot see it, so a channel
-announced against one would sit in the graph forever with nothing able to
-remove it.
+A funding output confirmed below the activation height exists for nodes that
+did not upgrade too, and its spend may happen where this node cannot see it, so
+a channel announced against one would sit in the graph forever with nothing
+able to remove it.
 
-The chain_hash check just above cannot do this job. Both chains carry the
-genesis hash they share, deliberately, so it does not tell them apart; it only
-tells either of them from some third chain. This is the other half of what
-replaced giving the chain a chain_hash of its own, the first half being
-option_unified_sigs inside channel_type.
+The chain_hash check cannot do this. Both chains carry the same value, because
+a change of proof of work is not a change of chain, so a channel on the other
+rules resolves to a real output here and is accepted.
 
-A channel funded after the activation on the other chain is already refused,
-because its funding output does not exist here and the txout lookup fails. Only
-the ones funded before it need a rule.
+Adds blake2b_activation_height to chainparams, set on the chain that changed
+its proof of work and zero everywhere else. Zero turns the rule off: a stray
+non-zero value on a chain that never moved would refuse every channel
+announcement it ever saw.
 
-The height is a chainparams field rather than a constant so that the rule is
-off on every network that never changed its proof of work, where a floor would
-refuse every announcement there is.
-
-Placed exactly where BOLT 7 puts it, after the chain_hash clause and before the
-one about ancient channels, and it applies to this node's own announcements as
-well: a channel of ours funded before the activation is in the same position.
+This is the rule in the BOLT 7 half of lightning-blake2b/bolts#1, placed where
+that text places it.
 ---
  bitcoin/chainparams.c    |  1 +
  bitcoin/chainparams.h    |  4 ++++
@@ -33,25 +27,25 @@ well: a channel of ours funded before the activation is in the same position.
  3 files changed, 21 insertions(+)
 
 diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
-index dbf7bd9f6..46695e5ac 100644
+index 9ce3b0520..8217f7054 100644
 --- a/bitcoin/chainparams.c
 +++ b/bitcoin/chainparams.c
-@@ -30,6 +30,7 @@ const struct chainparams networks[] = {
+@@ -29,6 +29,7 @@ const struct chainparams networks[] = {
+     {.network_name = "bitcoin",
       .onchain_hrp = "bc",
-      .lightning_hrp = "blake",
-      .legacy_lightning_hrp = "bc",
+      .lightning_hrp = "bc",
 +     .blake2b_activation_height = 961640,
       .bip70_name = "main",
       .genesis_blockhash = {{{.u.u8 = {0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3,
  				      0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63,
 diff --git a/bitcoin/chainparams.h b/bitcoin/chainparams.h
-index dbd4ca3b7..8a1e7c9fc 100644
+index 05794f5c1..98805b943 100644
 --- a/bitcoin/chainparams.h
 +++ b/bitcoin/chainparams.h
-@@ -22,6 +22,10 @@ struct chainparams {
- 	 * still accepts it, and legacy bookkeeper events were written with
- 	 * it. */
- 	const char *legacy_lightning_hrp;
+@@ -17,6 +17,10 @@ struct chainparams {
+ 	 */
+ 	const char *onchain_hrp;
+ 	const char *lightning_hrp;
 +	/* The height at which this chain changed its proof of work, or 0 if
 +	 * it never did. A channel funded below it exists for nodes that did
 +	 * not upgrade too: see the gossip rule in gossmap_manage.c. */

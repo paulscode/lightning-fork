@@ -52,16 +52,17 @@ const (
 	// test networks, where no stable activation block exists.
 	chainHashTag = "Lightning Fork chain_hash"
 
-	// Invoice prefixes. BOLT 11 identifies a network only by the currency
-	// prefix of the human-readable part; the BLAKE2b chain kept "bc" for
-	// addresses, so an explicit, visually distinct prefix is needed. It
-	// contains no digits because the amount that follows begins at the
-	// first digit.
-	invoiceHRPMainnet = "blake"
-	invoiceHRPTestnet = "tblake"
-	invoiceHRPSignet  = "tbsblake"
-	invoiceHRPSimnet  = "sblake"
-	invoiceHRPRegtest = "blakert"
+	// Withdrawn invoice prefixes. An earlier version of this fork gave the
+	// chain these instead of the ordinary BOLT 11 ones. That was withdrawn:
+	// the prefix is BOLT 11's currency field, and giving the chain one of
+	// its own states that it is a different currency, which a change of
+	// proof of work is not. They are kept only so that invoices already
+	// issued under them still decode, and nothing is emitted under them.
+	legacyInvoiceHRPMainnet = "blake"
+	legacyInvoiceHRPTestnet = "tblake"
+	legacyInvoiceHRPSignet  = "tbsblake"
+	legacyInvoiceHRPSimnet  = "sblake"
+	legacyInvoiceHRPRegtest = "blakert"
 )
 
 // Blake2bMainnetActivationHash is the hash of the first BLAKE2b block on
@@ -77,12 +78,18 @@ type BitcoinNetParams struct {
 	CoinType uint32
 
 	// ChainHash is the BOLT chain_hash advertised for this network. It is
-	// never the genesis hash: see the package comment above.
+	// the genesis hash both chains share: a change of proof of work is not
+	// a change of chain, so chain_hash does not tell them apart. What does
+	// is option_blake2b at init, the gossip floor at the activation
+	// height, and option_unified_sigs in channel_type.
 	ChainHash chainhash.Hash
 
-	// InvoiceHRP is the BOLT 11 currency prefix; the human-readable part
-	// of an invoice is "ln" followed by it.
-	InvoiceHRP string
+	// LegacyInvoiceHRP is the BOLT 11 currency prefix this network's
+	// invoices used to carry, before that change was withdrawn. It is
+	// accepted when decoding so that already-issued invoices still list,
+	// and is never used when encoding. Empty where the network never had
+	// one.
+	LegacyInvoiceHRP string
 
 	// Blake2bActivationHeight is the height of the first BLAKE2b block on
 	// this network, or zero where it is not fixed (regtest chooses it per
@@ -103,7 +110,7 @@ var BitcoinTestNetParams = BitcoinNetParams{
 	RPCPort:    "18334",
 	CoinType:   keychain.CoinTypeTestnet,
 	ChainHash:  *bitcoinCfg.TestNet3Params.GenesisHash,
-	InvoiceHRP: invoiceHRPTestnet,
+	LegacyInvoiceHRP: legacyInvoiceHRPTestnet,
 }
 
 // BitcoinTestNet4Params contains parameters specific to the 4th version of the
@@ -113,7 +120,7 @@ var BitcoinTestNet4Params = BitcoinNetParams{
 	RPCPort:    "48334",
 	CoinType:   keychain.CoinTypeTestnet,
 	ChainHash:  *bitcoinCfg.TestNet4Params.GenesisHash,
-	InvoiceHRP: invoiceHRPTestnet,
+	LegacyInvoiceHRP: legacyInvoiceHRPTestnet,
 }
 
 // BitcoinMainNetParams contains parameters specific to the current Bitcoin
@@ -123,7 +130,7 @@ var BitcoinMainNetParams = BitcoinNetParams{
 	RPCPort:                 "8334",
 	CoinType:                keychain.CoinTypeBitcoin,
 	ChainHash:               *bitcoinCfg.MainNetParams.GenesisHash,
-	InvoiceHRP:              invoiceHRPMainnet,
+	LegacyInvoiceHRP:        legacyInvoiceHRPMainnet,
 	Blake2bActivationHeight: Blake2bMainnetActivationHeight,
 	Blake2bActivationHash:   Blake2bMainnetActivationHash,
 }
@@ -135,7 +142,7 @@ var BitcoinSimNetParams = BitcoinNetParams{
 	RPCPort:    "18556",
 	CoinType:   keychain.CoinTypeTestnet,
 	ChainHash:  *bitcoinCfg.SimNetParams.GenesisHash,
-	InvoiceHRP: invoiceHRPSimnet,
+	LegacyInvoiceHRP: legacyInvoiceHRPSimnet,
 }
 
 // BitcoinSigNetParams contains parameters specific to the signet test network.
@@ -144,7 +151,7 @@ var BitcoinSigNetParams = BitcoinNetParams{
 	RPCPort:    "38332",
 	CoinType:   keychain.CoinTypeTestnet,
 	ChainHash:  *bitcoinCfg.SigNetParams.GenesisHash,
-	InvoiceHRP: invoiceHRPSignet,
+	LegacyInvoiceHRP: legacyInvoiceHRPSignet,
 }
 
 // BitcoinRegTestNetParams contains parameters specific to a local bitcoin
@@ -154,7 +161,7 @@ var BitcoinRegTestNetParams = BitcoinNetParams{
 	RPCPort:    "18334",
 	CoinType:   keychain.CoinTypeTestnet,
 	ChainHash:  *bitcoinCfg.RegressionNetParams.GenesisHash,
-	InvoiceHRP: invoiceHRPRegtest,
+	LegacyInvoiceHRP: legacyInvoiceHRPRegtest,
 }
 
 // IsTestnet tests if the given params correspond to a testnet parameter

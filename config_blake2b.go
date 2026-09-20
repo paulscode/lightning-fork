@@ -99,7 +99,11 @@ func applyBlake2bChainConfig(cfg *Config) error {
 	)
 	input.SetAllowLegacySigHash(cfg.Bitcoin.AllowLegacySigHash)
 
-	zpay32.RegisterInvoiceHRP(params.Name, params.InvoiceHRP)
+	// Invoices are minted with the ordinary BOLT 11 prefix. The withdrawn
+	// one is registered for decoding only, so that invoices this node
+	// issued under it keep listing: lnd re-decodes a stored payment
+	// request on every list, and a failure there fails the whole call.
+	zpay32.RegisterLegacyInvoiceHRP(params.Name, params.LegacyInvoiceHRP)
 
 	return nil
 }

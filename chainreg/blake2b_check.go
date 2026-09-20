@@ -452,10 +452,11 @@ func (c *chainIdentityChecker) run(quit <-chan struct{}) (uint32, error) {
 		ActivationHash:   hash.String(),
 		ReducedData:      rd,
 	})
+	// The invoice prefix is deliberately not named here. It is the same on
+	// both chains, so it says nothing about which one this node follows.
 	c.log.Infof("Bitcoin BLAKE2b chain confirmed: block %d is %v (%d-byte "+
-		"header v2); Lightning chain_hash %v, invoice prefix ln%s",
-		height, hash, wire.BlockHeaderLenV2, c.params.ChainHash,
-		c.params.InvoiceHRP)
+		"header v2); Lightning chain_hash %v",
+		height, hash, wire.BlockHeaderLenV2, c.params.ChainHash)
 	c.logReducedData(nil, rd)
 	c.reduced = rd
 

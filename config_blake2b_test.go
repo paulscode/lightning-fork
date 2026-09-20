@@ -26,7 +26,7 @@ func blake2bTestConfig(t *testing.T, params chainreg.BitcoinNetParams,
 	if set != nil {
 		set(&cfg)
 	}
-	t.Cleanup(func() { zpay32.RegisterInvoiceHRP(params.Name, "") })
+	t.Cleanup(func() { zpay32.RegisterLegacyInvoiceHRP(params.Name, "") })
 	return &cfg
 }
 
@@ -45,7 +45,12 @@ func TestApplyBlake2bChainConfig(t *testing.T) {
 			cfg.ActiveNetParams.ChainHash)
 		require.NotEqual(t, *chainreg.Blake2bMainnetActivationHash,
 			cfg.ActiveNetParams.ChainHash)
-		require.Equal(t, "blake", zpay32.InvoiceHRP(&chaincfg.MainNetParams))
+		// The prefix is the ordinary one: giving the chain its own was
+		// withdrawn. The withdrawn value is registered for decoding
+		// only, so invoices already issued under it still list.
+		require.Equal(t, "bc", zpay32.InvoiceHRP(&chaincfg.MainNetParams))
+		require.Equal(t, "blake",
+			cfg.ActiveNetParams.LegacyInvoiceHRP)
 	})
 
 	t.Run("mainnet refuses height override", func(t *testing.T) {
@@ -91,8 +96,10 @@ func TestApplyBlake2bChainConfig(t *testing.T) {
 		require.Equal(t, uint32(20),
 			cfg.ActiveNetParams.Blake2bActivationHeight)
 		require.Equal(t, override, cfg.ActiveNetParams.ChainHash)
-		require.Equal(t, "blakert",
+		require.Equal(t, "bcrt",
 			zpay32.InvoiceHRP(&chaincfg.RegressionNetParams))
+		require.Equal(t, "blakert",
+			cfg.ActiveNetParams.LegacyInvoiceHRP)
 	})
 
 	t.Run("regtest rejects malformed override", func(t *testing.T) {
@@ -116,7 +123,9 @@ func TestApplyBlake2bChainConfig(t *testing.T) {
 		require.NoError(t, applyBlake2bChainConfig(cfg))
 		require.Equal(t, uint32(150308),
 			cfg.ActiveNetParams.Blake2bActivationHeight)
-		require.Equal(t, "tblake", zpay32.InvoiceHRP(&chaincfg.TestNet4Params))
+		require.Equal(t, "tb", zpay32.InvoiceHRP(&chaincfg.TestNet4Params))
+		require.Equal(t, "tblake",
+			cfg.ActiveNetParams.LegacyInvoiceHRP)
 	})
 
 	t.Run("peers without networks are refused by default", func(t *testing.T) {

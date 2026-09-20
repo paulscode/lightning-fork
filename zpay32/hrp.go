@@ -1,79 +1,69 @@
 package zpay32
 
 import (
-	"strings"
 	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-// BOLT 11 identifies the network an invoice belongs to solely by the currency
-// prefix of the human-readable part: "ln" + "bc" for Bitcoin mainnet, "tb" for
-// testnet, and so on. Those prefixes come from the BIP-173 address prefix of
-// the network. The Bitcoin BLAKE2b chain kept Bitcoin's address prefixes, so
-// an invoice derived from them would be indistinguishable from a Bitcoin one
-// and a reader on either chain would try to pay the other chain's invoice.
+// BOLT 11 identifies the network an invoice belongs to by the currency prefix
+// of the human-readable part: "ln" + "bc" for mainnet, "tb" for testnet, and
+// so on, derived from the BIP-173 address prefix of the network.
 //
-// A daemon on the BLAKE2b chain therefore registers an explicit prefix for
-// the network it runs on, and both encoding and decoding use it. Nothing is
-// registered by default, so this package behaves exactly as upstream for
-// anything that does not register (tests, tools decoding Bitcoin invoices).
+// The Bitcoin BLAKE2b chain kept those prefixes. An earlier version of this
+// fork gave the chain prefixes of its own ("blake", "tblake", "tbsblake",
+// "blakert"); that was withdrawn, because the prefix is BOLT 11's currency
+// field and giving the chain one of its own states that it is a different
+// currency, which a change of proof of work is not. What separates an invoice
+// on this chain from one on the earlier rules is option_blake2b, an even
+// feature bit in the `9` field.
+//
+// The withdrawn prefixes are still accepted when decoding, and only when
+// decoding. A node that ran the earlier build issued invoices carrying them
+// and stored the strings; lnd re-decodes a stored payment request whenever it
+// is listed, and a decode failure there fails the whole ListInvoices call
+// rather than skipping the one record. Emitting is unaffected: invoices minted
+// from here carry the ordinary prefix.
 
 var (
-	invoiceHRPMu sync.RWMutex
+	legacyHRPMu sync.RWMutex
 
-	// invoiceHRPs maps a chaincfg.Params name to the registered currency
-	// prefix for that network.
-	invoiceHRPs = map[string]string{}
+	// legacyInvoiceHRPs maps a chaincfg.Params name to the prefix that
+	// network's invoices used to carry, for decoding only.
+	legacyInvoiceHRPs = map[string]string{}
 )
 
-// RegisterInvoiceHRP sets the BOLT 11 currency prefix used for invoices on
-// the network with the given chaincfg.Params name. An empty prefix removes
-// the registration and restores the upstream behaviour for that network.
-func RegisterInvoiceHRP(netName, hrp string) {
-	invoiceHRPMu.Lock()
-	defer invoiceHRPMu.Unlock()
+// RegisterLegacyInvoiceHRP records the BOLT 11 currency prefix that invoices
+// on the given network used to carry, so that strings already issued under it
+// still decode. An empty prefix removes the registration. It has no effect on
+// what this node emits.
+func RegisterLegacyInvoiceHRP(netName, hrp string) {
+	legacyHRPMu.Lock()
+	defer legacyHRPMu.Unlock()
 
 	if hrp == "" {
-		delete(invoiceHRPs, netName)
+		delete(legacyInvoiceHRPs, netName)
 		return
 	}
-	invoiceHRPs[netName] = hrp
+	legacyInvoiceHRPs[netName] = hrp
+}
+
+// legacyInvoiceHRP returns the withdrawn prefix for a network, or "" if none
+// is registered.
+func legacyInvoiceHRP(net *chaincfg.Params) string {
+	legacyHRPMu.RLock()
+	defer legacyHRPMu.RUnlock()
+
+	return legacyInvoiceHRPs[net.Name]
 }
 
 // InvoiceHRP returns the BOLT 11 currency prefix for the given network: the
-// registered prefix if there is one, otherwise the upstream rule (the BIP-173
-// address prefix, with signet spelled "tbs" to tell it from testnet3).
+// BIP-173 address prefix, with signet spelled "tbs" to tell it from testnet3.
+// This is the upstream rule and the chain does not change it.
 func InvoiceHRP(net *chaincfg.Params) string {
-	invoiceHRPMu.RLock()
-	hrp, ok := invoiceHRPs[net.Name]
-	invoiceHRPMu.RUnlock()
-	if ok {
-		return hrp
-	}
-
 	if net.Name == chaincfg.SigNetParams.Name {
 		return "tbs"
 	}
+
 	return net.Bech32HRPSegwit
-}
-
-// bitcoinInvoicePrefixes are the currency prefixes every SHA256d Bitcoin
-// implementation uses, longest first so that a prefix test is unambiguous.
-var bitcoinInvoicePrefixes = []string{"bcrt", "tbs", "bc", "tb", "sb"}
-
-// isBitcoinInvoiceHRP reports whether the part of an HRP after "ln" begins
-// with one of the stock Bitcoin currency prefixes followed by either nothing
-// or an amount (a digit).
-func isBitcoinInvoiceHRP(rest string) bool {
-	for _, prefix := range bitcoinInvoicePrefixes {
-		if !strings.HasPrefix(rest, prefix) {
-			continue
-		}
-		tail := rest[len(prefix):]
-		if tail == "" || (tail[0] >= '0' && tail[0] <= '9') {
-			return true
-		}
-	}
-	return false
 }

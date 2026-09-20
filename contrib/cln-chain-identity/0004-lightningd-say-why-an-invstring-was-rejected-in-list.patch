@@ -1,0 +1,42 @@
+From 842d4acc7428035835fdb422d857d700b30db4ef Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Sat, 19 Sep 2026 22:25:11 -0500
+Subject: [PATCH 4/4] lightningd: say why an invstring was rejected in
+ listinvoices
+
+`listinvoices` discards the reason a string failed to decode and answers
+"Invalid invstring", which tells a user who pasted an invoice for the other
+rule set nothing they can act on. pay.c has carried the reason all along.
+
+It matters more once option_blake2b is what separates invoices, because the
+reason is then "9: unknown feature bit 512" rather than anything a reader could
+infer from looking at the string.
+---
+ lightningd/invoice.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/lightningd/invoice.c b/lightningd/invoice.c
+index 051c23472..61420ffd3 100644
+--- a/lightningd/invoice.c
++++ b/lightningd/invoice.c
+@@ -1378,8 +1378,16 @@ static struct command_result *json_listinvoices(struct command *cmd,
+ 						 cmd->ld->our_features, NULL,
+ 						 &fail);
+ 			if (!b12 || !b12->invoice_payment_hash) {
++				/* Carry the reason. "Invalid invstring" on
++				 * its own tells a user who pasted an invoice
++				 * for the other rule set nothing at all, and
++				 * under option_blake2b the reason is a
++				 * feature-bit message they would never guess.
++				 * pay.c has always done this. */
+ 				return command_fail(cmd, JSONRPC2_INVALID_PARAMS,
+-						    "Invalid invstring");
++						    "Invalid invstring: %s",
++						    fail ? fail
++						    : "not bolt11 or bolt12");
+ 			}
+ 			payment_hash = b12->invoice_payment_hash;
+ 		}
+-- 
+2.43.0
+

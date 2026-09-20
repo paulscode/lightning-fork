@@ -1,61 +1,75 @@
-From f9afbd1601fd9925756a9e9686b488cd082438a1 Mon Sep 17 00:00:00 2001
+From 8087e90aabc7d54805edee7a174eb2ade5aa745b Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
-Date: Thu, 17 Sep 2026 13:12:51 -0500
-Subject: [PATCH 5/7] doc: the chain identity, rewritten for the design that
- replaced chain_hash
+Date: Sat, 19 Sep 2026 22:25:11 -0500
+Subject: [PATCH 3/4] doc: the chain identity, with the invoice prefix
+ withdrawn
 
-The previous version of this document specified a chain_hash of this chain's
-own and said that was what kept the two chains apart. That design is withdrawn.
-chain_hash is the genesis hash both chains share, and the chains are separated
-in the four places it actually matters: option_blake2b at init, a gossip floor
-at the activation height, option_unified_sigs inside channel_type, and the
-BOLT 11 invoice prefix.
+Records what separates the two rule sets now that chain_hash is shared and the
+BOLT 11 prefix is not changing either: the even bit at init, the gossip floor
+at the activation height, option_unified_sigs in channel_type, and
+option_blake2b in the BOLT 11 and BOLT 12 feature fields.
 
-Rewritten around those four, one section each, with the hash types stated per
-signature rather than per transaction, since a second-level HTLC carries two
-and on an anchor channel they differ. Section 6 is the BOLT 12 gap, which
-nothing covers and which the old design did cover, said plainly rather than
-left out. Section 8 is the change itself and what to do if the old values were
-already implemented.
+The last of those is specified and not yet built, on either side, and the
+document says so rather than describing an intention as a fact. With the prefix
+unchanged and the bit not yet set, an invoice minted on this chain is
+indistinguishable from one minted on the earlier rules, and the only thing
+preventing a cross-chain payment is that the two graphs do not meet. That is a
+weaker guarantee than an explicit refusal and it is written down as such.
 
-Kept identical to Lightning Fork's copy except where an implementation detail
-differs, which is the point of writing it down at all.
+Also records that the BOLT 11 even-bit check is load-bearing and that both
+implementations ship a decode path which skips it, Core Lightning for its cli
+tool and lnd by default. Neither is a bug today and both become one when an
+invoice's chain depends on the bit.
+
+The feature-bit sections say where the numbers are going, so that a reader of
+"bit 68" is not left thinking it is settled.
 ---
- doc/blake2b-chain-identity.md | 362 ++++++++++++++++++++++++++++++++++
- 1 file changed, 362 insertions(+)
+ doc/blake2b-chain-identity.md | 439 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 439 insertions(+)
  create mode 100644 doc/blake2b-chain-identity.md
 
 diff --git a/doc/blake2b-chain-identity.md b/doc/blake2b-chain-identity.md
 new file mode 100644
-index 000000000..34b9da290
+index 000000000..393cc137a
 --- /dev/null
 +++ b/doc/blake2b-chain-identity.md
-@@ -0,0 +1,362 @@
+@@ -0,0 +1,439 @@
 +# Lightning on the Bitcoin BLAKE2b chain: identity constants
 +
 +This is the set of values a Lightning implementation needs to run on the
 +Bitcoin BLAKE2b chain without ever being mistaken for, or mistaking a peer
-+for, a node on the Bitcoin (SHA256d) chain. This build of Core Lightning
-+implements it, and so does Lightning Fork
-+(github.com/paulscode/lightning-fork, an LND port) running on mainnet. The
-+text is kept identical between the two repositories, so that the two agree
-+byte for byte and so that the values stay open to change while only two
-+implementations have channels.
++for, a node on the SHA256d chain.
++
++Peering, gossip and channels are implemented, in this build of Core Lightning
++and in Lightning Fork (github.com/paulscode/lightning-fork, an LND port)
++running on mainnet. **Invoices and offers are not**, by either of them:
++sections 5 and 6 say what separates them and neither has built it yet, so a
++payment artifact minted on this chain still looks exactly like one minted on
++the earlier rules.
++
++The text is kept in step between the two repositories so that the two agree on
++the values, and the values stay open to change while only two implementations
++have channels. Where one of them is mid-change the other's copy lags for as
++long as that takes: the lnd port still carries a BOLT 11 prefix of its own, and
++its copy of this text will say so until the matching revert lands there.
 +
 +The chain is Bitcoin Knots' hard fork that replaced SHA256d proof of work
 +with BLAKE2b at block 961,640 on 2026-08-30. Everything below the fork
-+height, including the genesis block, is shared with Bitcoin, which is the
-+whole problem: BOLT 1, 2, 7 and 11 identify a chain by its genesis hash or
-+a prefix derived from it, and on this chain those are Bitcoin's.
++height, including the genesis block, is shared with the chain that did not
++upgrade, which is the whole problem: BOLT 1, 2, 7 and 11 identify a chain by its genesis hash or
++a prefix derived from it, and both chains share those.
 +
-+> **This document changed substantially on 2026-09-17.** Until then it
-+> specified a `chain_hash` of this chain's own, derived from the activation
-+> block or from a tagged hash, and said that `chain_hash` was what kept the
-+> two chains apart. That design has been withdrawn in favour of keeping the
-+> shared genesis hash and separating the chains in the four specific places
-+> it actually matters. Section 8 says why, and what to do if you implemented
-+> the old version. The spec discussion is
-+> [lightning-blake2b/bolts#1](https://github.com/lightning-blake2b/bolts/pull/1).
++> **Two designs in this document have been withdrawn, and section 8 covers
++> both.** Until 2026-09-17 it specified a `chain_hash` of this chain's own and
++> said that was what kept the two chains apart; until 2026-09-19 it gave the
++> chain its own BOLT 11 invoice prefix and said that was what kept their
++> invoices apart. Both are gone, in favour of the shared genesis hash and
++> separation in the four specific places it actually matters. Section 8a and
++> section 8b say why, and what to do if you implemented either. The spec
++> discussion is
++> [lightning-blake2b/bolts#1](https://github.com/lightning-blake2b/bolts/pull/1)
++> and
++> [lightning-blake2b/bolts#3](https://github.com/lightning-blake2b/bolts/pull/3).
 +
 +## 1. `chain_hash`
 +
@@ -81,6 +95,9 @@ index 000000000..34b9da290
 +Every node on this chain sets feature bit **68**, the even form of
 +`option_blake2b`, in `init` and in `node_announcement`. It does not set 69.
 +
++The number is moving to 512: see section 7. What matters here is the parity,
++not the number, and the parity is not moving.
++
 +Even is the point. BOLT 1 obliges a peer that does not know an even feature
 +bit to close the connection, so a node that has not been updated for this
 +chain hangs up by itself, without knowing why and without this node having to
@@ -94,14 +111,13 @@ index 000000000..34b9da290
 +against starting at the compulsory end is that it refuses peers before there
 +is anything to be compatible with. Here refusing them is the entire purpose.
 +
-+**Where this bit stands, as of 2026-09-17.** It is what both implementations
-+do: privkeyio's released build sets 68 and not 69, and Lightning Fork now
-+matches it. It is not, at the moment, written down in a specification.
-+`lightning-blake2b/bolts#1` carried it as a MUST for part of that day and was
-+then narrowed to `option_unified_sigs` and the gossip rule, dropping it. A
-+second implementation should set 68 anyway, because without it nothing at
-+`init` separates the two chains, but should expect the number and the wording
-+to be settled somewhere before it is relied on.
++**Where this bit stands.** It is what both implementations do: privkeyio's
++released build sets 68 and not 69, and Lightning Fork matches it.
++`lightning-blake2b/bolts#3` now specifies it, as `option_blake2b` at 512/513,
++even in `init` and `node_announcement`, "MUST set" and "MUST NOT refuse a peer
++for failing to set it", which is what both already do apart from the number.
++That PR is open rather than merged, so 68 is what is on the wire and 512 is
++what is agreed; section 7 covers the move.
 +
 +The `networks` TLV still carries `chain_hash`, and a peer that lists chains
 +not including ours is still disconnected. That check no longer distinguishes
@@ -144,6 +160,8 @@ index 000000000..34b9da290
 +
 +
 +## 4. Channels: `option_unified_sigs`, bit 70 in `channel_type`
++
++The number is moving to 514: see section 7.
 +
 +The chain's `SIGHASH_UNIFIED` (hash type bit `0x20`) binds a signature to
 +this chain: it commits to `TaggedHash("UnifiedSighash", message)` over a
@@ -203,57 +221,66 @@ index 000000000..34b9da290
 +without the opt-in, remains replayable through its commitment transactions.
 +Prefer funding from coins received after the activation.
 +
-+## 5. Invoices: the BOLT 11 prefix
++## 5. Invoices: `option_blake2b` in the `9` field
 +
-+BOLT 11's human-readable part is `ln` followed by a network prefix. On this
-+chain:
++BOLT 11's human-readable part is `ln` followed by a network prefix, and this
++chain keeps the prefix it has always had: `lnbc` on mainnet, and `lntb`,
++`lntbs`, `lnbcrt` on the test networks. A change of proof of work is not a
++change of chain, and the prefix is not where the two rule sets are told apart.
++An earlier version of this series gave the chain a prefix of its own; that was
++withdrawn.
 +
-+| Network | Prefix | Example |
-+| --- | --- | --- |
-+| mainnet | `blake` | `lnblake10n1...` |
-+| testnet4 | `tblake` | `lntblake...` |
-+| signet | `tbsblake` | `lntbsblake...` |
-+| simnet | `sblake` | `lnsblake...` |
-+| regtest | `blakert` | `lnblakert...` |
++What separates them is `option_blake2b` in the invoice's `9` field, as an even
++bit, which a reader that does not know it must refuse to pay. Measured against
++an unmodified build of each implementation:
 +
-+An invoice with Bitcoin's prefix (`lnbc`, `lntb`, `lntbs`, `lnbcrt`) is
-+refused here, and a node on the other chain refuses these. That is the whole
-+of what keeps an invoice for one chain from being paid on the other: an
-+invoice carries `chain_hash` nowhere, and it is the last thing a user sees
-+before paying. Fallback on-chain addresses keep Bitcoin's address formats,
-+since the address formats are shared.
++- Core Lightning refuses at decode. `decode_9` in `common/bolt11.c` runs
++  `features_unsupported(..., BOLT11_FEATURE)`, whose loop steps two at a time
++  and tests even bits only, and returns `9: unknown feature bit N`.
++- lnd refuses later. Its invoice decoder lets the bit through, and
++  `feature.ValidateRequired` turns the payment away at pathfinding with
++  `feature vector contains unknown required features: [N]`.
 +
-+**This is not settled between implementations.** privkeyio's Core Lightning
-+keeps `bc` as its `lightning_hrp` and mints `lnbc` invoices. The two builds
-+therefore peer, agree a channel type, gossip and close, and cannot pay each
-+other: each refuses the other's invoice on the prefix before a route is
-+considered. Until it is settled, that is the state of interoperability, and
-+it is the open question on
-+[lightning-blake2b/bolts#1](https://github.com/lightning-blake2b/bolts/pull/1).
++**Not yet implemented on either side.** This build sets `option_blake2b` in
++`init` and `node_announcement` only, and the lnd port does the same, so no
++invoice on this chain currently carries the bit. Until both writers are turned
++on, an invoice minted here is indistinguishable from one minted on the earlier
++rules, and the only thing preventing a cross-chain payment is that the two
++graphs do not meet. That is a real gap, and closing it is the point of
++[lightning-blake2b/bolts#3](https://github.com/lightning-blake2b/bolts/pull/3).
 +
-+## 6. Offers: a known gap
++**The check is load-bearing, and both implementations ship a path that skips
++it.** Core Lightning guards it with `if (our_features)`, and the comment says
++that is for the cli tool, which passes NULL. lnd's equivalent,
++`errorOnUnknownFeature`, is off by default with nothing in the daemon turning
++it on; only the pathfinding check saves it. Neither is a bug today. Both become
++one as soon as an invoice's chain depends on the bit, so a reader that decodes
++without paying should not be assumed to have checked.
 +
-+There is no equivalent of the invoice prefix for BOLT 12, and as things
-+stand an offer cannot say which of the two chains it is for.
++Fallback on-chain addresses keep the shared address formats.
++
++## 6. Offers: the same bit, in the three feature fields
 +
 +An offer names chains with `offer_chains`, whose values are `chain_hash`, and
-+an offer that omits the field means Bitcoin mainnet by the spec's default.
-+Both chains now answer to that same value. Two BOLT 12 nodes, one following
-+each chain, each mint an offer and read the other's as valid and for their
-+own chain, naming the same hash, with no warning from either.
++an offer that omits the field means mainnet by the spec's default. Both rule
++sets answer to that same value, so nothing in an offer distinguishes them.
 +
-+Nothing is malfunctioning. Two implementations following the spec exactly
-+cannot tell these offers apart, because as of the `chain_hash` change there
-+is nothing in an offer that distinguishes them. The failure that costs money
-+needs a merchant with channels on both chains, which is plausible precisely
-+because the chains share addresses and all their pre-fork history: the offer
-+is fetchable from either side, the invoice comes back, and the payer pays on
-+whichever chain they were on.
++The failure that costs money needs a merchant with channels on both chains,
++which is plausible precisely because the chains share addresses and all their
++pre-fork history: the offer is fetchable from either side, the invoice comes
++back, and the payer pays on whichever chain they were on.
 +
-+No fix is implemented, because minting offers that name a chain the other
-+implementation does not recognise would break fetching between them and that
-+is not a thing to do unilaterally. The proposal on the table is to put the
-+activation block's id in `offer_chains`.
++The mechanism is `option_blake2b` in `offer_features`, `invreq_features` and
++`invoice_features`, writer and reader, which is what
++[lightning-blake2b/bolts#3](https://github.com/lightning-blake2b/bolts/pull/3)
++adds. It needs no new BOLT 12 rules: unknown even bits in all three fields are
++already a reject, so a reader without these rules declines one of ours
++unchanged. It also leaves `offer_chains` alone, which the earlier proposal here
++did not; naming a chain the other implementation does not recognise would have
++broken fetching between them.
++
++**Not yet implemented on either side either.** The same gap as section 5, for
++the same reason, and it closes the same way.
 +
 +## 7. Feature bits
 +
@@ -266,19 +293,22 @@ index 000000000..34b9da290
 +numbers. A number already on the wire is the number, whatever it should have
 +been, so interoperating with it beats being right about it alone.
 +
-+**Both are provisional and both implementations say so.** The
-+`v26.06.7-blake2b.4` release notes are explicit that bits 68 and 70 "are not
-+registered BOLT allocations and are expected to move", and that channels
-+opened under them may have to be closed and reopened once the numbers settle.
-+This document takes the same position. What is written here is what is on the
-+wire today, not a claim that it is right. The highest pair BOLT 9 has
-+assigned is 66/67, so 68 and 70 are the next numbers the spec will hand out
-+rather than spare ones; a pair in the custom range would have been the
-+conservative choice, and both implementations would have to move together.
++**Both are provisional, and the numbers are settled to move.** The
++`v26.06.7-blake2b.4` release notes say bits 68 and 70 "are not registered BOLT
++allocations and are expected to move", and that channels opened under them may
++have to be closed and reopened once the numbers settle. They are moving:
++bLIP-0002 reserves feature bits 0 to 255 for the BOLTs, and 70/71 is already
++claimed upstream by `lightning/bolts#1059`, open since March 2023, in the same
++contexts. The agreed replacements are `option_blake2b` at 512/513 and
++`option_unified_sigs` at 514/515, with 516 to 519 kept for this rule set; 512
++to 519 is one byte of the feature vector, so four pairs cost that vector once.
++What the table above records is what is on the wire today, not a claim that it
++is right.
 +
-+Neither bit is set in invoices or offers. A payer that cannot read a bit must
-+still be refused, and for BOLT 11 the prefix does that. For BOLT 12 nothing
-+does, which is section 6.
++Neither bit is set in invoices or offers by either implementation today. That
++is the gap in sections 5 and 6: a payer that cannot read the bit must still be
++refused, and with the prefix unchanged there is nothing else in a BOLT 11
++string or a BOLT 12 offer that says which rules it belongs to.
 +
 +### Downgrading after opening a unified channel
 +
@@ -299,7 +329,9 @@ index 000000000..34b9da290
 +channel that is already open, and a peer that does not signal the bit is
 +offered an ordinary channel rather than refused.
 +
-+## 8. What changed on 2026-09-17, and what to do about it
++## 8. What has been withdrawn, and what to do about it
++
++### 8a. The distinct `chain_hash`, withdrawn 2026-09-17
 +
 +Until this date, this document specified a distinct `chain_hash` per network:
 +the activation block's id on mainnet, and
@@ -310,9 +342,10 @@ index 000000000..34b9da290
 +It is withdrawn. Isolating at `chain_hash` asked everything that touches a
 +chain identifier to agree a new value, to solve problems that live in four
 +specific places, and those places are better addressed where they are: bit 68
-+for peering, the height floor for gossip, `channel_type` for channels, and the
-+invoice prefix for BOLT 11. BOLT 12 remains open, and is the one thing the
-+old design covered that the new one does not.
++for peering, the height floor for gossip, `channel_type` for channels, and
++`option_blake2b` in the feature fields for BOLT 11 and BOLT 12. The last of
++those is specified but not yet implemented on either side, which sections 5 and
++6 set out.
 +
 +If you implemented the old version:
 +
@@ -352,13 +385,48 @@ index 000000000..34b9da290
 +refuse it if it is 80 bytes rather than 164. That touches `chain_hash`
 +nowhere and came through this change unaltered.
 +
++### 8b. The distinct BOLT 11 prefix, withdrawn 2026-09-19
++
++A later version of this document gave the chain its own invoice prefix
++(`blake`, `tblake`, `tbsblake`, `blakert`) and kept each network's previous one
++alongside it. Lightning Fork shipped that, and a patch series implementing it
++for Core Lightning was proposed.
++
++It is withdrawn, and the reason is what the field means rather than what it
++costs: the prefix is BOLT 11's currency field, so giving the chain one of its
++own states that it is a different currency, which is not what a change of proof
++of work is. Separating invoices is `option_blake2b`'s job (section 5). One
++consequence of withdrawing the prefix is that until that bit is set, nothing
++separates them at all.
++
++If you implemented the prefix version, reverting is not only a matter of
++putting the strings back:
++
++- **Bookkeeper history written under the old prefix is dropped silently.** The
++  bookkeeper stores `currency` as `chainparams->lightning_hrp`
++  (`plugins/bkpr/chain_event.c`, `channel_event.c`), and
++  `wallet/account_migration.c` skips any event whose currency does not match
++  the current value, with a `log_broken` line and nothing else. Events written
++  as `blake` or `blakert` will therefore be passed over once the prefix is
++  `bc` or `bcrt` again. This is the same failure the prefix change itself
++  caused in the other direction, and it is worth checking for before an
++  upgrade rather than after.
++- **Invoices minted under the old prefix stop decoding.**
++  `chainparams_by_lightning_hrp` will not know `blake`, so a stored `lnblake`
++  string is no longer parseable by the reverted build. Anything that reads its
++  own history of BOLT 11 strings needs to expect that.
++- **Nothing on the wire changes.** Peering, gossip and channels never touched
++  the prefix, so a reverted node and an unreverted one still peer, gossip and
++  open channels normally. What they cannot do is pay each other, in whichever
++  direction the prefixes disagree, until both have moved.
++
 +## 9. Block header
 +
 +Not a Lightning constant, but every node on this chain has to parse it: from
 +block 961,640, block headers are 164 bytes (the 80-byte layout plus a second
 +section), the block id is a BLAKE2b digest of the header rather than SHA256d,
 +and the header's time field is offset. A node that reads block headers itself
-+(rather than through a Bitcoin node's RPC) needs the Knots definition. Core
++(rather than through a node's RPC) needs the Knots definition. Core
 +Lightning reads blocks through the backend and does not parse headers itself;
 +Lightning Fork's parser is in its btcd fork's `wire` package.
 +
@@ -367,6 +435,8 @@ index 000000000..34b9da290
 +- Address formats (`bc1...`, `1...`, `3...`) and the derivation paths, so a
 +  seed restores the same wallet.
 +- `chain_hash`, as of the change above.
++- The BOLT 11 prefix. An earlier version of this series gave the chain its own;
++  it was withdrawn, and separating invoices is `option_blake2b`'s job.
 +- The genesis hash as the wallet backend's notion of "which network is this
 +  node on": the chain-identity check (reading the header at the activation
 +  height) does the work the genesis hash cannot.
@@ -375,24 +445,34 @@ index 000000000..34b9da290
 +
 +## Status
 +
-+Implemented in Lightning Fork (`github.com/paulscode/lightning-fork`), running
-+on mainnet, and in this build of Core Lightning.
++Sections 1 to 4 are implemented in Lightning Fork
++(`github.com/paulscode/lightning-fork`), running on mainnet, and in this build
++of Core Lightning. Sections 5 and 6 are implemented in neither.
 +
-+Measured in a regtest lab, against `blake2b-unified` at `24d027310`:
++What the Core Lightning series does is the gossip floor, and that is all. It does not touch
++`chain_hash`, feature bits, channel types or BOLT 11.
 +
-+- **Without this series**, the two peer, agree `channel_type [12,22,70]`,
-+  exchange gossip, and close both cooperatively and by force with `0x21` in
-+  both witnesses, their node having computed half of each of those signatures.
-+  An HTLC held across a force close produces an HTLC-timeout transaction
-+  carrying `0xa3` from their node and `0x21` from ours. What they cannot do is
-+  pay each other: each refuses the other's BOLT 11 invoice on the prefix,
-+  before a route is considered.
-+- **With it**, the same run pays in both directions, and both closes still
-+  carry `0x21`. That is the whole of what this series is for.
++Measured in a regtest lab against `blake2b-unified` at `24d027310`, the two
++implementations peer, agree `channel_type [12,22,70]`, exchange gossip, and
++close both cooperatively and by force with `0x21` in both witnesses, each node
++having computed half of each of those signatures. An HTLC held across a force
++close produces an HTLC-timeout transaction carrying `0xa3` from the Core
++Lightning node and `0x21` from the lnd one.
++
++An earlier version of this series also gave the chain its own BOLT 11 prefix,
++and the lnd port still carries one. While those differ the two cannot pay each
++other, each refusing the other's invoice on the prefix before a route is
++considered. That is not a property of this series: it goes away when both ends
++carry the same prefix, which is the change this withdrawal makes on one side
++and the matching revert makes on the other. Neither end then has any BOLT 11
++separation at all until `option_blake2b` is set in the `9` field, which is
++section 5.
 +
 +Open to change until more than two implementations have mainnet channels;
-+changes after that would strand channels. Discussion: the spec PR linked above,
-+or an issue on either repository.
++changes after that would strand channels. Discussion:
++`lightning-blake2b/bolts#1` for `option_unified_sigs` and the gossip rule,
++`lightning-blake2b/bolts#3` for `option_blake2b`, or an issue on either
++implementation's repository.
 -- 
 2.43.0
 

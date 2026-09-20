@@ -120,28 +120,24 @@ func Decode(invoice string, net *chaincfg.Params, opts ...DecodeOption) (
 	// not optimal for LN). See
 	// https://github.com/lightningnetwork/lightning-rfc/pull/844 for more
 	// information.
-	expectedPrefix := InvoiceHRP(net)
-	if !strings.HasPrefix(hrp[2:], expectedPrefix) {
-		// A registered prefix means this daemon is on the Bitcoin
-		// BLAKE2b chain; name the other chain when the invoice is
-		// plainly one of its, because the two are otherwise
-		// identical to a user.
-		if expectedPrefix != net.Bech32HRPSegwit &&
-			isBitcoinInvoiceHRP(hrp[2:]) {
-
-			return nil, fmt.Errorf("invoice is for the SHA256 "+
-				"chain (prefix %q), not the BLAKE2b chain this "+
-				"node follows (expected prefix ln%s)", hrp,
-				expectedPrefix)
+	matchedPrefix := InvoiceHRP(net)
+	if !strings.HasPrefix(hrp[2:], matchedPrefix) {
+		// An invoice this node issued under the withdrawn prefix is
+		// still decodable, so that stored payment requests keep
+		// listing. Nothing is emitted under it: see zpay32/hrp.go.
+		legacy := legacyInvoiceHRP(net)
+		if legacy != "" && strings.HasPrefix(hrp[2:], legacy) {
+			matchedPrefix = legacy
+		} else {
+			return nil, fmt.Errorf("invoice not for current "+
+				"active network '%s'", net.Name)
 		}
-		return nil, fmt.Errorf(
-			"invoice not for current active network '%s'", net.Name)
 	}
 	decodedInvoice.Net = net
 
 	// Optionally, if there's anything left of the HRP after ln + the segwit
 	// prefix, we try to decode this as the payment amount.
-	var netPrefixLength = len(expectedPrefix) + 2
+	var netPrefixLength = len(matchedPrefix) + 2
 	if len(hrp) > netPrefixLength {
 		amount, err := decodeAmount(hrp[netPrefixLength:])
 		if err != nil {

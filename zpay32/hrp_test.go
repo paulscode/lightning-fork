@@ -13,12 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// withInvoiceHRP registers a prefix for the test and restores the upstream
-// behaviour afterwards, since the registry is process-wide.
-func withInvoiceHRP(t *testing.T, net *chaincfg.Params, hrp string) {
+// withLegacyInvoiceHRP registers a withdrawn prefix for the test and clears it
+// afterwards, since the registry is process-wide.
+func withLegacyInvoiceHRP(t *testing.T, net *chaincfg.Params, hrp string) {
 	t.Helper()
-	RegisterInvoiceHRP(net.Name, hrp)
-	t.Cleanup(func() { RegisterInvoiceHRP(net.Name, "") })
+	RegisterLegacyInvoiceHRP(net.Name, hrp)
+	t.Cleanup(func() { RegisterLegacyInvoiceHRP(net.Name, "") })
 }
 
 func signHRPTest(t *testing.T, key *btcec.PrivateKey) MessageSigner {
@@ -44,117 +44,105 @@ func newHRPTestInvoice(t *testing.T, net *chaincfg.Params,
 	return inv
 }
 
-// TestInvoiceHRPDefaultsUnchanged pins the upstream rule when nothing is
-// registered, so tools decoding Bitcoin invoices keep working.
-func TestInvoiceHRPDefaultsUnchanged(t *testing.T) {
+// TestInvoiceHRPIsUpstream pins that the chain mints ordinary BOLT 11
+// prefixes. Giving it one of its own was withdrawn: the prefix is BOLT 11's
+// currency field, and a change of proof of work is not a change of currency.
+func TestInvoiceHRPIsUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		net  *chaincfg.Params
+		want string
+	}{
+		{&chaincfg.MainNetParams, "bc"},
+		{&chaincfg.TestNet3Params, "tb"},
+		{&chaincfg.SigNetParams, "tbs"},
+		{&chaincfg.RegressionNetParams, "bcrt"},
+	} {
+		require.Equal(t, tc.want, InvoiceHRP(tc.net), tc.net.Name)
+	}
+}
+
+// TestLegacyPrefixIsNotEmitted checks that registering a withdrawn prefix
+// changes nothing about what this node mints. It is a decode-side allowance
+// only.
+func TestLegacyPrefixIsNotEmitted(t *testing.T) {
+	withLegacyInvoiceHRP(t, &chaincfg.MainNetParams, "blake")
+
 	require.Equal(t, "bc", InvoiceHRP(&chaincfg.MainNetParams))
-	require.Equal(t, "tb", InvoiceHRP(&chaincfg.TestNet3Params))
-	require.Equal(t, "tb", InvoiceHRP(&chaincfg.TestNet4Params))
-	require.Equal(t, "tbs", InvoiceHRP(&chaincfg.SigNetParams))
-	require.Equal(t, "bcrt", InvoiceHRP(&chaincfg.RegressionNetParams))
-	require.Equal(t, "sb", InvoiceHRP(&chaincfg.SimNetParams))
-}
-
-// TestInvoiceHRPRegisteredRoundTrip encodes with a registered prefix, checks
-// the human-readable part, and decodes it back on the same network with and
-// without an amount.
-func TestInvoiceHRPRegisteredRoundTrip(t *testing.T) {
-	withInvoiceHRP(t, &chaincfg.MainNetParams, "blake")
 
 	key, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	signer := signHRPTest(t, key)
-
-	amt := lnwire.MilliSatoshi(2_000_000_000) // 0.02 BTC = 20m
-	for _, a := range []*lnwire.MilliSatoshi{nil, &amt} {
-		inv := newHRPTestInvoice(t, &chaincfg.MainNetParams, a)
-		encoded, err := inv.Encode(signer)
-		require.NoError(t, err)
-
-		if a == nil {
-			require.True(t, strings.HasPrefix(encoded, "lnblake1"), encoded)
-		} else {
-			require.True(t, strings.HasPrefix(encoded, "lnblake20m1"), encoded)
-		}
-		require.False(t, strings.HasPrefix(encoded, "lnbc"))
-
-		decoded, err := Decode(encoded, &chaincfg.MainNetParams)
-		require.NoError(t, err)
-		require.Equal(t, inv.PaymentHash, decoded.PaymentHash)
-		if a == nil {
-			require.Nil(t, decoded.MilliSat)
-		} else {
-			require.NotNil(t, decoded.MilliSat)
-			require.Equal(t, amt, *decoded.MilliSat)
-		}
-	}
+	inv := newHRPTestInvoice(t, &chaincfg.MainNetParams, nil)
+	str, err := inv.Encode(signHRPTest(t, key))
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(str, "lnbc"), str[:12])
+	require.False(t, strings.HasPrefix(str, "lnblake"), str[:12])
 }
 
-// TestInvoiceHRPRejectsBitcoinInvoice checks that a node with a registered
-// prefix refuses a SHA256d Bitcoin invoice with a message that names the
-// other network, and that a stock node refuses ours.
-func TestInvoiceHRPRejectsBitcoinInvoice(t *testing.T) {
+// TestLegacyPrefixStillDecodes is the reason the registry survives at all. A
+// node that ran the earlier build issued invoices under the withdrawn prefix
+// and stored the strings, and lnd re-decodes a stored payment request every
+// time it is listed. A failure there fails the whole ListInvoices call rather
+// than skipping the record, so those strings have to keep parsing.
+func TestLegacyPrefixStillDecodes(t *testing.T) {
 	key, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	signer := signHRPTest(t, key)
 
-	// A stock mainnet invoice, produced before anything is registered.
-	amt := lnwire.MilliSatoshi(1_000_000)
-	stock := newHRPTestInvoice(t, &chaincfg.MainNetParams, &amt)
-	stockEncoded, err := stock.Encode(signer)
+	// Mint one the way the withdrawn build did, by encoding against a
+	// network whose prefix is the old value.
+	oldNet := chaincfg.MainNetParams
+	oldNet.Bech32HRPSegwit = "blake"
+	inv := newHRPTestInvoice(t, &oldNet, nil)
+	str, err := inv.Encode(signHRPTest(t, key))
 	require.NoError(t, err)
-	require.True(t, strings.HasPrefix(stockEncoded, "lnbc"))
+	require.True(t, strings.HasPrefix(str, "lnblake"), str[:12])
 
-	withInvoiceHRP(t, &chaincfg.MainNetParams, "blake")
-
-	_, err = Decode(stockEncoded, &chaincfg.MainNetParams)
+	// Without the registration it is refused, as any foreign prefix is.
+	_, err = Decode(str, &chaincfg.MainNetParams)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "SHA256")
-	require.Contains(t, err.Error(), "blake")
 
-	// Ours, decoded by a reader that has not registered anything (a stock
-	// node), must fail the prefix check rather than be misread.
-	ours := newHRPTestInvoice(t, &chaincfg.MainNetParams, &amt)
-	oursEncoded, err := ours.Encode(signer)
+	// With it, the stored string still parses.
+	withLegacyInvoiceHRP(t, &chaincfg.MainNetParams, "blake")
+	decoded, err := Decode(str, &chaincfg.MainNetParams)
 	require.NoError(t, err)
-	RegisterInvoiceHRP(chaincfg.MainNetParams.Name, "")
-	_, err = Decode(oursEncoded, &chaincfg.MainNetParams)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "not for current active network")
+	require.Equal(t, &chaincfg.MainNetParams, decoded.Net)
 }
 
-// TestInvoiceHRPTestNetworks checks the registered test-network prefixes
-// decode on their own network only.
-func TestInvoiceHRPTestNetworks(t *testing.T) {
-	withInvoiceHRP(t, &chaincfg.TestNet4Params, "tblake")
-	withInvoiceHRP(t, &chaincfg.RegressionNetParams, "blakert")
-
+// TestLegacyPrefixCarriesAmount checks the amount still parses after a legacy
+// prefix, since the offset it is read from depends on which prefix matched.
+func TestLegacyPrefixCarriesAmount(t *testing.T) {
 	key, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	signer := signHRPTest(t, key)
 
-	t4 := newHRPTestInvoice(t, &chaincfg.TestNet4Params, nil)
-	t4Encoded, err := t4.Encode(signer)
+	oldNet := chaincfg.MainNetParams
+	oldNet.Bech32HRPSegwit = "blake"
+	amt := lnwire.MilliSatoshi(1500000)
+	inv := newHRPTestInvoice(t, &oldNet, &amt)
+	str, err := inv.Encode(signHRPTest(t, key))
 	require.NoError(t, err)
-	require.True(t, strings.HasPrefix(t4Encoded, "lntblake1"), t4Encoded)
-	_, err = Decode(t4Encoded, &chaincfg.TestNet4Params)
-	require.NoError(t, err)
-	_, err = Decode(t4Encoded, &chaincfg.RegressionNetParams)
-	require.Error(t, err)
 
-	rt := newHRPTestInvoice(t, &chaincfg.RegressionNetParams, nil)
-	rtEncoded, err := rt.Encode(signer)
+	withLegacyInvoiceHRP(t, &chaincfg.MainNetParams, "blake")
+	decoded, err := Decode(str, &chaincfg.MainNetParams)
 	require.NoError(t, err)
-	require.True(t, strings.HasPrefix(rtEncoded, "lnblakert1"), rtEncoded)
-	_, err = Decode(rtEncoded, &chaincfg.RegressionNetParams)
-	require.NoError(t, err)
+	require.NotNil(t, decoded.MilliSat)
+	require.Equal(t, amt, *decoded.MilliSat)
 }
 
-func TestIsBitcoinInvoiceHRP(t *testing.T) {
-	for _, s := range []string{"bc", "bc20m", "tb", "tbs1", "bcrt", "bcrt10n", "sb"} {
-		require.True(t, isBitcoinInvoiceHRP(s), s)
-	}
-	for _, s := range []string{"blake", "blake20m", "tblake", "blakert", "bl", "x"} {
-		require.False(t, isBitcoinInvoiceHRP(s), s)
-	}
+// TestPrefixNoLongerSeparatesTheChains records the consequence of the
+// withdrawal, so that nobody reintroduces the prefix check by accident. An
+// invoice minted on the chain that did not upgrade carries the same prefix as
+// one minted here and is accepted on that basis alone. What is meant to
+// separate them is option_blake2b, an even bit in the `9` field, which is not
+// implemented yet.
+func TestPrefixNoLongerSeparatesTheChains(t *testing.T) {
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	inv := newHRPTestInvoice(t, &chaincfg.MainNetParams, nil)
+	str, err := inv.Encode(signHRPTest(t, key))
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(str, "lnbc"), str[:12])
+
+	decoded, err := Decode(str, &chaincfg.MainNetParams)
+	require.NoError(t, err, "the prefix does not separate the chains")
+	require.Equal(t, &chaincfg.MainNetParams, decoded.Net)
 }
