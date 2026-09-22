@@ -1,7 +1,7 @@
 From ef654c9122eef535eede947261509b8e188479be Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 08:17:06 -0500
-Subject: [PATCH 3/7] lightningd: re-arm the funding depth watch across a
+Subject: [PATCH 3/8] lightningd: re-arm the funding depth watch across a
  restart
 
 A channel waiting for its funding to reach minimum_depth is told about each

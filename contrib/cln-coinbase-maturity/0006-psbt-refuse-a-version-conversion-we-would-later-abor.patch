@@ -1,7 +1,7 @@
-From 36ba3d4df504cc6dd12f9c3b732dd44527154772 Mon Sep 17 00:00:00 2001
+From 73921ca583897a600abf03c4639d5d8570f620c2 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 08:17:57 -0500
-Subject: [PATCH 5/7] psbt: refuse a version conversion we would later abort on
+Subject: [PATCH 6/8] psbt: refuse a version conversion we would later abort on
 
 psbt_set_version reports whether libwally accepted the change, and callers
 treat that as meaning the PSBT is now usable in the new version. It does not

@@ -1,7 +1,7 @@
-From 6550a08f7abd3a58eb1d02e959286c2eb253a435 Mon Sep 17 00:00:00 2001
+From 0d98a96ab6816b8cb859758494166daf21bc52b1 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 08:34:05 -0500
-Subject: [PATCH 7/7] pytest: activate blake2b in the test chain, or nothing
+Subject: [PATCH 8/8] pytest: activate blake2b in the test chain, or nothing
  can open a channel
 
 Every signature this fork makes opts into the hardfork, and a default regtest

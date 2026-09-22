@@ -1,7 +1,7 @@
 From 146b88ca157f88276af678665246904e88971ddb Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 07:26:30 -0500
-Subject: [PATCH 4/7] channel: a coinbase funded channel is not usable until
+Subject: [PATCH 4/8] channel: a coinbase funded channel is not usable until
  its funding can be spent
 
 A miner can pay a block reward straight into a channel's 2-of-2 funding

@@ -1,7 +1,7 @@
 From 7fde80f89679d595d9d530a989273f6ca7d95167 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 07:26:16 -0500
-Subject: [PATCH 1/7] bitcoin: carry the depth at which a coinbase spend will
+Subject: [PATCH 1/8] bitcoin: carry the depth at which a coinbase spend will
  relay
 
 Bitcoin Knots deploys a temporary longer coinbase maturity on this chain

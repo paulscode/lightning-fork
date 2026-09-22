@@ -1,0 +1,89 @@
+From 84711fa920d26b32b4a1534d48e66b7e73e5ac85 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 22 Sep 2026 10:15:58 -0500
+Subject: [PATCH 5/8] lightningd: let a developer override the relay coinbase
+ maturity
+
+The chain parameter is right for mainnet and testnet4 and wrong for a regtest
+that has been told to run the rule. bitcoind takes
+-testcoinbasematuritylong=<start>:<enforce>:<release> on regtest, so the rule
+can be exercised there, but chainparams has no way to say that it has been,
+and we would go on using the ordinary hundred blocks.
+
+That is not a cosmetic gap. It means the gate the previous commit adds cannot
+be tested at the depth it exists for: on a regtest relaying at 300 we would
+wait 100, open the channel, and look fixed while still being early. Found
+that way round, by running it.
+
+Developer-gated, because production has no business overriding a consensus
+adjacent number, and zero means "use the chain parameter" so the default
+path is unchanged.
+---
+ lightningd/channel.c    | 12 ++++++++++--
+ lightningd/lightningd.h |  6 ++++++
+ lightningd/options.c    |  5 +++++
+ 3 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/lightningd/channel.c b/lightningd/channel.c
+index fc7549c9f..534cc279d 100644
+--- a/lightningd/channel.c
++++ b/lightningd/channel.c
+@@ -1361,6 +1361,8 @@ const u8 *channel_update_for_error(const tal_t *ctx,
+ 
+ u32 channel_funding_depth_required(const struct channel *channel)
+ {
++	u32 relay;
++
+ 	/* A zero-conf channel has no confirmed funding to ask about, and its
+ 	 * peer accepted that deliberately. Nothing here is about it. */
+ 	if (channel->minimum_depth == 0 || !channel->scid)
+@@ -1374,8 +1376,14 @@ u32 channel_funding_depth_required(const struct channel *channel)
+ 	if (short_channel_id_txnum(*channel->scid) != 0)
+ 		return channel->minimum_depth;
+ 
+-	if (chainparams->relay_coinbase_maturity > channel->minimum_depth)
+-		return chainparams->relay_coinbase_maturity;
++	/* A regtest can be told to run the long rule while chainparams has no
++	 * way to say so, which is the only reason this is overridable. */
++	relay = channel->peer->ld->dev_relay_coinbase_maturity;
++	if (!relay)
++		relay = chainparams->relay_coinbase_maturity;
++
++	if (relay > channel->minimum_depth)
++		return relay;
+ 
+ 	return channel->minimum_depth;
+ }
+diff --git a/lightningd/lightningd.h b/lightningd/lightningd.h
+index 81a03d412..69eb60df1 100644
+--- a/lightningd/lightningd.h
++++ b/lightningd/lightningd.h
+@@ -309,6 +309,12 @@ struct lightningd {
+ 	bool dev_allow_localhost;
+ 
+ 	/* Speedup gossip propagation, for testing. */
++	/* Developer: override the chain's relay coinbase maturity. A regtest
++	 * can be told to run the long rule (bitcoind's
++	 * -testcoinbasematuritylong) and chainparams has no way to say so, so
++	 * without this the fix cannot be tested at the depth it is for. */
++	u32 dev_relay_coinbase_maturity;
++
+ 	bool dev_fast_gossip;
+ 	bool dev_fast_gossip_prune;
+ 	bool dev_throttle_gossip;
+diff --git a/lightningd/options.c b/lightningd/options.c
+index b0ded673f..76dd4ab84 100644
+--- a/lightningd/options.c
++++ b/lightningd/options.c
+@@ -808,6 +808,11 @@ static void dev_register_opts(struct lightningd *ld)
+ 	clnopt_witharg("--dev-disconnect=<filename>", OPT_DEV,
+ 		       opt_subd_dev_disconnect,
+ 		       NULL, ld, "File containing disconnection points");
++	clnopt_witharg("--dev-relay-coinbase-maturity=<blocks>", OPT_DEV,
++		       opt_set_u32, opt_show_u32,
++		       &ld->dev_relay_coinbase_maturity,
++		       "Depth at which this chain relays a coinbase spend, "
++		       "overriding the chain parameter");
+ 	clnopt_noarg("--dev-allow-localhost", OPT_DEV,
+ 		     opt_set_bool,
+ 		     &ld->dev_allow_localhost,
