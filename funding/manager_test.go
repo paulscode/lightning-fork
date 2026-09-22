@@ -5172,6 +5172,16 @@ func TestFundingManagerCoinbase(t *testing.T) {
 	_, ok = pendingUpdate.Update.(*lnrpc.OpenStatusUpdate_ChanPending)
 	require.True(t, ok)
 
+	// The funding transaction confirms at height 1, so put the chain tip
+	// there too: the coinbase wait is a wait for the tip to reach the
+	// maturity height, and a mock tip already past it would mean there was
+	// nothing to wait for.
+	for _, node := range []*testNode{alice, bob} {
+		chainIO, ok := node.fundingMgr.cfg.Wallet.Cfg.ChainIO.(*mock.ChainIO)
+		require.True(t, ok)
+		chainIO.BestHeight = 1
+	}
+
 	// Notify that the transaction was mined, and check that the
 	// confirmation height is set to 1 for both Alice and Bob.
 	sendAndCheckFirstConfirmation(t, alice, chanID, fundingTx)
@@ -5204,15 +5214,19 @@ func TestFundingManagerCoinbase(t *testing.T) {
 	case <-time.After(time.Second * 5):
 	}
 
-	// Send along the oneConfChannel again and then assert that the open
-	// event is sent. This serves as the 100 block + MinAcceptDepth
-	// confirmation.
-	alice.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
-		Tx: fundingTx,
+	// Advance the chain to the height at which the coinbase can be spent
+	// and assert that the open event is sent. The funding confirmed at
+	// height 1, so that height is the relay coinbase maturity, which is
+	// the ordinary hundred blocks on a network without the long rule.
+	maturityHeight := int32(chainreg.BitcoinRegTestNetParams.Params.
+		RelayCoinbaseMaturity())
+
+	alice.mockNotifier.epochChan <- &chainntnfs.BlockEpoch{
+		Height: maturityHeight,
 	}
 
-	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
-		Tx: fundingTx,
+	bob.mockNotifier.epochChan <- &chainntnfs.BlockEpoch{
+		Height: maturityHeight,
 	}
 
 	assertMarkedOpen(t, alice, bob, fundingOp)

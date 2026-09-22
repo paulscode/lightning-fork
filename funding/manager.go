@@ -1374,39 +1374,70 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 			numCoinbaseConfs = uint32(channel.NumConfsRequired)
 		}
 
-		txid := &channel.FundingOutpoint.Hash
-		fundingScript, err := MakeFundingScript(channel)
+		// Wait for the chain to reach the height at which the funding
+		// output can be spent, by watching blocks go by rather than by
+		// asking for a confirmation count.
+		//
+		// A confirmation notification cannot express this wait:
+		// chainntnfs refuses any request above MaxNumConfs, which is
+		// 144, and the relay maturity on a chain with the long rule is
+		// thousands. Asking anyway fails the registration, and the
+		// channel then sits in pending for good with nothing but a log
+		// line to say why.
+		//
+		// The trade is that a block height is not reorg-aware the way
+		// a confirmation count is. At these depths that is the right
+		// trade: a reorg deep enough to matter here is a chain
+		// catastrophe, and the funding transaction's own confirmation,
+		// which we have already waited out above, is the part that
+		// needed the stronger guarantee.
+		fundingHeight := confChannel.shortChanID.BlockHeight
+		maturityHeight := fundingHeight + numCoinbaseConfs - 1
+
+		log.Infof("ChannelPoint(%v) is funded by a coinbase; waiting "+
+			"for height %v (%v confirmations) before it is usable",
+			channel.FundingOutpoint, maturityHeight,
+			numCoinbaseConfs)
+
+		epochs, err := f.cfg.Notifier.RegisterBlockEpochNtfn(nil)
 		if err != nil {
-			log.Errorf("unable to create funding script for "+
+			log.Errorf("Unable to register for block epochs for "+
+				"ChannelPoint(%v): %v",
+				channel.FundingOutpoint, err)
+
+			return err
+		}
+		defer epochs.Cancel()
+
+		// Read the tip only after subscribing, so a block that lands
+		// between the two is delivered rather than missed. We may
+		// already be past the height we want, which is the ordinary
+		// case on a restart: the epoch stream alone would then wait
+		// for a block we do not need.
+		_, bestHeight, err := f.cfg.Wallet.Cfg.ChainIO.GetBestBlock()
+		if err != nil {
+			log.Errorf("Unable to read best block for "+
 				"ChannelPoint(%v): %v",
 				channel.FundingOutpoint, err)
 
 			return err
 		}
 
-		confNtfn, err := f.cfg.Notifier.RegisterConfirmationsNtfn(
-			txid, fundingScript, numCoinbaseConfs,
-			channel.BroadcastHeight(),
-		)
-		if err != nil {
-			log.Errorf("Unable to register for confirmation of "+
-				"ChannelPoint(%v): %v",
-				channel.FundingOutpoint, err)
+		for uint32(bestHeight) < maturityHeight {
+			select {
+			case epoch, ok := <-epochs.Epochs:
+				if !ok {
+					return fmt.Errorf("ChainNotifier "+
+						"shutting down, can't complete "+
+						"funding flow for "+
+						"ChannelPoint(%v)",
+						channel.FundingOutpoint)
+				}
+				bestHeight = epoch.Height
 
-			return err
-		}
-
-		select {
-		case _, ok := <-confNtfn.Confirmed:
-			if !ok {
-				return fmt.Errorf("ChainNotifier shutting "+
-					"down, can't complete funding flow "+
-					"for ChannelPoint(%v)",
-					channel.FundingOutpoint)
+			case <-f.quit:
+				return ErrFundingManagerShuttingDown
 			}
-
-		case <-f.quit:
-			return ErrFundingManagerShuttingDown
 		}
 	}
 
