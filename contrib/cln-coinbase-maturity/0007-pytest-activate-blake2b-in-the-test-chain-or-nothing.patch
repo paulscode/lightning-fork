@@ -1,4 +1,4 @@
-From 72a8eb2e5440d6636c0e955a41213edba138a033 Mon Sep 17 00:00:00 2001
+From 6550a08f7abd3a58eb1d02e959286c2eb253a435 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 08:34:05 -0500
 Subject: [PATCH 7/7] pytest: activate blake2b in the test chain, or nothing

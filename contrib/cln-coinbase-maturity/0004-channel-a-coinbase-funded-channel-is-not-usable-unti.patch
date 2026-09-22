@@ -1,4 +1,4 @@
-From 303555a77e87faefb1a70c5796c050fa6ba55a49 Mon Sep 17 00:00:00 2001
+From 146b88ca157f88276af678665246904e88971ddb Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 07:26:30 -0500
 Subject: [PATCH 4/7] channel: a coinbase funded channel is not usable until
@@ -35,15 +35,15 @@ came again.
 Not covered: a zero-conf channel, which has no confirmed funding to ask about
 and whose peer accepted that deliberately.
 ---
- lightningd/channel.c                        | 22 +++++++++++++++++++++
- lightningd/channel.h                        | 13 ++++++++++++
+ lightningd/channel.c                        | 21 +++++++++++++++++++++
+ lightningd/channel.h                        | 13 +++++++++++++
  lightningd/channel_control.c                |  2 +-
- lightningd/peer_control.c                   | 12 ++++++++---
+ lightningd/peer_control.c                   | 12 +++++++++---
  lightningd/test/run-invoice-select-inchan.c |  3 +++
- 5 files changed, 48 insertions(+), 4 deletions(-)
+ 5 files changed, 47 insertions(+), 4 deletions(-)
 
 diff --git a/lightningd/channel.c b/lightningd/channel.c
-index d41c1389c..9d7e58664 100644
+index d41c1389c..fc7549c9f 100644
 --- a/lightningd/channel.c
 +++ b/lightningd/channel.c
 @@ -1,4 +1,5 @@
@@ -52,11 +52,10 @@ index d41c1389c..9d7e58664 100644
  #include <ccan/tal/str/str.h>
  #include <common/blockheight_states.h>
  #include <common/clock_time.h>
-@@ -1358,3 +1359,24 @@ const u8 *channel_update_for_error(const tal_t *ctx,
+@@ -1358,3 +1359,23 @@ const u8 *channel_update_for_error(const tal_t *ctx,
  	return channel_gossip_update_for_error(ctx, channel);
  }
  
-+
 +u32 channel_funding_depth_required(const struct channel *channel)
 +{
 +	/* A zero-conf channel has no confirmed funding to ask about, and its

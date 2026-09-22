@@ -1,4 +1,4 @@
-From d052f8bb118a0453cc80dee8e8d624a486cb192e Mon Sep 17 00:00:00 2001
+From 28adf1c6312d1804d6441429e7a48adc68e0b18e Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 07:26:30 -0500
 Subject: [PATCH 2/7] wallet: do not offer a coinbase the network will not let

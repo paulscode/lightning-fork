@@ -1,4 +1,4 @@
-From 0a02c5a5a4fc38917e06595bddb7930183424686 Mon Sep 17 00:00:00 2001
+From 7fde80f89679d595d9d530a989273f6ca7d95167 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 07:26:16 -0500
 Subject: [PATCH 1/7] bitcoin: carry the depth at which a coinbase spend will
@@ -29,15 +29,15 @@ Every chain without such a rule gets COINBASE_MATURITY, so nothing changes
 anywhere else, and a network added later that forgets the field gets zero,
 which is visibly wrong rather than quietly wrong.
 ---
- bitcoin/chainparams.c | 16 ++++++++++++++++
+ bitcoin/chainparams.c | 20 ++++++++++++++++++++
  bitcoin/chainparams.h | 14 ++++++++++++++
- 2 files changed, 30 insertions(+)
+ 2 files changed, 34 insertions(+)
 
 diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
-index aed904f61..8443550b7 100644
+index aed904f61..eb3c09538 100644
 --- a/bitcoin/chainparams.c
 +++ b/bitcoin/chainparams.c
-@@ -52,6 +52,14 @@ const struct chainparams networks[] = {
+@@ -52,6 +52,18 @@ const struct chainparams networks[] = {
       .max_supply = AMOUNT_SAT_INIT(2100000000000000),
       /* "Lightning Charge Powers Developers & Blockstream Store" */
       .when_lightning_became_cool = 961640,
@@ -45,14 +45,18 @@ index aed904f61..8443550b7 100644
 +      * chain (bitcoinknots/bitcoin#419): an upgraded node requires this depth
 +      * of every coinbase spend it will accept into its mempool, whatever
 +      * height the coinbase was mined at, and keeps requiring it after the
-+      * consensus window closes. Provisional: the heights and the figure have
-+      * already moved once between release candidates, and a full year is
-+      * under discussion. Re-check it against the release you run. */
++      * consensus window closes.
++      *
++      * Read off v29.4.2.knots20260508, where CoinbaseMaturityLong is
++      * CoinbaseMaturityLongReleaseHeight (979920) minus
++      * CoinbaseMaturityLongStartHeight (973440). Temporary in their words
++      * rather than ours, and a full year is under discussion, so re-check it
++      * against the release you run. */
 +     .relay_coinbase_maturity = 6480,
       .p2pkh_version = 0,
       .p2sh_version = 5,
       .testnet = false,
-@@ -78,6 +86,7 @@ const struct chainparams networks[] = {
+@@ -78,6 +90,7 @@ const struct chainparams networks[] = {
       .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
       .max_supply = AMOUNT_SAT_INIT(2100000000000000),
       .when_lightning_became_cool = 1,
@@ -60,7 +64,7 @@ index aed904f61..8443550b7 100644
       .p2pkh_version = 111,
       .p2sh_version = 196,
       .testnet = true,
-@@ -105,6 +114,7 @@ const struct chainparams networks[] = {
+@@ -105,6 +118,7 @@ const struct chainparams networks[] = {
       .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
       .max_supply = AMOUNT_SAT_INIT(2100000000000000),
       .when_lightning_became_cool = 1,
@@ -68,7 +72,7 @@ index aed904f61..8443550b7 100644
       .p2pkh_version = 111,
       .p2sh_version = 196,
       .testnet = true,
-@@ -129,6 +139,7 @@ const struct chainparams networks[] = {
+@@ -129,6 +143,7 @@ const struct chainparams networks[] = {
       .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
       .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
       .max_supply = AMOUNT_SAT_INIT(2100000000000000),
@@ -76,17 +80,17 @@ index aed904f61..8443550b7 100644
       .p2pkh_version = 111,
       .p2sh_version = 196,
       .testnet = true,
-@@ -156,6 +167,9 @@ const struct chainparams networks[] = {
+@@ -156,6 +171,9 @@ const struct chainparams networks[] = {
       .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
       .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
       .max_supply = AMOUNT_SAT_INIT(2100000000000000),
-+     /* As bitcoin above, and doubly provisional: this chain's activation
-+      * heights have been rewritten at every release candidate so far. */
++     /* As bitcoin above: 158111 minus 151406. Doubly provisional, since
++      * this chain's heights were rewritten at every release candidate. */
 +     .relay_coinbase_maturity = 6705,
       .p2pkh_version = 111,
       .p2sh_version = 196,
       .testnet = true,
-@@ -181,6 +195,7 @@ const struct chainparams networks[] = {
+@@ -181,6 +199,7 @@ const struct chainparams networks[] = {
       .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
       .max_supply = AMOUNT_SAT_INIT(2100000000000000),
       .when_lightning_became_cool = 1,
@@ -94,7 +98,7 @@ index aed904f61..8443550b7 100644
       .p2pkh_version = 91,
       .p2sh_version = 75,
       .testnet = true,
-@@ -206,6 +221,7 @@ const struct chainparams networks[] = {
+@@ -206,6 +225,7 @@ const struct chainparams networks[] = {
       .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
       .max_supply = AMOUNT_SAT_INIT(2100000000000000),
       .when_lightning_became_cool = 1,

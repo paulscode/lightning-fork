@@ -1,4 +1,4 @@
-From a1890ec6146eb428e4da35018d34caa55486aee8 Mon Sep 17 00:00:00 2001
+From 36ba3d4df504cc6dd12f9c3b732dd44527154772 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 08:17:57 -0500
 Subject: [PATCH 5/7] psbt: refuse a version conversion we would later abort on

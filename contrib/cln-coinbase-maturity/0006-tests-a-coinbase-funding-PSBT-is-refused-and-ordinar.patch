@@ -1,4 +1,4 @@
-From 500b9bd9052b571b95f4eb61c5bd1afaa51bd285 Mon Sep 17 00:00:00 2001
+From 02b41def592692e46dbeaf316834851f9de9280a Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 22 Sep 2026 08:07:07 -0500
 Subject: [PATCH 6/7] tests: a coinbase funding PSBT is refused, and ordinary
