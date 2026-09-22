@@ -1,0 +1,76 @@
+From d052f8bb118a0453cc80dee8e8d624a486cb192e Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 22 Sep 2026 07:26:30 -0500
+Subject: [PATCH 2/7] wallet: do not offer a coinbase the network will not let
+ us spend
+
+utxo_is_immature held the hundred blocks consensus asks for. On a chain whose
+relay rule is longer that is the wrong one of the two depths: coin selection
+would hand out a coinbase that is perfectly valid to spend and that no peer
+will accept, and the operator would watch a transaction get built, signed, and
+refused at broadcast.
+
+Nothing is lost when that happens, which is why this is a correctness fix
+rather than a safety one. The coin is still there and becomes spendable on
+schedule. But listfunds says confirmed when it should say immature, fundpsbt
+and withdraw pick the coin and fail, and a channel opened from it fails at the
+moment it is broadcast rather than at the moment it is planned.
+
+The arithmetic is unchanged for any chain where the two depths agree.
+---
+ common/utxo.c   | 18 ++++++++++++++++--
+ wallet/wallet.h |  3 ++-
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/common/utxo.c b/common/utxo.c
+index ca978c507..df8de1968 100644
+--- a/common/utxo.c
++++ b/common/utxo.c
+@@ -1,4 +1,6 @@
+ #include "config.h"
++#include <bitcoin/chainparams.h>
++#include <common/utils.h>
+ #include <common/utxo.h>
+ 
+ size_t utxo_spend_weight(const struct utxo *utxo, size_t min_witness_weight)
+@@ -20,12 +22,24 @@ size_t utxo_spend_weight(const struct utxo *utxo, size_t min_witness_weight)
+ u32 utxo_is_immature(const struct utxo *utxo, u32 blockheight)
+ {
+ 	if (utxo->is_in_coinbase) {
++		u32 mature_at;
++
+ 		/* We got this from a block, it must have a known
+ 		 * blockheight. */
+ 		assert(utxo->blockheight);
+ 
+-		if (blockheight < *utxo->blockheight + 100)
+-			return *utxo->blockheight + 99 - blockheight;
++		/* The depth at which the network will relay a spend, not the
++		 * hundred blocks that make one valid. On a chain with a
++		 * longer coinbase maturity these differ, and a transaction we
++		 * cannot hand to a peer is not spendable whatever a block
++		 * would make of it: we would build it, sign it, and have it
++		 * refused at broadcast. The two are the same number on every
++		 * chain without such a rule. */
++		mature_at = *utxo->blockheight
++			+ chainparams->relay_coinbase_maturity;
++
++		if (blockheight < mature_at)
++			return mature_at - 1 - blockheight;
+ 
+ 		else
+ 			return 0;
+diff --git a/wallet/wallet.h b/wallet/wallet.h
+index 504e49aad..c63bee442 100644
+--- a/wallet/wallet.h
++++ b/wallet/wallet.h
+@@ -802,7 +802,8 @@ u32 wallet_blocks_contig_minheight(struct wallet *w);
+ /**
+  * wallet_extract_owned_outputs - given a tx, extract all of our outputs
+  * @w: wallet
+- * @is_coinbase: true if this is output 0 (can't spend for 100 blocks)
++ * @is_coinbase: true if this is output 0 (can't spend until the chain's
++ *               relay_coinbase_maturity; see utxo_is_immature)
+  * @blockheight: non-NULL blockheight if known.
+  * @outputs: if non-NULL, output numbers of owned outputs are appended to it.
+  *

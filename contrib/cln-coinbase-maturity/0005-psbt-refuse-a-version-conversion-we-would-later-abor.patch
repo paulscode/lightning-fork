@@ -1,0 +1,48 @@
+From a1890ec6146eb428e4da35018d34caa55486aee8 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 22 Sep 2026 08:17:57 -0500
+Subject: [PATCH 5/7] psbt: refuse a version conversion we would later abort on
+
+psbt_set_version reports whether libwally accepted the change, and callers
+treat that as meaning the PSBT is now usable in the new version. It does not
+mean that. wally_psbt_set_version can succeed on a PSBT that
+wally_psbt_get_length then rejects, and the next thing anybody does with a
+converted PSBT is store it or send it, both of which go through
+psbt_get_bytes, which calls abort().
+
+A coinbase transaction is such a PSBT: a null previous outpoint has no
+version 2 representation. fundchannel_complete converts one, every check it
+makes passes, the peer is told the channel exists, and then the channel is
+saved and lightningd dies with SIGABRT. Reachable by anyone who can reach the
+RPC, which is not the same as reachable by a peer, so this is robustness
+rather than security, but it is a live abort and there are ten conversion
+sites rather than one.
+
+validate_psbt already asks exactly the right question without aborting, and
+every caller of psbt_set_version already handles false. So ask it here and
+let them.
+---
+ bitcoin/psbt.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/bitcoin/psbt.c b/bitcoin/psbt.c
+index 10dada97e..2ad4224b9 100644
+--- a/bitcoin/psbt.c
++++ b/bitcoin/psbt.c
+@@ -1116,5 +1116,16 @@ bool psbt_set_version(struct wally_psbt *psbt, u32 version)
+ 		ok &= wally_psbt_set_tx_modifiable_flags(psbt, WALLY_PSBT_TXMOD_INPUTS | WALLY_PSBT_TXMOD_OUTPUTS) == WALLY_OK;
+ 	}
+ 	tal_wally_end(psbt);
++
++	/* Setting the version can succeed on a PSBT that cannot then be
++	 * serialized in it, and a caller has no reason to expect that: the
++	 * next thing anybody does with a converted PSBT is store it or send
++	 * it, and psbt_get_bytes aborts rather than failing. A coinbase
++	 * transaction is such a PSBT, since a null previous outpoint has no
++	 * version 2 representation. Report it here, where every caller
++	 * already handles a false. */
++	if (ok && !validate_psbt(psbt))
++		return false;
++
+ 	return ok;
+ }

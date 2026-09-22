@@ -1,0 +1,38 @@
+From 72a8eb2e5440d6636c0e955a41213edba138a033 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 22 Sep 2026 08:34:05 -0500
+Subject: [PATCH 7/7] pytest: activate blake2b in the test chain, or nothing
+ can open a channel
+
+Every signature this fork makes opts into the hardfork, and a default regtest
+bitcoind does not have it active, so it rejects them:
+
+  mempool-script-verify-flag-failed (Signature opts in to the hardfork,
+  which is not active here)
+
+That is not a corner: it is every funding transaction, so no test in the
+suite that opens a channel can pass. tests/test_connection.py::test_second_channel
+fails on it today and passes with this line.
+
+Separable from the rest of this branch, and probably wanted on its own.
+---
+ contrib/pyln-testing/pyln/testing/utils.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/contrib/pyln-testing/pyln/testing/utils.py b/contrib/pyln-testing/pyln/testing/utils.py
+index e9c17303c..ebccd00e7 100644
+--- a/contrib/pyln-testing/pyln/testing/utils.py
++++ b/contrib/pyln-testing/pyln/testing/utils.py
+@@ -493,6 +493,12 @@ class BitcoinD(TailableProc):
+         # For after 0.16.1 (eg. 3f398d7a17f136cd4a67998406ca41a124ae2966), this
+         # needs its own [regtest] section.
+         BITCOIND_REGTEST = {'rpcport': rpcport}
++        # This chain's signatures opt into the hardfork, so bitcoind has to
++        # have it active or it rejects every one of them with
++        # "Signature opts in to the hardfork, which is not active here".
++        # Without this no test can open a channel.
++        self.cmd_line.append('-testactivationheight=blake2b@1')
++
+         self.conf_file = os.path.join(bitcoin_dir, 'bitcoin.conf')
+         write_config(self.conf_file, BITCOIND_CONFIG, BITCOIND_REGTEST)
+         self.rpc = SimpleBitcoinProxy(btc_conf_file=self.conf_file)

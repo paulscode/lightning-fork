@@ -1,0 +1,178 @@
+From 500b9bd9052b571b95f4eb61c5bd1afaa51bd285 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 22 Sep 2026 08:07:07 -0500
+Subject: [PATCH 6/7] tests: a coinbase funding PSBT is refused, and ordinary
+ funding is not
+
+The first test builds the transaction a miner would use, a block whose
+coinbase pays the reward straight into the channel's funding script, and
+asserts fundchannel_complete says no and the daemon is still there
+afterwards. Without the parent commit it dies with SIGABRT.
+
+Building the PSBT by hand is the fiddly part, and it is fiddly for one
+reason: BIP 174's unsigned transaction carries no scriptSigs, and a
+coinbase's txid commits to the one it has. So the scriptSig travels as
+PSBT_IN_FINAL_SCRIPTSIG and the extractor puts it back before psbt_txid takes
+the hash. No witness is needed, because a txid does not commit to one.
+
+The block is built with generateblock and submit=false, which is the ordering
+a miner gets for free: he owns the template, so he knows his coinbase before
+anybody else sees it.
+
+The second test is the one that would catch an over-eager gate. Spending a
+mature coinbase into a funding output is how a miner ordinarily opens a
+channel; the output that results is not a coinbase output and nothing about
+it should wait.
+
+What is not tested here is the gate itself, because this suite cannot build a
+channel funded by a coinbase: we cannot be the funder of one, per the test
+above. The fundee never sees a PSBT, so that path is open and is what the
+gate protects. Reproducing it end to end needs a funder that is not us.
+---
+ tests/test_coinbase_funding.py | 137 +++++++++++++++++++++++++++++++++
+ 1 file changed, 137 insertions(+)
+ create mode 100644 tests/test_coinbase_funding.py
+
+diff --git a/tests/test_coinbase_funding.py b/tests/test_coinbase_funding.py
+new file mode 100644
+index 000000000..fc6a53d25
+--- /dev/null
++++ b/tests/test_coinbase_funding.py
+@@ -0,0 +1,137 @@
++"""Channels funded by a coinbase output.
++
++A miner can pay a block reward straight into a channel's 2-of-2 funding
++script. The coinbase transaction is then the funding transaction: nothing is
++broadcast, nothing has to relay, and the block itself creates the channel.
++
++We cannot be the funder of one, because libwally cannot represent a coinbase
++input in a version 2 PSBT, and that is what the first test pins down. We can
++still be asked to be the fundee, where no PSBT is involved and the only thing
++between us and a channel we cannot close is
++channel_funding_depth_required(); that path needs a funder we do not have
++here, so it is covered by review and by the reproduction against lnd rather
++than by a test in this file.
++"""
++from fixtures import *  # noqa: F401,F403
++from fixtures import TEST_NETWORK
++from pyln.client import RpcError
++from utils import only_one
++
++import base64
++import pytest
++import unittest
++
++
++def _varint(n):
++    if n < 0xfd:
++        return n.to_bytes(1, 'little')
++    if n <= 0xffff:
++        return b'\xfd' + n.to_bytes(2, 'little')
++    if n <= 0xffffffff:
++        return b'\xfe' + n.to_bytes(4, 'little')
++    return b'\xff' + n.to_bytes(8, 'little')
++
++
++def _kv(key, value):
++    return _varint(len(key)) + key + _varint(len(value)) + value
++
++
++def coinbase_psbt(decoded):
++    """Build a PSBT whose transaction is the given (decoded) coinbase.
++
++    BIP 174's unsigned transaction carries no scriptSigs, and a coinbase's
++    txid commits to the one it has, so the scriptSig travels as
++    PSBT_IN_FINAL_SCRIPTSIG (0x07) and the extractor puts it back before the
++    txid is taken. That is the only thing about this that is unusual; the
++    rest is the ordinary serialisation.
++
++    No witness is needed: a txid does not commit to one.
++    """
++    vin = only_one(decoded['vin'])
++    assert 'coinbase' in vin, "not a coinbase transaction"
++    script_sig = bytes.fromhex(vin['coinbase'])
++
++    unsigned = b''
++    unsigned += int(decoded['version']).to_bytes(4, 'little')
++    unsigned += _varint(1)
++    unsigned += b'\x00' * 32                       # null previous txid
++    unsigned += (0xffffffff).to_bytes(4, 'little')  # null previous index
++    unsigned += _varint(0)                          # empty scriptSig
++    unsigned += int(vin['sequence']).to_bytes(4, 'little')
++    unsigned += _varint(len(decoded['vout']))
++    for out in decoded['vout']:
++        sats = int(round(float(out['value']) * 10**8))
++        script = bytes.fromhex(out['scriptPubKey']['hex'])
++        unsigned += sats.to_bytes(8, 'little')
++        unsigned += _varint(len(script)) + script
++    unsigned += int(decoded['locktime']).to_bytes(4, 'little')
++
++    psbt = b'psbt\xff'
++    psbt += _kv(b'\x00', unsigned)   # PSBT_GLOBAL_UNSIGNED_TX
++    psbt += b'\x00'                  # end of the global map
++    psbt += _kv(b'\x07', script_sig)  # PSBT_IN_FINAL_SCRIPTSIG
++    psbt += b'\x00'                  # end of input 0's map
++    for _ in decoded['vout']:
++        psbt += b'\x00'              # end of each output's map
++
++    return base64.b64encode(psbt).decode('ascii')
++
++
++@unittest.skipIf(TEST_NETWORK != 'regtest', 'coinbase maturity is a bitcoin rule')
++def test_coinbase_funding_psbt_refused_not_fatal(node_factory, bitcoind):
++    """A coinbase cannot fund a channel from here, and saying so must not abort.
++
++    libwally has no version 2 representation for a coinbase input: its null
++    previous outpoint does not survive the conversion, so
++    wally_psbt_get_length fails on the result. Every check
++    fundchannel_complete makes passes anyway, because a coinbase input
++    carries a final scriptSig and the amounts are right. The PSBT is then
++    stored with the channel, and psbt_get_bytes aborts rather than failing.
++
++    So the conversion has to report it, at the point where no is still an
++    available answer.
++    """
++    l1, l2 = node_factory.get_nodes(2, opts={'large-channels': None})
++    l1.rpc.connect(l2.info['id'], 'localhost', l2.port)
++
++    amount = bitcoind.rpc.getblocktemplate({'rules': ['segwit', 'blake2b']})['coinbasevalue']
++    funding_addr = l1.rpc.fundchannel_start(l2.info['id'], amount)['funding_address']
++
++    # Build the block but do not publish it: a miner owns his template, so he
++    # knows his coinbase before anyone else sees it.
++    block_hex = bitcoind.rpc.generateblock(funding_addr, [], False)['hex']
++
++    # Only the coinbase is in it, so the transaction begins right after the
++    # header and the one byte transaction count. The header is 164 bytes on
++    # this chain and 80 on a classic one; the top bit of the version word
++    # says which.
++    version = int.from_bytes(bytes.fromhex(block_hex[:8]), 'little')
++    header_len = 164 if version & 0x80000000 else 80
++    coinbase = bitcoind.rpc.decoderawtransaction(block_hex[(header_len + 1) * 2:])
++    out = only_one([o for o in coinbase['vout']
++                    if o['scriptPubKey'].get('address') == funding_addr])
++    assert int(round(float(out['value']) * 10**8)) == amount
++
++    with pytest.raises(RpcError, match=r'Could not set PSBT version'):
++        l1.rpc.fundchannel_complete(l2.info['id'], coinbase_psbt(coinbase),
++                                    withhold=True)
++
++    # Still alive, and still willing to work.
++    l1.rpc.fundchannel_cancel(l2.info['id'])
++    assert l1.rpc.getinfo()['id']
++    assert l2.rpc.getinfo()['id']
++
++
++@unittest.skipIf(TEST_NETWORK != 'regtest', 'coinbase maturity is a bitcoin rule')
++def test_ordinary_channel_still_opens_at_minimum_depth(node_factory, bitcoind):
++    """The gate must not catch a channel merely funded FROM a coinbase.
++
++    Spending a mature coinbase into a funding output is the ordinary way a
++    miner opens a channel, and the funding output that results is not a
++    coinbase output. Nothing about it should wait.
++    """
++    l1, l2 = node_factory.line_graph(2, fundchannel=True)
++
++    scid = only_one(l1.rpc.listpeerchannels()['channels'])['short_channel_id']
++    assert scid.split('x')[1] != '0'
++    assert only_one(l1.rpc.listpeerchannels()['channels'])['state'] == 'CHANNELD_NORMAL'

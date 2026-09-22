@@ -1,0 +1,55 @@
+From 807eadea81f80a5677e19e3bc0df130d92900664 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 22 Sep 2026 08:17:06 -0500
+Subject: [PATCH 3/7] lightningd: re-arm the funding depth watch across a
+ restart
+
+A channel waiting for its funding to reach minimum_depth is told about each
+new block by a depth watch, and that watch is registered when we first see
+the funding output in a block. We do not register it again at startup. We
+re-register the scriptpubkey watch that finds the funding, but that only
+fires on blocks we process, and at startup we rescan fifteen of them.
+
+So a channel whose funding confirmed more than a rescan ago, and which is
+still short of its depth, comes back up watching for something it has already
+seen and waits for a callback that never arrives.
+
+Today this needs a minimum_depth larger than an operator would usually set,
+which is why it has not bitten. The next commit makes a channel wait
+thousands of blocks, and a restart in that window is not unlikely but
+expected, so fix the general case first.
+
+The scid is in the database, and its block height is the height the watch
+wants. watch_blockdepth already refuses to add a watch identical to one it
+holds, so re-arming here costs nothing when the rescan does reach the funding
+block and finds it the usual way.
+---
+ lightningd/peer_control.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/lightningd/peer_control.c b/lightningd/peer_control.c
+index 13c5137a4..5344863b4 100644
+--- a/lightningd/peer_control.c
++++ b/lightningd/peer_control.c
+@@ -2965,6 +2965,21 @@ static void setup_peer(struct peer *peer)
+ 
+ 		/* Normal cases where we watch funding */
+ 		case CHANNELD_AWAITING_LOCKIN:
++			/* If the funding confirmed before we last stopped we
++			 * will not be told about it again: the scriptpubkey
++			 * watch only fires on blocks we process, and we
++			 * rescan a handful of them at startup. Pick the depth
++			 * watch back up from the scid we already stored, or
++			 * we will wait for a callback that never comes.
++			 *
++			 * Harmless if the rescan does reach the funding
++			 * block: watch_blockdepth ignores a watch it already
++			 * holds. */
++			if (channel->scid)
++				channel_watch_depth(ld,
++						    short_channel_id_blocknum(*channel->scid),
++						    channel);
++			/* Fall thru */
+ 		case CHANNELD_NORMAL:
+ 		case CHANNELD_SHUTTING_DOWN:
+ 		case CLOSINGD_SIGEXCHANGE:

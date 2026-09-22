@@ -295,6 +295,14 @@ one you cannot open yet. The depth comes from
 `chaincfg.Params.RelayCoinbaseMaturity()` in btcd-blake2b, which returns the
 ordinary 100 blocks on any network without the deployment.
 
+The wait is for the chain to reach a height, not for a confirmation count.
+That is not a style choice: `chainntnfs` refuses any confirmation request
+above `MaxNumConfs`, which is 144, so asking for 6480 fails the registration
+and leaves the channel pending for good with one line in the log. Builds up
+to and including `0.21.3-beta-blake2b.10` had exactly that bug; it was found
+by running the rule for real rather than a scaled stand-in, which is the whole
+argument for doing so.
+
 ### Known gap: the node's own wallet
 
 **This node's wallet still offers freshly mined coins after 100

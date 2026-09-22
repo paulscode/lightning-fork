@@ -1,0 +1,169 @@
+From 303555a77e87faefb1a70c5796c050fa6ba55a49 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 22 Sep 2026 07:26:30 -0500
+Subject: [PATCH 4/7] channel: a coinbase funded channel is not usable until
+ its funding can be spent
+
+A miner can pay a block reward straight into a channel's 2-of-2 funding
+script. The coinbase transaction is then the funding transaction: nothing is
+broadcast, nothing has to relay, and the block itself creates the channel.
+Both peers see a confirmed funding output and start counting confirmations.
+
+We counted to minimum_depth, which is three on this network by default and one
+on regtest. The funding output is a coinbase output, so every transaction that
+spends it, every commitment, every HTLC and every close, needs the chain's
+relay coinbase maturity before any node will accept it. Between those two
+depths the channel is live and payable and cannot be closed.
+
+That is worth more than it sounds. The miner spends the reward through the
+network and the counterparty is left holding a balance it cannot enforce on
+chain, for thousands of blocks, having opted into nothing. A forwarding node
+has it worse: it has already paid real funds out of a real channel, and an
+incoming HTLC it cannot claim before expiry is recoverable only in a race
+against a party that produces blocks.
+
+So wait the depth at which the funding can actually be spent. The
+short_channel_id already says whether the funding transaction is a coinbase,
+because transaction 0 of a block is the coinbase and nothing else ever is, so
+this needs no extra state, no database column and no second look at the chain.
+
+Two call sites decide readiness and both move. The third change matters as
+much as either: the depth watch was torn down at the negotiated depth, which
+on its own would have left such a channel waiting for a callback that never
+came again.
+
+Not covered: a zero-conf channel, which has no confirmed funding to ask about
+and whose peer accepted that deliberately.
+---
+ lightningd/channel.c                        | 22 +++++++++++++++++++++
+ lightningd/channel.h                        | 13 ++++++++++++
+ lightningd/channel_control.c                |  2 +-
+ lightningd/peer_control.c                   | 12 ++++++++---
+ lightningd/test/run-invoice-select-inchan.c |  3 +++
+ 5 files changed, 48 insertions(+), 4 deletions(-)
+
+diff --git a/lightningd/channel.c b/lightningd/channel.c
+index d41c1389c..9d7e58664 100644
+--- a/lightningd/channel.c
++++ b/lightningd/channel.c
+@@ -1,4 +1,5 @@
+ #include "config.h"
++#include <bitcoin/chainparams.h>
+ #include <ccan/tal/str/str.h>
+ #include <common/blockheight_states.h>
+ #include <common/clock_time.h>
+@@ -1358,3 +1359,24 @@ const u8 *channel_update_for_error(const tal_t *ctx,
+ 	return channel_gossip_update_for_error(ctx, channel);
+ }
+ 
++
++u32 channel_funding_depth_required(const struct channel *channel)
++{
++	/* A zero-conf channel has no confirmed funding to ask about, and its
++	 * peer accepted that deliberately. Nothing here is about it. */
++	if (channel->minimum_depth == 0 || !channel->scid)
++		return channel->minimum_depth;
++
++	/* Transaction 0 of a block is the coinbase, and nothing else ever is.
++	 * So the funding output is a coinbase output exactly when the funding
++	 * transaction sits at index 0 of the block that confirmed it, and the
++	 * short_channel_id we already hold says so without our having to go
++	 * back to the chain for the transaction. */
++	if (short_channel_id_txnum(*channel->scid) != 0)
++		return channel->minimum_depth;
++
++	if (chainparams->relay_coinbase_maturity > channel->minimum_depth)
++		return chainparams->relay_coinbase_maturity;
++
++	return channel->minimum_depth;
++}
+diff --git a/lightningd/channel.h b/lightningd/channel.h
+index 3134acf48..4dd76a17c 100644
+--- a/lightningd/channel.h
++++ b/lightningd/channel.h
+@@ -985,4 +985,17 @@ struct channel_type *desired_channel_type(const tal_t *ctx,
+ 					  const struct feature_set *our_features,
+ 					  const u8 *their_features);
+ 
++/**
++ * channel_funding_depth_required - confirmations before we may use this channel
++ * @channel: the channel
++ *
++ * Normally the depth we negotiated. But a channel whose funding output is
++ * itself a coinbase output cannot be spent until that coinbase matures, and
++ * a channel whose commitment and close will not relay is not usable however
++ * many confirmations it has. Returns the negotiated depth on every chain
++ * where those two numbers agree, which is every chain without a lengthened
++ * coinbase maturity.
++ */
++u32 channel_funding_depth_required(const struct channel *channel);
++
+ #endif /* LIGHTNING_LIGHTNINGD_CHANNEL_H */
+diff --git a/lightningd/channel_control.c b/lightningd/channel_control.c
+index 1ec70494c..5e27e08b9 100644
+--- a/lightningd/channel_control.c
++++ b/lightningd/channel_control.c
+@@ -1264,7 +1264,7 @@ static void peer_got_channel_ready(struct channel *channel, const u8 *msg)
+ 	/* Remember that we got the lockin */
+ 	wallet_channel_save(channel->peer->ld->wallet, channel);
+ 
+-	if (channel->depth >= channel->minimum_depth)
++	if (channel->depth >= channel_funding_depth_required(channel))
+ 		lockin_complete(channel, CHANNELD_AWAITING_LOCKIN);
+ }
+ 
+diff --git a/lightningd/peer_control.c b/lightningd/peer_control.c
+index 5344863b4..4043d45f7 100644
+--- a/lightningd/peer_control.c
++++ b/lightningd/peer_control.c
+@@ -2498,11 +2498,13 @@ static enum watch_result funding_depth_cb(struct lightningd *ld,
+ 					  unsigned int depth,
+ 					  struct channel *channel)
+ {
++	u32 depth_required = channel_funding_depth_required(channel);
++
+ 	channel->depth = depth;
+ 
+ 	log_debug(channel->log, "Funding tx %s depth %u of %u",
+ 		  fmt_bitcoin_txid(tmpctx, &channel->funding.txid),
+-		  depth, channel->minimum_depth);
++		  depth, depth_required);
+ 
+ 	switch (channel->state) {
+ 	/* We should not be in the callback! */
+@@ -2529,7 +2531,7 @@ static enum watch_result funding_depth_cb(struct lightningd *ld,
+ 	case CHANNELD_AWAITING_LOCKIN:
+ 		/* This may be redundant, and may be public later, but
+ 		 * make sure we tell gossipd at least once */
+-		if (depth >= channel->minimum_depth
++		if (depth >= depth_required
+ 		    && channel->remote_channel_ready) {
+ 			lockin_complete(channel, CHANNELD_AWAITING_LOCKIN);
+ 		}
+@@ -2538,7 +2540,11 @@ static enum watch_result funding_depth_cb(struct lightningd *ld,
+ 	case CHANNELD_AWAITING_SPLICE:
+ 		channeld_tell_depth(channel, &channel->funding.txid, depth);
+ 
+-		if (depth < ANNOUNCE_MIN_DEPTH || depth < channel->minimum_depth)
++		/* Keep watching until the funding is genuinely spendable:
++		 * stopping at the negotiated depth would leave a
++		 * coinbase-funded channel waiting for a callback that never
++		 * comes again. */
++		if (depth < ANNOUNCE_MIN_DEPTH || depth < depth_required)
+ 			return KEEP_WATCHING;
+ 		/* Normal state and past announce depth?  Stop bothering us! */
+ 		return DELETE_WATCH;
+diff --git a/lightningd/test/run-invoice-select-inchan.c b/lightningd/test/run-invoice-select-inchan.c
+index 0357cf94c..850e81864 100644
+--- a/lightningd/test/run-invoice-select-inchan.c
++++ b/lightningd/test/run-invoice-select-inchan.c
+@@ -63,6 +63,9 @@ const char *channel_change_state_reason_str(enum state_change reason UNNEEDED)
+ /* Generated stub for channel_cleanup_commands */
+ void channel_cleanup_commands(struct channel *channel UNNEEDED, const char *why UNNEEDED)
+ { fprintf(stderr, "channel_cleanup_commands called!\n"); abort(); }
++/* Generated stub for channel_funding_depth_required */
++u32 channel_funding_depth_required(const struct channel *channel UNNEEDED)
++{ fprintf(stderr, "channel_funding_depth_required called!\n"); abort(); }
+ /* Generated stub for channel_fail_forget */
+ void channel_fail_forget(struct channel *channel UNNEEDED, const char *fmt UNNEEDED, ...)
+ { fprintf(stderr, "channel_fail_forget called!\n"); abort(); }

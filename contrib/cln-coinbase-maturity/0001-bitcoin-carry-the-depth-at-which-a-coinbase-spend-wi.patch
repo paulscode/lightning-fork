@@ -1,0 +1,136 @@
+From 0a02c5a5a4fc38917e06595bddb7930183424686 Mon Sep 17 00:00:00 2001
+From: Paul Lamb <paul@paulscode.com>
+Date: Tue, 22 Sep 2026 07:26:16 -0500
+Subject: [PATCH 1/7] bitcoin: carry the depth at which a coinbase spend will
+ relay
+
+Bitcoin Knots deploys a temporary longer coinbase maturity on this chain
+(bitcoinknots/bitcoin#419), and it is two rules rather than one. Consensus
+refuses a spend only inside a deployment window, and only for a coinbase mined
+at or after the start height. Relay is blunter: an upgraded node requires the
+full long depth of every coinbase spend it will accept into its mempool,
+whatever height the coinbase was mined at, and it keeps requiring it after the
+window closes.
+
+So a coinbase mined well before the fork, two hundred blocks deep, is a
+consensus valid spend that no upgraded node will relay.
+
+A node that never validates blocks only ever wants the relay answer, and this
+node never validates blocks. One number is therefore enough, and calling it
+relay_coinbase_maturity rather than coinbase_maturity is the whole of the
+documentation: it is the depth at which a spend can reach a mempool, not the
+depth at which one would be valid in a block.
+
+The figure is provisional and says so where it is set. It has already moved
+once between release candidates, and a full year is under discussion for
+October 2026.
+
+Every chain without such a rule gets COINBASE_MATURITY, so nothing changes
+anywhere else, and a network added later that forgets the field gets zero,
+which is visibly wrong rather than quietly wrong.
+---
+ bitcoin/chainparams.c | 16 ++++++++++++++++
+ bitcoin/chainparams.h | 14 ++++++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/bitcoin/chainparams.c b/bitcoin/chainparams.c
+index aed904f61..8443550b7 100644
+--- a/bitcoin/chainparams.c
++++ b/bitcoin/chainparams.c
+@@ -52,6 +52,14 @@ const struct chainparams networks[] = {
+      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
+      /* "Lightning Charge Powers Developers & Blockstream Store" */
+      .when_lightning_became_cool = 961640,
++     /* Bitcoin Knots deploys a temporary longer coinbase maturity on this
++      * chain (bitcoinknots/bitcoin#419): an upgraded node requires this depth
++      * of every coinbase spend it will accept into its mempool, whatever
++      * height the coinbase was mined at, and keeps requiring it after the
++      * consensus window closes. Provisional: the heights and the figure have
++      * already moved once between release candidates, and a full year is
++      * under discussion. Re-check it against the release you run. */
++     .relay_coinbase_maturity = 6480,
+      .p2pkh_version = 0,
+      .p2sh_version = 5,
+      .testnet = false,
+@@ -78,6 +86,7 @@ const struct chainparams networks[] = {
+      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
+      .when_lightning_became_cool = 1,
++     .relay_coinbase_maturity = COINBASE_MATURITY,
+      .p2pkh_version = 111,
+      .p2sh_version = 196,
+      .testnet = true,
+@@ -105,6 +114,7 @@ const struct chainparams networks[] = {
+      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
+      .when_lightning_became_cool = 1,
++     .relay_coinbase_maturity = COINBASE_MATURITY,
+      .p2pkh_version = 111,
+      .p2sh_version = 196,
+      .testnet = true,
+@@ -129,6 +139,7 @@ const struct chainparams networks[] = {
+      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
+      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
++     .relay_coinbase_maturity = COINBASE_MATURITY,
+      .p2pkh_version = 111,
+      .p2sh_version = 196,
+      .testnet = true,
+@@ -156,6 +167,9 @@ const struct chainparams networks[] = {
+      .max_funding = AMOUNT_SAT_INIT((1 << 24) - 1),
+      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
++     /* As bitcoin above, and doubly provisional: this chain's activation
++      * heights have been rewritten at every release candidate so far. */
++     .relay_coinbase_maturity = 6705,
+      .p2pkh_version = 111,
+      .p2sh_version = 196,
+      .testnet = true,
+@@ -181,6 +195,7 @@ const struct chainparams networks[] = {
+      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
+      .when_lightning_became_cool = 1,
++     .relay_coinbase_maturity = COINBASE_MATURITY,
+      .p2pkh_version = 91,
+      .p2sh_version = 75,
+      .testnet = true,
+@@ -206,6 +221,7 @@ const struct chainparams networks[] = {
+      .max_payment = AMOUNT_MSAT_INIT(0xFFFFFFFFULL),
+      .max_supply = AMOUNT_SAT_INIT(2100000000000000),
+      .when_lightning_became_cool = 1,
++     .relay_coinbase_maturity = COINBASE_MATURITY,
+      .p2pkh_version = 57,
+      .p2sh_version = 39,
+      .testnet = false,
+diff --git a/bitcoin/chainparams.h b/bitcoin/chainparams.h
+index 05794f5c1..e779a8e56 100644
+--- a/bitcoin/chainparams.h
++++ b/bitcoin/chainparams.h
+@@ -8,6 +8,10 @@
+ 
+ #define ELEMENTS_ASSET_LEN 33
+ 
++/* The ordinary coinbase maturity, and so the value of
++ * relay_coinbase_maturity on every chain that has not lengthened it. */
++#define COINBASE_MATURITY 100
++
+ struct chainparams {
+ 	const char *network_name;
+ 	/* Unfortunately starting with signet, we now have diverging
+@@ -42,6 +46,16 @@ struct chainparams {
+ 	/* Total coins in network */
+ 	const struct amount_sat max_supply;
+ 	const u32 when_lightning_became_cool;
++	/* The depth a coinbase output must reach before this network will
++	 * relay a transaction spending it.
++	 *
++	 * This is a relay rule, not a consensus one, and on a chain that
++	 * deploys a longer coinbase maturity the two do not agree: a spend
++	 * can be perfectly valid in a block and still be refused by every
++	 * node it is offered to. A node that never validates blocks, which
++	 * is all of us, only ever wants the relay answer. It is
++	 * COINBASE_MATURITY on any chain without such a rule. */
++	const u32 relay_coinbase_maturity;
+ 	const u8 p2pkh_version;
+ 	const u8 p2sh_version;
+ 
