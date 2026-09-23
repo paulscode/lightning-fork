@@ -162,10 +162,10 @@ func TestCreateOfferForThisChain(t *testing.T) {
 
 	// It passes read validation for our chain and fails for another.
 	require.NoError(t, bolt12.ValidateOfferRead(
-		offer, env.clock.Now(), testChain, nil,
+		offer, env.clock.Now(), testChain, bolt12.Blake2bFeatures,
 	))
 	require.ErrorIs(t, bolt12.ValidateOfferRead(
-		offer, env.clock.Now(), [32]byte{0xff}, nil,
+		offer, env.clock.Now(), [32]byte{0xff}, bolt12.Blake2bFeatures,
 	), bolt12.ErrUnsupportedChain)
 
 	// Stored under its id, which is the Merkle root of its fields.

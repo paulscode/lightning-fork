@@ -390,6 +390,17 @@ func (m *Manager) CreateOffer(ctx context.Context,
 				m.cfg.IssuerKey.PubKey,
 			),
 		),
+
+		// Say which proof of work rules this offer is written under. A
+		// reader which has not upgraded cannot read the even bit and
+		// refuses the offer rather than paying an invoice it could not
+		// settle; chain_hash cannot tell it, because both sides carry
+		// the same genesis hash.
+		OfferFeatures: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType12](
+				*bolt12.Blake2bVector(),
+			),
+		),
 	}
 	if params.AmountMsat != 0 {
 		offer.OfferAmount = tlv.SomeRecordT(
@@ -486,7 +497,7 @@ func (m *Manager) CreateOffer(ctx context.Context,
 		return nil, false, fmt.Errorf("re-decode offer: %w", err)
 	}
 	if err := bolt12.ValidateOfferRead(
-		decoded, now, m.cfg.ChainHash, nil,
+		decoded, now, m.cfg.ChainHash, bolt12.Blake2bFeatures,
 	); err != nil {
 		return nil, false, fmt.Errorf("offer does not validate: %w", err)
 	}
@@ -706,7 +717,8 @@ func (m *Manager) DecodeBolt12(s string) (*Decoded, error) {
 			out.OfferID = &oid
 		}
 		out.ValidationError = bolt12.ValidateOfferRead(
-			offer, m.cfg.Clock.Now(), m.cfg.ChainHash, nil,
+			offer, m.cfg.Clock.Now(), m.cfg.ChainHash,
+			bolt12.Blake2bFeatures,
 		)
 		out.Ours = out.ForThisChain && m.IsOurs(offer)
 

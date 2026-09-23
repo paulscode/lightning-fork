@@ -283,6 +283,15 @@ func NewInvoiceRequestFromOffer(offer *Offer, payerID *btcec.PublicKey,
 			},
 		),
 
+		// Say which proof of work rules the payer follows. The offer
+		// fields above are mirrored from the offer and carry the
+		// writer's own answer; this one is ours.
+		InvreqFeatures: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType84](
+				*Blake2bVector(),
+			),
+		),
+
 		// Carry the offer's unknown signed-range TLVs. Known offer
 		// types appear in the map with nil values and are skipped when
 		// the sidecar is merged, so this re-emits only the unknowns and

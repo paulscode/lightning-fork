@@ -342,8 +342,11 @@ func TestServePayoutRequest(t *testing.T) {
 	// What a payer checks.
 	require.NoError(t, bolt12.VerifyInvoice(inv))
 	require.NoError(t, bolt12.ValidateInvoiceRead(
-		inv, testChain, bolt12.InvoiceFeatureCatalogues{},
+		inv, testChain, bolt12.InvoiceFeatureCatalogues{
+			Invoice: bolt12.Blake2bFeatures,
+		},
 	))
+	require.NoError(t, bolt12.CheckBlake2b(inv.InvoiceFeatures, "invoice"))
 	require.NoError(t, bolt12.ValidateInvoiceAgainstRequest(inv, ir))
 	require.Equal(t, uint64(250_000_000),
 		uint64(inv.InvoiceAmount.ValOpt().UnwrapOr(0)))
@@ -847,4 +850,34 @@ func TestRateLimitedRequestIsToldOnce(t *testing.T) {
 	require.Equal(t, 1, errors,
 		"the first refusal is answered and the second is not: "+
 			"a requester learns why, a flood gets silence")
+}
+
+// A request from a payer which has not upgraded is answered with a refusal
+// rather than an invoice. The payer could not settle it, and the request names
+// the same chain_hash we do, so invreq_features is the only thing that says
+// so.
+func TestServeRefusesRequestWithoutBlake2b(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	ctx := context.Background()
+	rec, created, err := e.manager.CreateOffer(ctx, offers.CreateParams{
+		Description: "OCEAN Payouts for bc1qminer",
+		NoPaths:     true,
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	offer := e.decodeOffer(rec)
+
+	// The request is well formed in every other way; it is signed after
+	// the tweak, so this is not a signature failure in disguise.
+	ir, _ := e.request(offer, 250_000_000, func(ir *bolt12.InvoiceRequest) {
+		ir.InvreqFeatures = tlv.OptionalRecordT[
+			tlv.TlvType84, lnwire.RawFeatureVector,
+		]{}
+	})
+	e.server.Handle(ctx, e.inbound(ir, nil, true))
+
+	require.Empty(t, e.added, "an invoice was created for a payer that "+
+		"could not have settled it")
 }

@@ -313,9 +313,17 @@ func (c *Client) buildRequest(params FetchParams) (*bolt12.InvoiceRequest,
 	}
 	now := c.cfg.Clock.Now()
 	if err := bolt12.ValidateOfferRead(
-		offer, now, c.cfg.ChainHash, nil,
+		offer, now, c.cfg.ChainHash, bolt12.Blake2bFeatures,
 	); err != nil {
 		return nil, nil, fmt.Errorf("offer: %w", err)
+	}
+
+	// An offer is only refused where we would answer it, which is here:
+	// building a request is the answer. chain_hash cannot tell us the
+	// issuer has not upgraded, because it is the same on both sides, so
+	// without this we would request an invoice we could never pay.
+	if err := bolt12.CheckBlake2b(offer.OfferFeatures, "offer"); err != nil {
+		return nil, nil, err
 	}
 	if len(params.PayerNote) > MaxPayerNoteBytes {
 		return nil, nil, errors.New("payer note too long")
@@ -512,8 +520,17 @@ func CheckInvoice(inv *bolt12.Invoice, chain [32]byte, now time.Time) error {
 		return err
 	}
 	if err := bolt12.ValidateInvoiceRead(
-		inv, chain, bolt12.InvoiceFeatureCatalogues{},
+		inv, chain, bolt12.InvoiceFeatureCatalogues{
+			Invoice: bolt12.Blake2bFeatures,
+		},
 	); err != nil {
+		return err
+	}
+
+	// Written by a node which has not upgraded: the payment could not be
+	// settled, and the invoice names the same chain_hash we do, so this is
+	// the only thing that says so.
+	if err := bolt12.CheckBlake2b(inv.InvoiceFeatures, "invoice"); err != nil {
 		return err
 	}
 	created := int64(inv.InvoiceCreatedAt.ValOpt().UnwrapOr(0))

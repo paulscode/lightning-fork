@@ -162,6 +162,15 @@ func (e *env) offer(amount uint64, withPath bool,
 		OfferIssuerID: tlv.SomeRecordT(
 			tlv.NewPrimitiveRecord[tlv.TlvType22](e.issuer.PubKey()),
 		),
+
+		// Written by a node which has upgraded, as every offer this
+		// client will answer is. A test which wants the other case
+		// clears this through tweak.
+		OfferFeatures: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType12](
+				*bolt12.Blake2bVector(),
+			),
+		),
 	}
 	if amount != 0 {
 		o.OfferAmount = tlv.SomeRecordT(
@@ -244,7 +253,7 @@ func (e *env) invoiceFor(ir *bolt12.InvoiceRequest, amount uint64,
 	)
 	inv.InvoiceFeatures = tlv.SomeRecordT(
 		tlv.NewRecordT[tlv.TlvType174](
-			*lnwire.NewRawFeatureVector(lnwire.MPPOptional),
+			*bolt12.Blake2bVector(lnwire.MPPOptional),
 		),
 	)
 	inv.InvoiceNodeID = tlv.SomeRecordT(
@@ -323,7 +332,7 @@ func TestFetchPayout(t *testing.T) {
 	}, func(ir *bolt12.InvoiceRequest, pathID []byte) {
 		// The request is what the issuer expects.
 		require.NoError(t, bolt12.ValidateInvoiceRequestRead(
-			ir, testChain, nil,
+			ir, testChain, bolt12.Blake2bFeatures,
 		))
 		require.Equal(t, uint64(250_000_000),
 			uint64(ir.InvreqAmount.ValOpt().UnwrapOr(0)))
@@ -765,4 +774,84 @@ func TestNewRequirements(t *testing.T) {
 	require.Equal(t, DefaultTimeout, c.cfg.Timeout)
 	require.NotNil(t, c.cfg.Clock)
 	require.NoError(t, c.Stop())
+}
+
+// An offer or an invoice written by a node which has not upgraded is refused,
+// in both of the places a payer meets one. Neither is visible from chain_hash,
+// which is the same on both sides, so without these rules a payer would ask
+// for and then try to settle a payment that cannot be made.
+//
+// Written as a refusal rather than as a happy path on purpose: the rule sits
+// behind checks that pass anyway, so a version of it that never ran would look
+// exactly like this one until something went unpaid.
+func TestFetchRefusesArtifactsWithoutBlake2b(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// An offer with no feature vector at all, which is what a node that
+	// has not upgraded writes.
+	bare := e.offer(1000, false, func(o *bolt12.Offer) {
+		o.OfferFeatures = tlv.OptionalRecordT[
+			tlv.TlvType12, lnwire.RawFeatureVector,
+		]{}
+	})
+	_, err := e.client.FetchInvoice(ctx, FetchParams{
+		Offer: bare, AmountMsat: 1000,
+	})
+	require.ErrorIs(t, err, bolt12.ErrMissingBlake2b)
+
+	// One that carries features, but not this bit: an offer for the
+	// network we are no longer part of.
+	other := e.offer(1000, false, func(o *bolt12.Offer) {
+		o.OfferFeatures = tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType12](
+				*lnwire.NewRawFeatureVector(lnwire.MPPOptional),
+			),
+		)
+	})
+	_, err = e.client.FetchInvoice(ctx, FetchParams{
+		Offer: other, AmountMsat: 1000,
+	})
+	require.ErrorIs(t, err, bolt12.ErrMissingBlake2b)
+
+	// And an invoice that comes back without it, for a request that was
+	// properly made. The offer here is ours, so everything else about the
+	// exchange is in order.
+	good := e.offer(0, false, nil)
+	_, err = e.fetch(FetchParams{Offer: good, AmountMsat: 1000},
+		func(ir *bolt12.InvoiceRequest, id []byte) {
+			e.reply(e.invoiceFor(ir, 1000,
+				func(inv *bolt12.Invoice) {
+					inv.InvoiceFeatures = tlv.SomeRecordT(
+						tlv.NewRecordT[tlv.TlvType174](
+							*lnwire.NewRawFeatureVector(
+								lnwire.MPPOptional,
+							),
+						),
+					)
+				},
+			), id)
+		},
+	)
+	require.ErrorIs(t, err, bolt12.ErrMissingBlake2b)
+}
+
+// The other direction: what this node writes says so, so that a reader which
+// has not upgraded refuses it on the unknown even bit.
+func TestRequestsWeWriteSayBlake2b(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	offer := e.offer(1000, false, nil)
+	_, err := e.fetch(FetchParams{Offer: offer, AmountMsat: 1000},
+		func(ir *bolt12.InvoiceRequest, id []byte) {
+			require.NoError(t, bolt12.CheckBlake2b(
+				ir.InvreqFeatures, "invoice request",
+			))
+			e.reply(e.invoiceFor(ir, 1000, nil), id)
+		},
+	)
+	require.NoError(t, err)
 }

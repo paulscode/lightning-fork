@@ -97,7 +97,7 @@ func (m *Manager) RestoreOffer(offer *bolt12.Offer) (*Record, error) {
 	}
 	now := m.cfg.Clock.Now().Truncate(0).UTC()
 	if err := bolt12.ValidateOfferRead(
-		offer, now, m.cfg.ChainHash, nil,
+		offer, now, m.cfg.ChainHash, bolt12.Blake2bFeatures,
 	); err != nil {
 		return nil, fmt.Errorf("offer does not validate: %w", err)
 	}

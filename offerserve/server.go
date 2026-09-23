@@ -437,12 +437,22 @@ func (s *Server) answer(ctx context.Context,
 	key := sha256.Sum256(raw)
 
 	// The reader checks for our chain, including the signature.
-	err := bolt12.ValidateInvoiceRequestRead(ir, s.cfg.ChainHash, nil)
+	err := bolt12.ValidateInvoiceRequestRead(
+		ir, s.cfg.ChainHash, bolt12.Blake2bFeatures,
+	)
 	if err != nil {
 		if errors.Is(err, bolt12.ErrUnsupportedChain) {
 			return nil, reject("wrong chain", err)
 		}
 
+		return nil, reject("invalid invoice request", err)
+	}
+
+	// A payer which has not upgraded cannot settle an invoice for this
+	// node, so it is told rather than sent one.
+	if err := bolt12.CheckBlake2b(
+		ir.InvreqFeatures, "invoice request",
+	); err != nil {
 		return nil, reject("invalid invoice request", err)
 	}
 
@@ -602,15 +612,18 @@ func (s *Server) buildInvoice(ir *bolt12.InvoiceRequest,
 	inv.InvoiceAmount = tlv.SomeRecordT(
 		tlv.NewPrimitiveRecord[tlv.TlvType170](bolt12.TUint64(amount)),
 	)
+	// option_blake2b always, so a payer which has not upgraded refuses the
+	// invoice on the unknown even bit rather than attempting a payment it
+	// could not settle. option_basic_mpp only when the invoice allows it.
+	invFeatures := bolt12.Blake2bVector()
 	if created.Features != nil &&
 		created.Features.HasFeature(lnwire.MPPOptional) {
 
-		inv.InvoiceFeatures = tlv.SomeRecordT(
-			tlv.NewRecordT[tlv.TlvType174](
-				*lnwire.NewRawFeatureVector(lnwire.MPPOptional),
-			),
-		)
+		invFeatures = bolt12.Blake2bVector(lnwire.MPPOptional)
 	}
+	inv.InvoiceFeatures = tlv.SomeRecordT(
+		tlv.NewRecordT[tlv.TlvType174](*invFeatures),
+	)
 	inv.InvoiceNodeID = tlv.SomeRecordT(
 		tlv.NewPrimitiveRecord[tlv.TlvType176](s.cfg.NodeKey.PubKey),
 	)
