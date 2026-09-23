@@ -25,10 +25,10 @@ parses the 164-byte header and computes the BLAKE2b block id.
 
 The identity constants another implementation needs to agree with are in
 [docs/blake2b-chain-identity.md](docs/blake2b-chain-identity.md): the feature
-bit that separates the two chains at `init`, the gossip height floor, which
-signatures opt into `SIGHASH_UNIFIED` and under which channel type, and what
-is still missing for invoices and offers. `chain_hash` is the genesis hash
-both chains share. Section 8 of that document covers the two designs this
+bit that says at `init` whether a node has upgraded, the gossip height floor,
+which signatures opt into `SIGHASH_UNIFIED` and under which channel type, and
+the same bit again in invoices and offers. `chain_hash` is the genesis hash
+both sides share. Section 8 of that document covers the two designs this
 daemon shipped and then withdrew, a `chain_hash` of its own and a BOLT 11
 invoice prefix of its own, and what to do if you ran either.
 
