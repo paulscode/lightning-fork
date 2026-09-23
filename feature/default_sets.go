@@ -13,24 +13,24 @@ var defaultSetDesc = setDesc{
 	// Even, so a peer that does not know it must close the connection.
 	//
 	// This was the odd bit until the chain_hash reversal, on the reasoning
-	// that chain_hash was what kept this node off the other chain and the
-	// bit was a courtesy. chain_hash is now the genesis hash both chains
-	// share, so that reasoning is gone and nothing in init separates them
-	// on its own: two nodes on different chains agree on chain_hash, and an
-	// odd bit the other cannot read is ignored by definition.
+	// that chain_hash was what kept this node away from nodes which had not
+	// upgraded and the bit was a courtesy. chain_hash is now the genesis
+	// hash both sides share, so that reasoning is gone and nothing in init
+	// tells them apart on its own: they agree on chain_hash, and an odd bit
+	// the other cannot read is ignored by definition.
 	//
-	// The even bit separates them symmetrically, using BOLT 1's existing
-	// rule rather than a new one, and needs no cooperation from the other
-	// side. Until this change the separation rested on
-	// RequirePeerNetworks, which is a heuristic: it drops any peer that
-	// sends no networks TLV, and sending it is optional. That is now off by
-	// default precisely because this bit does the job, so there is no
-	// longer a second thing quietly covering for it. Reverting this to the
-	// odd bit would leave the two chains on one network.
+	// The even bit parts them symmetrically, using BOLT 1's existing rule
+	// rather than a new one, and needs no cooperation from the other side.
+	// Until this change the separation rested on RequirePeerNetworks, which
+	// is a heuristic: it drops any peer that sends no networks TLV, and
+	// sending it is optional. That is now off by default precisely because
+	// this bit does the job, so there is no longer a second thing quietly
+	// covering for it. Reverting this to the odd bit would put upgraded and
+	// unupgraded nodes back on one network.
 	//
-	// privkeyio's Core Lightning already sets 68 and not 69, and does not
-	// require a peer to, so this is also what lets this node talk to
-	// theirs: the last release, .9, does not know the bit at all and
+	// privkeyio's Core Lightning sets the same bit in its even form and
+	// does not require a peer to, so this is also what lets this node talk
+	// to theirs: the last release, .9, does not know the bit at all and
 	// refuses them over it.
 	//
 	// It is *not* safe for nodes in the field, and an earlier version of
@@ -42,11 +42,19 @@ var defaultSetDesc = setDesc{
 	// measured, a build with this bit removed still cannot peer with .9,
 	// which refuses it with "no common chain".
 	//
-	// Not set in invoices or offers: a payer that cannot read the bit must
-	// still be refused, and the invoice prefix does that.
+	// Set in the payment artifacts too, in the same even form and for the
+	// same reason: a payer which has not upgraded cannot read the bit, and
+	// an unknown even bit makes it refuse the invoice rather than attempt a
+	// payment it cannot settle. An earlier version of this comment said the
+	// artifacts were covered by the invoice prefix instead. That prefix was
+	// withdrawn -- this is Bitcoin, so the BOLT 11 prefix stays `lnbc` --
+	// and the justification outlived it, which is how the gap stayed open
+	// quietly. The bit is what covers them now.
 	lnwire.Blake2bRequired: {
-		SetInit:    {}, // I+
-		SetNodeAnn: {}, // N+
+		SetInit:       {}, // I+
+		SetNodeAnn:    {}, // N+
+		SetInvoice:    {}, // 9
+		SetInvoiceAmp: {}, // 9A
 	},
 	// Signalled so a peer knows a unified-signing channel can be
 	// negotiated with this node. Whether one is depends on the channel
