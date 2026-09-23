@@ -293,16 +293,18 @@ const (
 	// follows the Bitcoin BLAKE2b proof of work rules from block 961,640
 	// onward. This is the bit this node sets; see defaultSetDesc.
 	//
-	// It is what separates the two chains at init, and since the
-	// chain_hash reversal it is the only thing that does. Both chains
-	// carry the genesis hash they share, so chain_hash cannot tell them
-	// apart in init, in open_channel or in a channel announcement. BOLT 9
-	// obliges a peer that does not know an even bit to close the
-	// connection, so a node that has not been updated for this chain
-	// disconnects on seeing it, and does so without needing to know why.
+	// It is what says at init whether a node has upgraded, and since the
+	// chain_hash reversal it is the only thing that does. This is Bitcoin
+	// with its proof of work changed, so an upgraded node and one that has
+	// not upgraded carry the same genesis hash, and chain_hash cannot tell
+	// them apart in init, in open_channel or in a channel announcement.
+	// BOLT 9 obliges a peer that does not know an even bit to close the
+	// connection, so a node that has not upgraded disconnects on seeing
+	// it, and does so without needing to know why.
 	//
-	// privkeyio's Core Lightning sets the same bit.
-	Blake2bRequired FeatureBit = 68
+	// Allocated as 512/513 by lightning-blake2b/bolts#3. privkeyio's Core
+	// Lightning sets the same bit.
+	Blake2bRequired FeatureBit = 512
 
 	// Blake2bOptional is the optional form of Blake2bRequired.
 	//
@@ -310,19 +312,21 @@ const (
 	// a peer that cannot read it, which is the opposite of what is wanted
 	// here. It is named so that a peer advertising it is understood rather
 	// than refused.
-	Blake2bOptional FeatureBit = 69
+	Blake2bOptional FeatureBit = 513
 
 	// UnifiedSigsRequired is a required feature bit that indicates the
 	// node can negotiate a channel whose bilateral signatures opt into
-	// the Bitcoin BLAKE2b chain's unified signature hash (SIGHASH_UNIFIED,
-	// 0x20), which binds them to that chain and so cannot be replayed on
-	// the SHA256d one.
-	UnifiedSigsRequired FeatureBit = 70
+	// the unified signature hash (SIGHASH_UNIFIED, 0x20), which binds them
+	// to the BLAKE2b proof of work rules and so cannot be replayed against
+	// a node which has not upgraded.
+	//
+	// Allocated as 514/515 by lightning-blake2b/bolts#1.
+	UnifiedSigsRequired FeatureBit = 514
 
 	// UnifiedSigsOptional is the optional form of UnifiedSigsRequired.
 	// This node sets this one: a peer that cannot do it should open an
 	// ordinary channel rather than fail to open one at all.
-	UnifiedSigsOptional FeatureBit = 71
+	UnifiedSigsOptional FeatureBit = 515
 
 	// ExperimentalAccountabilityRequired is a required feature bit that
 	// indicates that the node will relay experimental accountability
