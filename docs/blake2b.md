@@ -18,28 +18,38 @@ Four consensus changes shipped together:
 
 Three things deliberately did **not** change: the genesis block, the address
 format (`bc1...`), and key derivation. Every hard problem below follows from
-that. Two chains share one genesis hash, one network name and one address
-format, so nothing a Lightning node normally checks can tell them apart.
+that. A node which has upgraded and one which has not share one genesis hash,
+one network name and one address format, so nothing a Lightning node normally
+checks can tell them apart.
 
 ## Chain identity
 
 `lnd` identifies a network by its genesis hash: in the `init` handshake, in
-`open_channel`, in gossip, in channel backups. On this chain that would make
-a node indistinguishable from a Bitcoin node, and the failure is not an error
-message but funds sent to the wrong chain.
+`open_channel`, in gossip, in channel backups. This is Bitcoin, continuous
+since 2009, with its proof of work changed and nothing else — so that hash is
+the same one a node which has not upgraded carries, and on its own it would
+make the two indistinguishable. The failure would not be an error message but
+funds sent somewhere they cannot be settled.
 
-Lightning Fork keeps `chain_hash` as the genesis hash both chains share, and
-separates them in the four places it actually matters:
+So `chain_hash` stays the genesis hash both sides share, and the answer is
+given in the four places it actually matters:
 
 | What | Value | Used for |
 | --- | --- | --- |
-| Genesis hash and BOLT `chain_hash` | unchanged, and the same value the other chain uses | `init` networks, `open_channel`, gossip, channel backups. **Does not distinguish the two chains anywhere.** |
-| `option_blake2b`, bit 68, even | set in `init` and `node_announcement` | Peering. A node that does not know the bit must hang up, per BOLT 1 |
+| Genesis hash and BOLT `chain_hash` | unchanged, and the same value a node which has not upgraded uses | `init` networks, `open_channel`, gossip, channel backups. **Says nothing about which rules a node follows, anywhere.** |
+| `option_blake2b`, bit 512, even | set in `init` and `node_announcement` | Peering. A node that does not know the bit must hang up, per BOLT 1 |
 | Gossip height floor | 961,640 | `channel_announcement` below the activation is ignored |
-| `option_unified_sigs`, bit 70 | inside `channel_type` | Channels: both sides sign with `SIGHASH_UNIFIED` set |
-| `option_blake2b` in the `9` field | **not implemented yet** | BOLT 11 invoices and BOLT 12 offers. Until it is, nothing in a payment artifact says which rules it belongs to |
+| `option_unified_sigs`, bit 514 | inside `channel_type` | Channels: both sides sign with `SIGHASH_UNIFIED` set |
+| `option_blake2b` in the `9` field and the BOLT 12 vectors | bit 512, even | BOLT 11 invoices, and BOLT 12 offers, invoice requests and invoices. A payer which has not upgraded refuses them on the unknown even bit rather than attempting a payment it could not settle |
 
-Two designs have been withdrawn: a `chain_hash` of this chain's own, until
+The bit numbers are the ones allocated in
+[bolts#3](https://github.com/lightning-blake2b/bolts/pull/3) (512/513) and
+[bolts#1](https://github.com/lightning-blake2b/bolts/pull/1) (514/515). Earlier
+builds emitted 68 and 70, which were never allocated to anything; moving to the
+allocated pair is a flag day, because a build on either pair refuses one on the
+other in both directions.
+
+Two designs have been withdrawn: a `chain_hash` of its own, until
 2026-09-17, and a BOLT 11 invoice prefix of its own, until 2026-09-19.
 `docs/blake2b-chain-identity.md` section 8 explains both and what to do if you
 ran either.
@@ -49,23 +59,24 @@ Consequences:
 - **An invoice is not refused on its prefix any more.** This daemon used to
   mint `lnblake...` and refuse `lnbc...`; that was withdrawn, because the
   prefix is BOLT 11's currency field and a change of proof of work is not a
-  change of currency. Both chains mint `lnbc...` now, so an invoice from
-  either decodes on either. What is meant to separate them is
-  `option_blake2b` as an even bit in the `9` field, which neither
-  implementation sets yet. Until it does, the only thing preventing a
-  cross-chain payment is that the two graphs do not meet, which is weaker
-  than a refusal: the payment fails for want of a route rather than being
-  declined. Invoices this daemon minted under the old prefix still decode, so
-  that `listinvoices` keeps working across the upgrade.
-- A node on the SHA256d chain never gets as far as sending `open_channel` or
-  gossip: it disconnects at `init` on bit 68. Its announcements would not be
+  change of currency. Both sides mint `lnbc...`, so an invoice from either
+  decodes on either. What answers the question is `option_blake2b` as an even
+  bit in the `9` field, which this daemon now sets and privkeyio's Core
+  Lightning sets too. A payer which has not upgraded cannot read the bit and
+  refuses the invoice outright, rather than failing later for want of a route.
+  Invoices this daemon minted under the old prefix still decode, so that
+  `listinvoices` keeps working across the upgrade.
+- A node which has not upgraded never gets as far as sending `open_channel` or
+  gossip: it disconnects at `init` on bit 512. Its announcements would not be
   ignored on `chain_hash` grounds if they did arrive, because it sends the
   same `chain_hash` this node does; what covers them is the height floor for
   pre-activation channels and the funding output lookup for the rest.
-- BOLT 12 offers have the same gap, for the same reason: an offer names chains
-  by `chain_hash`, so one minted on either chain reads as valid and for this
-  chain. `option_blake2b` in `offer_features` is the fix and is not
-  implemented either. See "Offers" in `docs/blake2b-chain-identity.md`.
+- BOLT 12 artifacts are answered the same way. An offer names chains by
+  `chain_hash`, so one written by a node which has not upgraded reads as valid
+  and for this chain. `option_blake2b` is set in `offer_features`,
+  `invreq_features` and `invoice_features`, and this node refuses an offer,
+  request or invoice that does not carry it. See "Offers" in
+  `docs/blake2b-chain-identity.md`.
 - Channel backups (`channel.backup`) written by this daemon carry the shared
   chain hash, and backups written before the change carry the old value; both
   are accepted, per network. A backup from a Bitcoin `lnd` carries the same
@@ -79,14 +90,14 @@ Lightning sends it and drops a peer with no chain in common; `lnd` never
 implemented it. Lightning Fork always sends its chain hash, and disconnects a
 peer that lists chains without ours among them.
 
-Since `chain_hash` is shared, that check no longer separates the two chains;
-it separates both of them from some third chain entirely. Bit 68 separates
-the two, and does it from the other side, so it works whatever this node is
-configured to do.
+Since `chain_hash` is shared, that check says nothing about whether a peer has
+upgraded; it only keeps out a node on some third chain entirely. Bit 512
+answers it, and answers it from the other side, so it works whatever this node
+is configured to do.
 
 A peer that sends **no list at all** is kept. It used to be disconnected, on
 the reasoning that `lnd` never sent the field so a silent peer was probably a
-stock `lnd` node on the other chain. That was a heuristic standing in for a
+stock `lnd` node which had not upgraded. That was a heuristic standing in for a
 mechanism: sending the list is optional in BOLT 1, so it also dropped client
 applications that speak the wire protocol only to reach a node's RPC.
 `--require-peer-networks` restores the old behaviour for an operator who wants
@@ -140,8 +151,8 @@ check runs after wallet creation or unlock.
 
 ## Upgrading past the chain_hash change
 
-Releases `0.21.3-beta-blake2b.6` through `.9` advertised a `chain_hash` of this
-chain's own. Builds after 2026-09-17 advertise the genesis hash both chains
+Releases `0.21.3-beta-blake2b.6` through `.9` advertised a `chain_hash` of
+their own. Builds after 2026-09-17 advertise the genesis hash both sides
 share. Two things follow, and an operator with channels needs both of them
 before upgrading.
 
@@ -169,7 +180,8 @@ Neither applies to a node with no channels, which can be upgraded whenever.
 ## Backends
 
 Only `bitcoin.node=bitcoind`, pointed at a Bitcoin Knots v29.4.1 or later
-node on the BLAKE2b chain, is supported. `btcd` cannot follow this chain and
+node which has upgraded, is supported. `btcd` cannot follow the BLAKE2b proof
+of work and
 `neutrino` would have to validate BLAKE2b proof of work itself against a
 network with no filter servers; both are refused at configuration time.
 
