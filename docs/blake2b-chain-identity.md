@@ -2,28 +2,28 @@
 
 This is the set of values a Lightning implementation needs to run on the
 Bitcoin BLAKE2b chain without ever being mistaken for, or mistaking a peer
-for, a node on the SHA256d chain.
+for, a node which has not upgraded.
 
-Peering, gossip and channels are implemented, in this build of Lightning Fork,
-running on mainnet, and in privkeyio's Core Lightning port. **Invoices and offers are not**, by either of them:
-sections 5 and 6 say what separates them and neither has built it yet, so a
-payment artifact minted on this chain still looks exactly like one minted on
-the earlier rules.
+Peering, gossip, channels, invoices and offers are all implemented, in this
+build of Lightning Fork, running on mainnet, and in privkeyio's Core Lightning
+port. The payment artifacts were the last gap and closed on 2026-09-28;
+sections 5 and 6 cover them.
 
 The text is kept in step between the two repositories so that the two agree on
 the values, and the values stay open to change while only two implementations
 have channels.
 
 The chain is Bitcoin Knots' hard fork that replaced SHA256d proof of work
-with BLAKE2b at block 961,640 on 2026-08-30. Everything below the fork
-height, including the genesis block, is shared with the chain that did not
-upgrade, which is the whole problem: BOLT 1, 2, 7 and 11 identify a chain by its genesis hash or
-a prefix derived from it, and both chains share those.
+with BLAKE2b at block 961,640 on 2026-08-30. Everything below the activation
+height, including the genesis block, is shared with nodes which did not
+upgrade, which is the whole problem: BOLT 1, 2, 7 and 11 identify a chain by
+its genesis hash or a prefix derived from it, and both sides carry the same
+ones.
 
 > **Two designs in this document have been withdrawn, and section 8 covers
-> both.** Until 2026-09-17 it specified a `chain_hash` of this chain's own and
-> said that was what kept the two chains apart; until 2026-09-19 it gave the
-> chain its own BOLT 11 invoice prefix and said that was what kept their
+> both.** Until 2026-09-17 it specified a `chain_hash` of its own and
+> said that was what told the two sides apart; until 2026-09-19 it gave this
+> side its own BOLT 11 invoice prefix and said that was what told their
 > invoices apart. Both are gone, in favour of the shared genesis hash and
 > separation in the four specific places it actually matters. Section 8a and
 > section 8b say why, and what to do if you implemented either. The spec
@@ -37,35 +37,35 @@ a prefix derived from it, and both chains share those.
 `chain_hash` is **the genesis hash, unchanged**:
 `000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f` on
 mainnet, and each test network's own genesis on the others. It is the same
-value the chain that did not upgrade uses.
+value a node which has not upgraded uses.
 
 This is deliberate. A change of proof of work is not a change of chain, and
-giving this chain a `chain_hash` of its own would ask every node, wallet and
+minting a `chain_hash` of our own would ask every node, wallet and
 tool to agree a new 32-byte identifier for something that only ever mattered
 in a few specific places. Those places are addressed directly instead, in
 sections 2 to 5.
 
-The consequence to keep in mind while reading the rest: **`chain_hash` does
-not separate the two chains anywhere.** Two nodes on different chains agree
-on it in `init`, in `open_channel`, and in every channel announcement. Any
+The consequence to keep in mind while reading the rest: **`chain_hash` says
+nothing about whether a node has upgraded, anywhere.** Both sides agree on it
+in `init`, in `open_channel`, and in every channel announcement. Any
 reasoning of the form "that case is already covered, because `chain_hash`
 differs" is wrong here, and was the source of more than one bug.
 
-## 2. `init`: `option_blake2b`, bit 68
+## 2. `init`: `option_blake2b`, bit 512
 
-Every node on this chain sets feature bit **68**, the even form of
-`option_blake2b`, in `init` and in `node_announcement`. It does not set 69.
+Every node which has upgraded sets feature bit **512**, the even form of
+`option_blake2b`, in `init` and in `node_announcement`. It does not set 513.
 
-The number is moving to 512: see section 7. What matters here is the parity,
-not the number, and the parity is not moving.
+The number was 68 until 2026-09-28: see section 7. What matters here is the
+parity, not the number, and the parity never moved.
 
 Even is the point. BOLT 1 obliges a peer that does not know an even feature
-bit to close the connection, so a node that has not been updated for this
-chain hangs up by itself, without knowing why and without this node having to
+bit to close the connection, so a node which has not upgraded
+hangs up by itself, without knowing why and without this node having to
 decide anything. The separation is symmetric and needs no cooperation from
-the other side. Measured: a stock lnd on the SHA256d chain refuses a
+the other side. Measured: a stock lnd which has not upgraded refuses a
 Lightning Fork node with `feature vector contains unknown required features:
-[68]`.
+[512]`.
 
 This is what `chain_hash` used to do, and it is the one place where an even
 bit is right despite BOLT 9's usual direction of travel. The usual argument
@@ -73,23 +73,21 @@ against starting at the compulsory end is that it refuses peers before there
 is anything to be compatible with. Here refusing them is the entire purpose.
 
 **Where this bit stands.** It is what both implementations do: privkeyio's
-released build sets 68 and not 69, and Lightning Fork matches it.
-`lightning-blake2b/bolts#3` now specifies it, as `option_blake2b` at 512/513,
-even in `init` and `node_announcement`, "MUST set" and "MUST NOT refuse a peer
-for failing to set it", which is what both already do apart from the number.
-That PR is open rather than merged, so 68 is what is on the wire and 512 is
-what is agreed; section 7 covers the move.
+build sets 512 and not 513, and Lightning Fork matches it.
+`lightning-blake2b/bolts#3` specifies it, as `option_blake2b` at 512/513, even
+in `init` and `node_announcement`, "MUST set" and "MUST NOT refuse a peer for
+failing to set it", which is what both do.
 
 The `networks` TLV still carries `chain_hash`, and a peer that lists chains
-not including ours is still disconnected. That check no longer distinguishes
-the two chains, since both send the same value; it distinguishes both of them
-from a node on some other chain entirely.
+not including ours is still disconnected. That check says nothing about whether a
+peer has upgraded, since both send the same value; it only keeps out a node on
+some other chain entirely.
 
 A peer that sends no `networks` TLV at all is kept. Lightning Fork used to
 disconnect it, on the reasoning that lnd never sent the field so a silent peer
-was probably a stock lnd node on the other chain. That is a heuristic standing
-in for a mechanism, and once bit 68 is the mechanism it costs more than it
-protects: sending the TLV is optional in BOLT 1, so refusing silence drops
+was probably a stock lnd node which had not upgraded. That is a heuristic
+standing in for a mechanism, and once bit 512 is the mechanism it costs more
+than it protects: sending the TLV is optional in BOLT 1, so refusing silence drops
 anything that simply omits an optional field, including client applications
 that speak the wire protocol only to reach a node's RPC.
 How strictly to treat a silent peer is a local policy rather than an identity
@@ -120,11 +118,11 @@ than worth engineering around, since the store is rebuilt from the network
 anyway.
 
 
-## 4. Channels: `option_unified_sigs`, bit 70 in `channel_type`
+## 4. Channels: `option_unified_sigs`, bit 514 in `channel_type`
 
-The number is moving to 514: see section 7.
+The number was 70 until 2026-09-28: see section 7.
 
-The chain's `SIGHASH_UNIFIED` (hash type bit `0x20`) binds a signature to
+`SIGHASH_UNIFIED` (hash type bit `0x20`) binds a signature to
 this chain: it commits to `TaggedHash("UnifiedSighash", message)` over a
 BIP 341-shaped message that covers every spent output's value and
 scriptPubKey.
@@ -184,11 +182,11 @@ Prefer funding from coins received after the activation.
 
 ## 5. Invoices: `option_blake2b` in the `9` field
 
-BOLT 11's human-readable part is `ln` followed by a network prefix, and this
-chain keeps the prefix it has always had: `lnbc` on mainnet, and `lntb`,
+BOLT 11's human-readable part is `ln` followed by a network prefix, and it
+keeps the prefix it has always had: `lnbc` on mainnet, and `lntb`,
 `lntbs`, `lnbcrt` on the test networks. A change of proof of work is not a
-change of chain, and the prefix is not where the two rule sets are told apart.
-An earlier version of this series gave the chain a prefix of its own; that was
+change of chain, and the prefix is not where the answer is given.
+An earlier version of this series gave it a prefix of its own; that was
 withdrawn.
 
 What separates them is `option_blake2b` in the invoice's `9` field, as an even
@@ -202,13 +200,15 @@ an unmodified build of each implementation:
   `feature.ValidateRequired` turns the payment away at pathfinding with
   `feature vector contains unknown required features: [N]`.
 
-**Not yet implemented on either side.** This build sets `option_blake2b` in
-`init` and `node_announcement` only, and the lnd port does the same, so no
-invoice on this chain currently carries the bit. Until both writers are turned
-on, an invoice minted here is indistinguishable from one minted on the earlier
-rules, and the only thing preventing a cross-chain payment is that the two
-graphs do not meet. That is a real gap, and closing it is the point of
-[lightning-blake2b/bolts#3](https://github.com/lightning-blake2b/bolts/pull/3).
+**Implemented on both sides since 2026-09-28.** Lightning Fork sets
+`option_blake2b` in the `9` field, and privkeyio's Core Lightning sets it in
+`BOLT11_FEATURE`, both in the even form. Before that the bit rode in `init`
+and `node_announcement` only, so an invoice minted here was indistinguishable
+from one minted by a node which had not upgraded, and the only thing
+preventing a payment across the two was that their graphs do not meet -- which
+is weaker than a refusal, because the payment fails for want of a route
+instead of being declined. A feature vector is as long as its highest set bit,
+so carrying bit 512 makes the `9` field 65 bytes.
 
 **The check is load-bearing, and both implementations ship a path that skips
 it.** Core Lightning guards it with `if (our_features)`, and the comment says
@@ -223,13 +223,14 @@ Fallback on-chain addresses keep the shared address formats.
 ## 6. Offers: the same bit, in the three feature fields
 
 An offer names chains with `offer_chains`, whose values are `chain_hash`, and
-an offer that omits the field means mainnet by the spec's default. Both rule
-sets answer to that same value, so nothing in an offer distinguishes them.
+an offer that omits the field means mainnet by the spec's default. A node
+which has upgraded and one which has not answer to that same value, so nothing
+in an offer tells them apart.
 
-The failure that costs money needs a merchant with channels on both chains,
-which is plausible precisely because the chains share addresses and all their
-pre-fork history: the offer is fetchable from either side, the invoice comes
-back, and the payer pays on whichever chain they were on.
+The failure that costs money needs a merchant reachable from both sides, which
+is plausible precisely because they share addresses and all their history
+before the activation: the offer is fetchable from either, the invoice comes
+back, and the payer pays under whichever rules they follow.
 
 The mechanism is `option_blake2b` in `offer_features`, `invreq_features` and
 `invoice_features`, writer and reader, which is what
@@ -240,36 +241,47 @@ unchanged. It also leaves `offer_chains` alone, which the earlier proposal here
 did not; naming a chain the other implementation does not recognise would have
 broken fetching between them.
 
-**Not yet implemented on either side either.** The same gap as section 5, for
-the same reason, and it closes the same way.
+**Implemented on both sides since 2026-09-28**, the same way and at the same
+time as section 5. On the reader side Lightning Fork refuses an offer where it
+would answer one, which is where it builds an invoice request rather than at
+decode: declining to respond is the rule, and an offer merely being displayed
+has not been responded to. Requests and invoices are refused as they arrive.
+
+One consequence worth recording, because it was nearly a silent break. lnd's
+BOLT 12 read validators take a catalogue of the feature bits the reader knows,
+and every call site passed nothing, under which *every* even bit is unknown
+and refused. Setting an even bit in our own artifacts therefore meant teaching
+those validators the bit -- otherwise the node would have rejected the offers
+it had just minted, and every artifact from Core Lightning along with them.
 
 ## 7. Feature bits
 
 | Bit | Name | Where |
 | --- | --- | --- |
-| 68 | `option_blake2b` | `init`, `node_announcement`, even only |
-| 70 / 71 | `option_unified_sigs` | 70 inside `channel_type`; 71 in `init` and `node_announcement` |
+| 512 / 513 | `option_blake2b` | 512 in `init`, `node_announcement`, the BOLT 11 `9` field, `offer_features`, `invreq_features` and `invoice_features`; even only |
+| 514 / 515 | `option_unified_sigs` | 514 inside `channel_type`; 515 in `init` and `node_announcement` |
 
-Core Lightning's port of this chain assigned both and ships them at these
-numbers. A number already on the wire is the number, whatever it should have
-been, so interoperating with it beats being right about it alone.
+These are the numbers allocated in `lightning-blake2b/bolts#3` and
+`lightning-blake2b/bolts#1`, with 516 to 519 kept for this rule set. 512 to
+519 is one byte of the feature vector, so four pairs cost that vector once.
 
-**Both are provisional, and the numbers are settled to move.** The
-`v26.06.7-blake2b.4` release notes say bits 68 and 70 "are not registered BOLT
-allocations and are expected to move", and that channels opened under them may
-have to be closed and reopened once the numbers settle. They are moving:
-bLIP-0002 reserves feature bits 0 to 255 for the BOLTs, and 70/71 is already
-claimed upstream by `lightning/bolts#1059`, open since March 2023, in the same
-contexts. The agreed replacements are `option_blake2b` at 512/513 and
-`option_unified_sigs` at 514/515, with 516 to 519 kept for this rule set; 512
-to 519 is one byte of the feature vector, so four pairs cost that vector once.
-What the table above records is what is on the wire today, not a claim that it
-is right.
+**They were 68 and 70 until 2026-09-28.** Those were never allocated to
+anything: bLIP-0002 reserves bits 0 to 255 for the BOLTs, and 70/71 is claimed
+upstream by `lightning/bolts#1059`, open since March 2023, in the same
+contexts. The `v26.06.7-blake2b.4` release notes had said as much, that the
+bits "are not registered BOLT allocations and are expected to move".
 
-Neither bit is set in invoices or offers by either implementation today. That
-is the gap in sections 5 and 6: a payer that cannot read the bit must still be
-refused, and with the prefix unchanged there is nothing else in a BOLT 11
-string or a BOLT 12 offer that says which rules it belongs to.
+The move was a flag day, agreed with privkeyio and made by both
+implementations at the same hour, because it could not be anything else. A
+peer refuses a required bit it does not know, so a build on the old pair and a
+build on the new pair hang up on each other in both directions. A node still
+on 68 cannot reach this network, and upgrading it is the only remedy.
+
+Core Lightning migrates a stored `channel_type` across the move, rewriting bit
+70 to 514, so a channel opened before it keeps signing under
+`SIGHASH_UNIFIED`. Lightning Fork needs no such migration: it persists its own
+channel-type flag at `1 << 13`, unrelated to the wire number, so the renumber
+does not touch a channel that is already open.
 
 ### Downgrading after opening a unified channel
 
@@ -302,10 +314,10 @@ proposed.
 
 It is withdrawn. Isolating at `chain_hash` asked everything that touches a
 chain identifier to agree a new value, to solve problems that live in four
-specific places, and those places are better addressed where they are: bit 68
-for peering, the height floor for gossip, `channel_type` for channels, and
-`option_blake2b` in the feature fields for BOLT 11 and BOLT 12. The last of
-those is specified but not yet implemented on either side, which sections 5 and
+specific places, and those places are better addressed where they are:
+`option_blake2b` for peering, the height floor for gossip, `channel_type` for
+channels, and `option_blake2b` again in the feature fields for BOLT 11 and
+BOLT 12. All four are implemented on both sides, which sections 5 and
 6 set out.
 
 If you implemented the old version:
@@ -411,31 +423,27 @@ Lightning Fork's parser is in its btcd fork's `wire` package.
 
 ## Status
 
-Sections 1 to 4 are implemented in this build of Lightning Fork, running on
-mainnet, and in privkeyio's Core Lightning port. Sections 5 and 6 are
-implemented in neither.
-
-What the Core Lightning series does is the gossip floor, and that is all. It does not touch
-`chain_hash`, feature bits, channel types or BOLT 11.
+Sections 1 to 6 are all implemented in this build of Lightning Fork, running
+on mainnet, and in privkeyio's Core Lightning port. The payment artifacts in
+sections 5 and 6 were the last gap and closed on 2026-09-28, alongside the
+move to the allocated bit numbers in section 7.
 
 Measured in a regtest lab against `blake2b-unified` at `24d027310`, the two
-implementations peer, agree `channel_type [12,22,70]`, exchange gossip, and
+implementations peer, agree `channel_type [12,22,514]`, exchange gossip, and
 close both cooperatively and by force with `0x21` in both witnesses, each node
 having computed half of each of those signatures. An HTLC held across a force
 close produces an HTLC-timeout transaction carrying `0xa3` from the Core
 Lightning node and `0x21` from the lnd one.
 
-An earlier version of this series also gave the chain its own BOLT 11 prefix,
-and the lnd port still carries one. While those differ the two cannot pay each
-other, each refusing the other's invoice on the prefix before a route is
-considered. That is not a property of this series: it goes away when both ends
-carry the same prefix, which is the change this withdrawal makes on one side
-and the matching revert makes on the other. Neither end then has any BOLT 11
-separation at all until `option_blake2b` is set in the `9` field, which is
-section 5.
+An earlier version of this series gave this side its own BOLT 11 prefix. While
+the two ends differed they could not pay each other, each refusing the other's
+invoice on the prefix before a route was considered. Both now mint `lnbc`, and
+what refuses a payment across the two is `option_blake2b` in the `9` field,
+which is section 5.
 
 Open to change until more than two implementations have mainnet channels;
-changes after that would strand channels. Discussion:
+changes after that would strand channels, which is why the move in section 7
+was made as a flag day while there were still only two. Discussion:
 `lightning-blake2b/bolts#1` for `option_unified_sigs` and the gossip rule,
 `lightning-blake2b/bolts#3` for `option_blake2b`, or an issue on either
 implementation's repository.
