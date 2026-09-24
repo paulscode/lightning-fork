@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/aliasmgr"
+	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
@@ -535,6 +536,12 @@ func (s *Server) probePaymentRequestWithSender(ctx context.Context,
 		paymentRequest, s.cfg.RouterBackend.ActiveNetParams,
 	)
 	if err != nil {
+		return nil, err
+	}
+
+	// A probe is an attempt at the payment, so it is refused for the same
+	// reason the payment would be.
+	if err := feature.CheckBlake2bInvoice(payReq.Features); err != nil {
 		return nil, err
 	}
 

@@ -1078,6 +1078,16 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 				"either a payment address or blinded paths")
 		}
 
+		// Written by a node which has not upgraded: the payment could
+		// not be settled, and the invoice names the same chain_hash
+		// and carries the same prefix we do, so this is the only thing
+		// that says so. After the structural checks above, so that a
+		// malformed invoice still reports what is malformed about it.
+		err = feature.CheckBlake2bInvoice(payReq.Features)
+		if err != nil {
+			return nil, err
+		}
+
 		// If the amount was not included in the invoice, then we let
 		// the payer specify the amount of satoshis they wish to send.
 		// We override the amount to pay with the amount provided from

@@ -838,6 +838,12 @@ func TestProbePaymentRequestUsesUniqueHashPerLSP(t *testing.T) {
 		zpay32.RouteHint([]zpay32.HopHint{bobHint}),
 		zpay32.RouteHint([]zpay32.HopHint{eveHint}),
 		zpay32.RouteHint([]zpay32.HopHint{daveHint}),
+		// Written by a node which has upgraded, as any invoice this
+		// node would probe is.
+		zpay32.Features(lnwire.NewFeatureVector(
+			lnwire.NewRawFeatureVector(lnwire.Blake2bRequired),
+			lnwire.Features,
+		)),
 	)
 	require.NoError(t, err)
 

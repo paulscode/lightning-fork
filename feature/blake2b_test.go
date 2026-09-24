@@ -120,3 +120,38 @@ func TestKnowingTheBitIsWhatDecides(t *testing.T) {
 	require.Contains(t, err.Error(),
 		fmt.Sprintf("%d", lnwire.Blake2bRequired))
 }
+
+// A BOLT 11 invoice from a node which has not upgraded is refused, rather than
+// attempted and failed for want of a route. Written as a refusal because that
+// is the whole of the rule: the bit is absent, not unknown, so nothing else in
+// the payment path would object to it.
+func TestInvoiceWithoutBlake2bIsRefused(t *testing.T) {
+	t.Parallel()
+
+	// What a node which has not upgraded writes: ordinary bits, no 512.
+	old := lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(
+			lnwire.TLVOnionPayloadOptional,
+			lnwire.PaymentAddrOptional,
+			lnwire.MPPOptional,
+		), lnwire.Features,
+	)
+	require.ErrorIs(t, CheckBlake2bInvoice(old), ErrMissingBlake2b)
+
+	// An absent vector is the same case, and is what an old invoice with no
+	// `9` field at all decodes to.
+	require.ErrorIs(t, CheckBlake2bInvoice(nil), ErrMissingBlake2b)
+
+	// What this node writes.
+	m, err := NewManager(Config{})
+	require.NoError(t, err)
+	require.NoError(t, CheckBlake2bInvoice(m.Get(SetInvoice)))
+
+	// The odd form counts too: a writer which sets only that is still
+	// saying which rules it follows.
+	odd := lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(lnwire.Blake2bOptional),
+		lnwire.Features,
+	)
+	require.NoError(t, CheckBlake2bInvoice(odd))
+}
