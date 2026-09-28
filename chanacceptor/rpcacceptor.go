@@ -271,152 +271,10 @@ func (r *RPCAcceptor) sendAcceptRequests(errChan chan error,
 				channelFeatures := lnwire.RawFeatureVector(
 					*req.OpenChanMsg.ChannelType,
 				)
-				switch {
-				case channelFeatures.OnlyContains(
-					lnwire.ZeroConfRequired,
-					lnwire.ScidAliasRequired,
-					lnwire.ScriptEnforcedLeaseRequired,
-					lnwire.AnchorsZeroFeeHtlcTxRequired,
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
 
-				case channelFeatures.OnlyContains(
-					lnwire.ZeroConfRequired,
-					lnwire.ScriptEnforcedLeaseRequired,
-					lnwire.AnchorsZeroFeeHtlcTxRequired,
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
-
-				case channelFeatures.OnlyContains(
-					lnwire.ScidAliasRequired,
-					lnwire.ScriptEnforcedLeaseRequired,
-					lnwire.AnchorsZeroFeeHtlcTxRequired,
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
-
-				case channelFeatures.OnlyContains(
-					lnwire.ScriptEnforcedLeaseRequired,
-					lnwire.AnchorsZeroFeeHtlcTxRequired,
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
-
-				case channelFeatures.OnlyContains(
-					lnwire.ZeroConfRequired,
-					lnwire.ScidAliasRequired,
-					lnwire.AnchorsZeroFeeHtlcTxRequired,
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_ANCHORS
-
-				case channelFeatures.OnlyContains(
-					lnwire.ZeroConfRequired,
-					lnwire.AnchorsZeroFeeHtlcTxRequired,
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_ANCHORS
-
-				case channelFeatures.OnlyContains(
-					lnwire.ScidAliasRequired,
-					lnwire.AnchorsZeroFeeHtlcTxRequired,
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_ANCHORS
-
-				case channelFeatures.OnlyContains(
-					lnwire.AnchorsZeroFeeHtlcTxRequired,
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_ANCHORS
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootChannelsRequiredStaging,
-					lnwire.ZeroConfRequired,
-					lnwire.ScidAliasRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootChannelsRequiredStaging,
-					lnwire.ZeroConfRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootChannelsRequiredStaging,
-					lnwire.ScidAliasRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootChannelsRequiredStaging,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootChannelsRequiredFinal,
-					lnwire.ZeroConfRequired,
-					lnwire.ScidAliasRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootChannelsRequiredFinal,
-					lnwire.ZeroConfRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootChannelsRequiredFinal,
-					lnwire.ScidAliasRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootChannelsRequiredFinal,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootOverlayChansRequired,
-					lnwire.ZeroConfRequired,
-					lnwire.ScidAliasRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT_OVERLAY
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootOverlayChansRequired,
-					lnwire.ZeroConfRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT_OVERLAY
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootOverlayChansRequired,
-					lnwire.ScidAliasRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT_OVERLAY
-
-				case channelFeatures.OnlyContains(
-					lnwire.SimpleTaprootOverlayChansRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT_OVERLAY
-
-				case channelFeatures.OnlyContains(
-					lnwire.StaticRemoteKeyRequired,
-				):
-					commitmentType = lnrpc.CommitmentType_STATIC_REMOTE_KEY
-
-				case channelFeatures.OnlyContains():
-					commitmentType = lnrpc.CommitmentType_LEGACY
-
-				default:
-					log.Warnf("Unhandled commitment type "+
-						"in channel acceptor request: %v",
-						req.OpenChanMsg.ChannelType)
-				}
+				commitmentType = acceptorCommitmentType(
+					&channelFeatures,
+				)
 
 				if channelFeatures.IsSet(
 					lnwire.ZeroConfRequired,
@@ -584,3 +442,166 @@ func (r *RPCAcceptor) validateAcceptorResponse(dustLimit btcutil.Amount,
 // A compile-time constraint to ensure RPCAcceptor implements the ChannelAcceptor
 // interface.
 var _ ChannelAcceptor = (*RPCAcceptor)(nil)
+
+// acceptorCommitmentType names the commitment type of a proposed channel for
+// the channel acceptor RPC.
+//
+// option_unified_sigs says which chain the signatures bind to, not the shape
+// of the commitment, and rides on nearly every channel here. It is set aside
+// before matching: left in, it matched none of the cases and every such
+// channel was reported as UNKNOWN_COMMITMENT_TYPE, so an acceptor filtering on
+// the type refused or misread every ordinary inbound channel.
+func acceptorCommitmentType(
+	channelFeatures *lnwire.RawFeatureVector) lnrpc.CommitmentType {
+
+	shape := channelFeatures.Clone()
+	shape.Unset(lnwire.UnifiedSigsRequired)
+
+	switch {
+	case shape.OnlyContains(
+		lnwire.ZeroConfRequired,
+		lnwire.ScidAliasRequired,
+		lnwire.ScriptEnforcedLeaseRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
+
+	case shape.OnlyContains(
+		lnwire.ZeroConfRequired,
+		lnwire.ScriptEnforcedLeaseRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
+
+	case shape.OnlyContains(
+		lnwire.ScidAliasRequired,
+		lnwire.ScriptEnforcedLeaseRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
+
+	case shape.OnlyContains(
+		lnwire.ScriptEnforcedLeaseRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
+
+	case shape.OnlyContains(
+		lnwire.ZeroConfRequired,
+		lnwire.ScidAliasRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_ANCHORS
+
+	case shape.OnlyContains(
+		lnwire.ZeroConfRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_ANCHORS
+
+	case shape.OnlyContains(
+		lnwire.ScidAliasRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_ANCHORS
+
+	case shape.OnlyContains(
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_ANCHORS
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootChannelsRequiredStaging,
+		lnwire.ZeroConfRequired,
+		lnwire.ScidAliasRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootChannelsRequiredStaging,
+		lnwire.ZeroConfRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootChannelsRequiredStaging,
+		lnwire.ScidAliasRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootChannelsRequiredStaging,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootChannelsRequiredFinal,
+		lnwire.ZeroConfRequired,
+		lnwire.ScidAliasRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootChannelsRequiredFinal,
+		lnwire.ZeroConfRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootChannelsRequiredFinal,
+		lnwire.ScidAliasRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootChannelsRequiredFinal,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT_FINAL
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootOverlayChansRequired,
+		lnwire.ZeroConfRequired,
+		lnwire.ScidAliasRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT_OVERLAY
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootOverlayChansRequired,
+		lnwire.ZeroConfRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT_OVERLAY
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootOverlayChansRequired,
+		lnwire.ScidAliasRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT_OVERLAY
+
+	case shape.OnlyContains(
+		lnwire.SimpleTaprootOverlayChansRequired,
+	):
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT_OVERLAY
+
+	case shape.OnlyContains(
+		lnwire.StaticRemoteKeyRequired,
+	):
+		return lnrpc.CommitmentType_STATIC_REMOTE_KEY
+
+	case shape.OnlyContains():
+		return lnrpc.CommitmentType_LEGACY
+
+	default:
+		log.Warnf("Unhandled commitment type in channel acceptor "+
+			"request: %v", lnwire.ChannelType(*channelFeatures))
+
+		return lnrpc.CommitmentType_UNKNOWN_COMMITMENT_TYPE
+	}
+}
