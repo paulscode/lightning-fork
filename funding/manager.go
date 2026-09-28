@@ -3098,20 +3098,39 @@ func (f *Manager) waitForFundingWithTimeout(
 }
 
 // fundingTimeoutApplies reports whether a pending channel should be given up
-// on if its funding transaction has not confirmed within the timeout.
-//
-// Only a fundee gives up, having no funds of its own at stake, and not on a
-// zero-conf channel. Nor once the funding transaction has confirmed, which is
-// persisted in ConfirmationHeight and reset if a reorg takes it out again.
-// That case matters for a channel funded by a coinbase: it stays pending for
-// the whole of the coinbase maturity, thousands of blocks under the long
-// rule, and a restart in that window starts this wait again with the tip
-// already past the timeout. The timeout could then fire before the
-// confirmation lookup answered, and the fundee would forget a channel whose
-// funding had confirmed long before.
+// on if its funding transaction has not confirmed within the timeout: only a
+// fundee gives up, having no funds of its own at stake, and not on a zero-conf
+// channel. Whether the funding has in fact confirmed is asked of the chain
+// when the timeout falls due; see fundingInChain.
 func fundingTimeoutApplies(ch *channeldb.OpenChannel) bool {
-	return !ch.IsInitiator && !ch.IsZeroConf() &&
-		ch.ConfirmationHeight == 0
+	return !ch.IsInitiator && !ch.IsZeroConf()
+}
+
+// fundingInChain reports whether a channel's funding output is in the chain,
+// confirmed and unspent, according to the chain backend.
+//
+// It is asked when a fundee's funding timeout falls due. A channel funded by
+// a coinbase stays pending for the whole of the coinbase maturity, thousands
+// of blocks under the long rule, so a restart in that window starts the
+// timeout again with the tip already past it, and it could fire before the
+// confirmation lookup answered: the fundee would forget a channel whose
+// funding had confirmed long before. Asking the chain rather than trusting a
+// stored confirmation height keeps the timeout for a funding that a reorg
+// took out, or that was double spent while the node was down.
+func (f *Manager) fundingInChain(ch *channeldb.OpenChannel) bool {
+	pkScript, err := MakeFundingScript(ch)
+	if err != nil {
+		log.Errorf("Unable to make funding script for "+
+			"ChannelPoint(%v): %v", ch.FundingOutpoint, err)
+
+		return false
+	}
+
+	txOut, err := f.cfg.Wallet.Cfg.ChainIO.GetUtxo(
+		&ch.FundingOutpoint, pkScript, ch.BroadcastHeight(), f.quit,
+	)
+
+	return err == nil && txOut != nil
 }
 
 // MakeFundingScript re-creates the funding script for the funding transaction
@@ -3395,6 +3414,19 @@ func (f *Manager) waitForTimeout(completeChan *channeldb.OpenChannel,
 			// Close the timeout channel and exit if the block is
 			// above the max height.
 			if uint32(epoch.Height) >= maxHeight {
+				// A funding that is in the chain is not one
+				// that never confirmed: leave it to the
+				// confirmation wait, which a coinbase funding
+				// keeps going for the length of its maturity.
+				if f.fundingInChain(completeChan) {
+					log.Infof("ChannelPoint(%v): funding "+
+						"is confirmed; not timing out "+
+						"while it matures",
+						completeChan.FundingOutpoint)
+
+					return
+				}
+
 				log.Warnf("Waited for %v blocks without "+
 					"seeing funding transaction confirmed,"+
 					" cancelling.",
