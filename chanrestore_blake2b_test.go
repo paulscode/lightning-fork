@@ -115,3 +115,29 @@ func TestTheSharedGenesisIsNotTreatedAsForeign(t *testing.T) {
 		ChainHash: *chaincfg.MainNetParams.GenesisHash,
 	}))
 }
+
+// A channel restored from a backup written before the change is stored under
+// the chain this node runs on, not the one the backup names. Stored under the
+// old value it would be a peer bucket with nothing under our chain, and the
+// next start fails with "no chain bucket exists".
+func TestRestoredChannelsAreStoredUnderOurChain(t *testing.T) {
+	t.Parallel()
+
+	mainnet := chainreg.BitcoinMainNetParams.ChainHash
+	regtest := chainreg.BitcoinRegTestNetParams.ChainHash
+	regtestLegacy := chainreg.SyntheticChainHash(
+		chaincfg.RegressionNetParams.GenesisHash,
+	)
+
+	require.Equal(t, mainnet, restoredChainHash(
+		mainnet, *chainreg.Blake2bMainnetActivationHash,
+	))
+	require.Equal(t, regtest, restoredChainHash(regtest, regtestLegacy))
+	require.Equal(t, mainnet, restoredChainHash(mainnet, mainnet))
+
+	// Anything else is left as the backup names it, for checkBackupChain
+	// to have refused already.
+	require.Equal(t, regtestLegacy, restoredChainHash(
+		mainnet, regtestLegacy,
+	))
+}

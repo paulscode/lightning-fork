@@ -14,6 +14,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/legacychain"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/shachain"
 )
@@ -107,6 +108,23 @@ func checkBackupChain(ours chainhash.Hash,
 	}
 
 	return nil
+}
+
+// restoredChainHash is the chain hash a channel restored from a backup is
+// stored under.
+//
+// A backup written before the chain went back to the genesis hash names the
+// value it replaced, and checkBackupChain accepts it. The channel must still
+// be stored under the chain this node runs on: channeldb keys channels by
+// chain hash, migration 36 has already run by the time a restore can happen,
+// and a peer bucket with nothing under our chain makes the next start fail
+// with "no chain bucket exists".
+func restoredChainHash(ours, backup chainhash.Hash) chainhash.Hash {
+	if legacy, ok := legacychain.For(ours); ok && backup == legacy {
+		return ours
+	}
+
+	return backup
 }
 
 // openChannelShell maps the static channel back up into an open channel
@@ -259,11 +277,13 @@ func (c *chanDBRestorer) openChannelShell(backup chanbackup.Single) (
 	ltndLog.Infof("SCB Recovery: created channel shell for ChannelPoint"+
 		"(%v), chan_type=%v", backup.FundingOutpoint, chanType)
 
+	chainHash := restoredChainHash(c.chainHash, backup.ChainHash)
+
 	chanShell := channeldb.ChannelShell{
 		NodeAddrs: backup.Addresses,
 		Chan: &channeldb.OpenChannel{
 			ChanType:                chanType,
-			ChainHash:               backup.ChainHash,
+			ChainHash:               chainHash,
 			IsInitiator:             backup.IsInitiator,
 			Capacity:                backup.Capacity,
 			FundingOutpoint:         backup.FundingOutpoint,
