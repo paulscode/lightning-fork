@@ -168,16 +168,20 @@ LND, Core Lightning and LDK, with this chain's hash in `offer_chains` and
 `invreq_chain`. The onion messages follow BOLT 4. Which pools pay to offers
 on this chain, and what description they ask for, is the pool's to say.
 
-Core Lightning on this chain (`privkeyio/lightning`, from `v26.06.7-blake2b.3`)
-parses the chain's block headers and sets `option_blake2b`, so the two nodes
-peer. Both keep the shared chain hash and the ordinary BOLT 11 prefixes, and
-that is deliberate on both counts: neither is what separates the chains. The
-patch series kept under `contrib/cln-chain-identity/` adds the gossip floor at
-the activation height.
+Core Lightning (`privkeyio/lightning`, from `v26.06.8-blake2b.5`) parses the
+new block headers, sets `option_blake2b` at 512 in `init` and in its BOLT 11
+and BOLT 12 artifacts, and carries the gossip floor at the activation height,
+so the two nodes peer and each refuses the other's artifacts only when they
+come from a node that has not upgraded. Both keep the shared chain hash and
+the ordinary BOLT 11 prefixes, and that is deliberate on both counts: neither
+is what says whether a node has upgraded. The patch series once kept under
+`contrib/cln-chain-identity/` is how the gossip floor started; it has since
+landed upstream, extended, as `privkeyio/lightning#1`.
 
-With it applied, the regtest lab has the two peer both ways, open a channel
-from each side, pay each other's BOLT 11 invoices and BOLT 12 offers, route a
-payment through a Lightning Fork node, and close cooperatively and by force.
-That was measured against an earlier version of the series, which also gave
-the chain its own invoice prefix; that part has since been withdrawn on both
-sides, so the payment path no longer depends on it at all.
+The regtest lab has the two peer both ways, open a channel from each side,
+pay each other's BOLT 11 invoices and BOLT 12 offers, route a payment through
+a Lightning Fork node, and close cooperatively and by force. The flag-day
+scenarios (`make flagday` and `scenario-flagday-upgrade.sh`) run against the
+released `v26.06.8-blake2b.5` binaries, including a channel opened on the
+earlier feature bits that resumes and closes with unified signatures after
+both sides upgrade.
