@@ -32,6 +32,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb/migration34"
 	"github.com/lightningnetwork/lnd/channeldb/migration35"
 	"github.com/lightningnetwork/lnd/channeldb/migration36"
+	"github.com/lightningnetwork/lnd/channeldb/migration37"
 	"github.com/lightningnetwork/lnd/channeldb/migration_01_to_11"
 	"github.com/lightningnetwork/lnd/clock"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
@@ -328,6 +329,15 @@ var (
 			// build using the new one.
 			number:    36,
 			migration: migration36.MigrateChainHash,
+		},
+		{
+			// Moves what 36 missed off the old chain_hash: the
+			// chain arbitrator's logs and the UTXO nursery, which
+			// a channel mid force close still needs to sweep, and
+			// the chain hash each graph edge records, from which
+			// this node's channel_updates are built.
+			number:    37,
+			migration: migration37.MigrateChainHashState,
 		},
 	}
 
