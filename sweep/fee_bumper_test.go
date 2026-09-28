@@ -2085,7 +2085,7 @@ func TestHasInputsSpent(t *testing.T) {
 	}
 
 	// Call the method under test.
-	result := tp.getSpentInputs(record)
+	result := tp.getSpentInputs(record, 0)
 
 	// Assert the expected map is created.
 	expected := map[wire.OutPoint]*wire.MsgTx{
@@ -2306,4 +2306,82 @@ func createTestInputWithLocktime(value int64, witnessType input.WitnessType,
 	)
 
 	return inp
+}
+
+// TestGetSpentInputsWaitsForLateSpend checks the race behind lnd#10351: the
+// notifier delivers a spend already in a block from a historical dispatch that
+// runs after registration. A caller that knows the input is missing waits for
+// it; the per-block check does not.
+func TestGetSpentInputsWaitsForLateSpend(t *testing.T) {
+	t.Parallel()
+
+	// lateEvent returns a spend event whose spend arrives after delay.
+	lateEvent := func(tx *wire.MsgTx, delay time.Duration) *chainntnfs.SpendEvent {
+		ch := make(chan *chainntnfs.SpendDetail, 1)
+		go func() {
+			time.Sleep(delay)
+			ch <- &chainntnfs.SpendDetail{SpendingTx: tx}
+		}()
+
+		return &chainntnfs.SpendEvent{Spend: ch, Cancel: func() {}}
+	}
+
+	run := func(t *testing.T, grace time.Duration,
+		spend *chainntnfs.SpendEvent) map[wire.OutPoint]*wire.MsgTx {
+
+		tp, m := createTestPublisher(t)
+
+		op := wire.OutPoint{Index: 1}
+		pkScript := []byte{1}
+		inp := &input.MockInput{}
+		defer inp.AssertExpectations(t)
+		inp.On("OutPoint").Return(op)
+		inp.On("HeightHint").Return(uint32(1))
+		inp.On("SignDesc").Return(&input.SignDescriptor{
+			Output: &wire.TxOut{PkScript: pkScript},
+		})
+
+		m.notifier.On("RegisterSpendNtfn", &op, pkScript, uint32(1)).
+			Return(spend, nil).Once()
+
+		return tp.getSpentInputs(&monitorRecord{
+			req: &BumpRequest{Inputs: []input.Input{inp}},
+		}, grace)
+	}
+
+	sweepTx := &wire.MsgTx{Version: 2}
+
+	t.Run("waits for a late spend", func(t *testing.T) {
+		t.Parallel()
+
+		got := run(t, spentLookupGrace, lateEvent(
+			sweepTx, 100*time.Millisecond,
+		))
+		require.Equal(t, sweepTx, got[wire.OutPoint{Index: 1}])
+	})
+
+	t.Run("no wait reads without blocking", func(t *testing.T) {
+		t.Parallel()
+
+		start := time.Now()
+		got := run(t, 0, lateEvent(sweepTx, 2*time.Second))
+		require.Empty(t, got)
+		require.Less(t, time.Since(start), time.Second)
+	})
+
+	t.Run("gives up after the grace", func(t *testing.T) {
+		t.Parallel()
+
+		// A spend that never comes: an orphan input.
+		never := &chainntnfs.SpendEvent{
+			Spend:  make(chan *chainntnfs.SpendDetail),
+			Cancel: func() {},
+		}
+
+		start := time.Now()
+		got := run(t, 200*time.Millisecond, never)
+		require.Empty(t, got)
+		require.GreaterOrEqual(t, time.Since(start),
+			200*time.Millisecond)
+	})
 }

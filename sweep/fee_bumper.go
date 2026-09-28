@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -677,14 +678,31 @@ func (t *TxPublisher) createAndCheckTx(r *monitorRecord) (*sweepTxCtx, error) {
 		sweepCtx.tx.TxHash(), err)
 }
 
+// spentLookupGrace is how long handleMissingInputs waits for the notifier to
+// deliver the spend of an input the backend reports missing, before treating
+// the input as an orphan.
+//
+// A spend already in a block is found by a historical dispatch that runs
+// asynchronously after the spend is registered. Reading without waiting raced
+// it: when our own sweep confirmed just as a fee bump was attempted, the
+// bump found the input missing, the read found no spend yet, and the input
+// was failed as fatal. The resolver sweeping it then stopped without
+// recording the sweep, and the channel stayed pending force close for good,
+// every restart repeating the race. Upstream tracks this as lnd#10351 and
+// lnd#10938. The wait is only paid when the backend has already said the
+// inputs are missing, and at most once per record.
+const spentLookupGrace = 10 * time.Second
+
 // handleMissingInputs handles the case when the chain backend reports back a
 // missing inputs error, which could happen when one of the input has been spent
 // in another tx, or the input is referencing an orphan. When the input is
 // spent, it will be handled via the TxUnknownSpend flow by creating a
 // TxUnknownSpend bump result, otherwise, a TxFatal bump result is returned.
 func (t *TxPublisher) handleMissingInputs(r *monitorRecord) *BumpResult {
-	// Get the spending txns.
-	spends := t.getSpentInputs(r)
+	// Get the spending txns. The backend has just said the inputs are
+	// missing, so a spend is expected; allow the notifier the time its
+	// historical dispatch takes. See spentLookupGrace.
+	spends := t.getSpentInputs(r, spentLookupGrace)
 
 	// Attach the spending txns.
 	r.spentInputs = spends
@@ -979,8 +997,9 @@ func (t *TxPublisher) processRecords() {
 	visitor := func(requestID uint64, r *monitorRecord) error {
 		log.Tracef("Checking monitor recordID=%v", requestID)
 
-		// Check whether the inputs have already been spent.
-		spends := t.getSpentInputs(r)
+		// Check whether the inputs have already been spent. Without
+		// waiting: most inputs here are simply unspent.
+		spends := t.getSpentInputs(r, 0)
 
 		// If the any of the inputs has been spent, the record will be
 		// marked as failed or confirmed.
@@ -1396,11 +1415,18 @@ func (t *TxPublisher) isUnknownSpent(r *monitorRecord,
 // getSpentInputs performs a non-blocking read on the spending subscriptions to
 // see whether any of the monitored inputs has been spent. A map of inputs with
 // their spending txns are returned if found.
-func (t *TxPublisher) getSpentInputs(
-	r *monitorRecord) map[wire.OutPoint]*wire.MsgTx {
+//
+// grace is how long to wait, across all the inputs together, for a spend the
+// notifier has not delivered yet. Zero reads without waiting, which is what the
+// per-block check wants: most inputs are simply unspent. A caller that already
+// knows the inputs are missing passes spentLookupGrace instead; see there.
+func (t *TxPublisher) getSpentInputs(r *monitorRecord,
+	grace time.Duration) map[wire.OutPoint]*wire.MsgTx {
 
 	// Create a slice to record the inputs spent.
 	spentInputs := make(map[wire.OutPoint]*wire.MsgTx, len(r.req.Inputs))
+
+	deadline := time.Now().Add(grace)
 
 	// Iterate all the inputs and check if they have been spent already.
 	for _, inp := range r.req.Inputs {
@@ -1434,29 +1460,66 @@ func (t *TxPublisher) getSpentInputs(
 		// Remove the subscription when exit.
 		defer spendEvent.Cancel()
 
-		// Do a non-blocking read to see if the output has been spent.
-		select {
-		case spend, ok := <-spendEvent.Spend:
-			if !ok {
-				log.Debugf("Spend ntfn for %v canceled", op)
-
-				continue
-			}
-
-			spendingTx := spend.SpendingTx
-
-			log.Debugf("Detected spent of input=%v in tx=%v", op,
-				spendingTx.TxHash())
-
+		spendingTx, stop := t.readSpend(
+			spendEvent, op, time.Until(deadline),
+		)
+		if stop {
+			return spentInputs
+		}
+		if spendingTx != nil {
 			spentInputs[op] = spendingTx
-
-		// Move to the next input.
-		default:
-			log.Tracef("Input %v not spent yet", op)
 		}
 	}
 
 	return spentInputs
+}
+
+// readSpend returns the transaction spending op if the spend event carries
+// one, waiting up to wait for it. With no wait it reads without blocking. stop
+// reports that the publisher is shutting down.
+func (t *TxPublisher) readSpend(spendEvent *chainntnfs.SpendEvent,
+	op wire.OutPoint, wait time.Duration) (*wire.MsgTx, bool) {
+
+	found := func(spend *chainntnfs.SpendDetail, ok bool) *wire.MsgTx {
+		if !ok {
+			log.Debugf("Spend ntfn for %v canceled", op)
+
+			return nil
+		}
+
+		log.Debugf("Detected spent of input=%v in tx=%v", op,
+			spend.SpendingTx.TxHash())
+
+		return spend.SpendingTx
+	}
+
+	if wait <= 0 {
+		select {
+		case spend, ok := <-spendEvent.Spend:
+			return found(spend, ok), false
+
+		default:
+			log.Tracef("Input %v not spent yet", op)
+
+			return nil, false
+		}
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case spend, ok := <-spendEvent.Spend:
+		return found(spend, ok), false
+
+	case <-timer.C:
+		log.Tracef("Input %v not spent within %v", op, wait)
+
+		return nil, false
+
+	case <-t.quit:
+		return nil, true
+	}
 }
 
 // calcCurrentConfTarget calculates the current confirmation target based on
