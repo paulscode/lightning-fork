@@ -104,6 +104,12 @@ var (
 	// ErrOfferDisabled is returned when a request names a disabled offer.
 	ErrOfferDisabled = errors.New("offer is disabled")
 
+	// ErrOfferUnmarked is returned when enabling an offer minted before
+	// offers carried option_blake2b, which can no longer be paid.
+	ErrOfferUnmarked = errors.New("offer was minted before offers " +
+		"carried option_blake2b and can no longer be paid; mint a " +
+		"new one")
+
 	// ErrOfferExpired is returned when a request names an expired offer.
 	ErrOfferExpired = errors.New("offer has expired")
 )
@@ -619,13 +625,62 @@ func (m *Manager) DisableOffer(id OfferID) error {
 	})
 }
 
-// EnableOffer reverses DisableOffer.
+// EnableOffer reverses DisableOffer. An offer that does not set
+// option_blake2b cannot be enabled again: see DisableUnmarkedOffers.
 func (m *Manager) EnableOffer(id OfferID) error {
 	return m.cfg.Store.Update(id, func(r *Record) error {
+		if unmarked(r) {
+			return ErrOfferUnmarked
+		}
 		r.Active = true
 
 		return nil
 	})
+}
+
+// DisableUnmarkedOffers disables every active offer that does not set
+// option_blake2b, and returns how many it disabled.
+//
+// Those are offers minted before the bit was set in offers, by
+// 0.21.3-beta-blake2b.9 and earlier. A payer that has upgraded refuses to
+// request an invoice for one, and a payer that has not cannot settle with
+// this node, so the offer can never be paid again. Left enabled it would
+// still be shown as active, and handed out again, by anything listing this
+// node's offers. The operator mints a new one instead.
+func (m *Manager) DisableUnmarkedOffers() (int, error) {
+	records, err := m.cfg.Store.List()
+	if err != nil {
+		return 0, err
+	}
+
+	var disabled int
+	for _, r := range records {
+		if !r.Active || !unmarked(r) {
+			continue
+		}
+
+		if err := m.DisableOffer(r.ID); err != nil {
+			return disabled, err
+		}
+
+		log.Infof("Disabled offer %v (%q): it was minted before offers "+
+			"carried option_blake2b and can no longer be paid; mint "+
+			"a new one", r.ID, r.Description)
+		disabled++
+	}
+
+	return disabled, nil
+}
+
+// unmarked reports whether a stored offer does not set option_blake2b. An
+// offer that cannot be decoded is not judged here.
+func unmarked(r *Record) bool {
+	o, err := bolt12.DecodeOffer(r.Offer)
+	if err != nil {
+		return false
+	}
+
+	return bolt12.CheckBlake2b(o.OfferFeatures, "offer") != nil
 }
 
 // ServeableOffer returns the stored offer a request may be served for, or

@@ -976,6 +976,18 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 	if err != nil {
 		return nil, err
 	}
+
+	// Offers minted before offers carried option_blake2b can no longer
+	// be paid; disable them so nothing lists them as live. Not fatal: an
+	// offer left enabled is only misleading.
+	if n, err := s.offersManager.DisableUnmarkedOffers(); err != nil {
+		srvrLog.Warnf("Unable to disable offers minted before "+
+			"option_blake2b: %v", err)
+	} else if n > 0 {
+		srvrLog.Infof("Disabled %d offer(s) minted before "+
+			"option_blake2b", n)
+	}
+
 	s.offerInvoices, err = offers.NewInvoiceStore(dbs.ChanStateDB)
 	if err != nil {
 		return nil, err

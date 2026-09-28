@@ -810,3 +810,50 @@ func TestOfferWithNoChainsIsForThisChainOnMainnet(t *testing.T) {
 	// the default and this did not.
 	require.Equal(t, d.ValidationError == nil, d.ForThisChain)
 }
+
+// TestDisableUnmarkedOffers checks that an offer minted before offers carried
+// option_blake2b is disabled, cannot be enabled again, and that a current
+// offer is left alone.
+func TestDisableUnmarkedOffers(t *testing.T) {
+	t.Parallel()
+
+	env := newTestEnv(t)
+	current := env.create(t, CreateParams{Description: "current"})
+
+	// An offer as .9 minted it: the same shape with no feature bits.
+	o, err := bolt12.DecodeOffer(current.Offer)
+	require.NoError(t, err)
+	o.OfferFeatures = tlv.OptionalRecordT[
+		tlv.TlvType12, lnwire.RawFeatureVector]{}
+	oldBytes, err := o.Encode()
+	require.NoError(t, err)
+
+	old := *current
+	old.ID = OfferID{0x01}
+	old.Offer = oldBytes
+	old.Description = "minted by .9"
+	require.NoError(t, env.store.Put(&old))
+
+	n, err := env.manager.DisableUnmarkedOffers()
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	got, err := env.manager.LookupOffer(old.ID)
+	require.NoError(t, err)
+	require.False(t, got.Active)
+
+	got, err = env.manager.LookupOffer(current.ID)
+	require.NoError(t, err)
+	require.True(t, got.Active)
+
+	require.ErrorIs(t, env.manager.EnableOffer(old.ID), ErrOfferUnmarked)
+
+	// Disabling and enabling a current offer still works.
+	require.NoError(t, env.manager.DisableOffer(current.ID))
+	require.NoError(t, env.manager.EnableOffer(current.ID))
+
+	// Nothing more to do on a second pass.
+	n, err = env.manager.DisableUnmarkedOffers()
+	require.NoError(t, err)
+	require.Zero(t, n)
+}
