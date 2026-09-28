@@ -4678,8 +4678,13 @@ type Channel struct {
 	Memo string `protobuf:"bytes,36,opt,name=memo,proto3" json:"memo,omitempty"`
 	// Custom channel data that might be populated in custom channels.
 	CustomChannelData []byte `protobuf:"bytes,37,opt,name=custom_channel_data,json=customChannelData,proto3" json:"custom_channel_data,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Whether the channel's bilateral signatures bind to the Bitcoin BLAKE2b
+	// chain under option_unified_sigs. A build without the option cannot
+	// sign for such a channel, so a node holding one must not be downgraded
+	// to it. Numbered high to stay clear of fields upstream may add.
+	UnifiedSigs   bool `protobuf:"varint,1001,opt,name=unified_sigs,json=unifiedSigs,proto3" json:"unified_sigs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Channel) Reset() {
@@ -4973,6 +4978,13 @@ func (x *Channel) GetCustomChannelData() []byte {
 		return x.CustomChannelData
 	}
 	return nil
+}
+
+func (x *Channel) GetUnifiedSigs() bool {
+	if x != nil {
+		return x.UnifiedSigs
+	}
+	return false
 }
 
 type ListChannelsRequest struct {
@@ -17883,8 +17895,14 @@ type PendingChannelsResponse_PendingChannel struct {
 	Memo string `protobuf:"bytes,13,opt,name=memo,proto3" json:"memo,omitempty"`
 	// Custom channel data that might be populated in custom channels.
 	CustomChannelData []byte `protobuf:"bytes,34,opt,name=custom_channel_data,json=customChannelData,proto3" json:"custom_channel_data,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Whether the channel's bilateral signatures bind to the Bitcoin
+	// BLAKE2b chain under option_unified_sigs. A build without the
+	// option cannot sign for such a channel, so a node holding one
+	// must not be downgraded to it. Numbered high to stay clear of
+	// fields upstream may add.
+	UnifiedSigs   bool `protobuf:"varint,1001,opt,name=unified_sigs,json=unifiedSigs,proto3" json:"unified_sigs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PendingChannelsResponse_PendingChannel) Reset() {
@@ -18013,6 +18031,13 @@ func (x *PendingChannelsResponse_PendingChannel) GetCustomChannelData() []byte {
 		return x.CustomChannelData
 	}
 	return nil
+}
+
+func (x *PendingChannelsResponse_PendingChannel) GetUnifiedSigs() bool {
+	if x != nil {
+		return x.UnifiedSigs
+	}
+	return false
 }
 
 type PendingChannelsResponse_PendingOpenChannel struct {
@@ -18750,7 +18775,7 @@ const file_lightning_proto_rawDesc = "" +
 	"\x0edust_limit_sat\x18\x03 \x01(\x04R\fdustLimitSat\x12/\n" +
 	"\x14max_pending_amt_msat\x18\x04 \x01(\x04R\x11maxPendingAmtMsat\x12\"\n" +
 	"\rmin_htlc_msat\x18\x05 \x01(\x04R\vminHtlcMsat\x12,\n" +
-	"\x12max_accepted_htlcs\x18\x06 \x01(\rR\x10maxAcceptedHtlcs\"\xdd\v\n" +
+	"\x12max_accepted_htlcs\x18\x06 \x01(\rR\x10maxAcceptedHtlcs\"\x81\f\n" +
 	"\aChannel\x12\x16\n" +
 	"\x06active\x18\x01 \x01(\bR\x06active\x12#\n" +
 	"\rremote_pubkey\x18\x02 \x01(\tR\fremotePubkey\x12#\n" +
@@ -18795,7 +18820,8 @@ const file_lightning_proto_rawDesc = "" +
 	"peer_alias\x18\" \x01(\tR\tpeerAlias\x12*\n" +
 	"\x0fpeer_scid_alias\x18# \x01(\x04B\x020\x01R\rpeerScidAlias\x12\x12\n" +
 	"\x04memo\x18$ \x01(\tR\x04memo\x12.\n" +
-	"\x13custom_channel_data\x18% \x01(\fR\x11customChannelData\"\xdf\x01\n" +
+	"\x13custom_channel_data\x18% \x01(\fR\x11customChannelData\x12\"\n" +
+	"\funified_sigs\x18\xe9\a \x01(\bR\vunifiedSigs\"\xdf\x01\n" +
 	"\x13ListChannelsRequest\x12\x1f\n" +
 	"\vactive_only\x18\x01 \x01(\bR\n" +
 	"activeOnly\x12#\n" +
@@ -19129,13 +19155,13 @@ const file_lightning_proto_rawDesc = "" +
 	"\x13blocks_til_maturity\x18\x05 \x01(\x05R\x11blocksTilMaturity\x12\x14\n" +
 	"\x05stage\x18\x06 \x01(\rR\x05stage\">\n" +
 	"\x16PendingChannelsRequest\x12$\n" +
-	"\x0einclude_raw_tx\x18\x01 \x01(\bR\fincludeRawTx\"\xe0\x15\n" +
+	"\x0einclude_raw_tx\x18\x01 \x01(\bR\fincludeRawTx\"\x84\x16\n" +
 	"\x17PendingChannelsResponse\x12.\n" +
 	"\x13total_limbo_balance\x18\x01 \x01(\x03R\x11totalLimboBalance\x12e\n" +
 	"\x15pending_open_channels\x18\x02 \x03(\v21.lnrpc.PendingChannelsResponse.PendingOpenChannelR\x13pendingOpenChannels\x12j\n" +
 	"\x18pending_closing_channels\x18\x03 \x03(\v2,.lnrpc.PendingChannelsResponse.ClosedChannelB\x02\x18\x01R\x16pendingClosingChannels\x12v\n" +
 	"\x1epending_force_closing_channels\x18\x04 \x03(\v21.lnrpc.PendingChannelsResponse.ForceClosedChannelR\x1bpendingForceClosingChannels\x12h\n" +
-	"\x16waiting_close_channels\x18\x05 \x03(\v22.lnrpc.PendingChannelsResponse.WaitingCloseChannelR\x14waitingCloseChannels\x1a\xe3\x04\n" +
+	"\x16waiting_close_channels\x18\x05 \x03(\v22.lnrpc.PendingChannelsResponse.WaitingCloseChannelR\x14waitingCloseChannels\x1a\x87\x05\n" +
 	"\x0ePendingChannel\x12&\n" +
 	"\x0fremote_node_pub\x18\x01 \x01(\tR\rremoteNodePub\x12#\n" +
 	"\rchannel_point\x18\x02 \x01(\tR\fchannelPoint\x12\x1a\n" +
@@ -19151,7 +19177,8 @@ const file_lightning_proto_rawDesc = "" +
 	"\x11chan_status_flags\x18\v \x01(\tR\x0fchanStatusFlags\x12\x18\n" +
 	"\aprivate\x18\f \x01(\bR\aprivate\x12\x12\n" +
 	"\x04memo\x18\r \x01(\tR\x04memo\x12.\n" +
-	"\x13custom_channel_data\x18\" \x01(\fR\x11customChannelData\x1a\xe8\x02\n" +
+	"\x13custom_channel_data\x18\" \x01(\fR\x11customChannelData\x12\"\n" +
+	"\funified_sigs\x18\xe9\a \x01(\bR\vunifiedSigs\x1a\xe8\x02\n" +
 	"\x12PendingOpenChannel\x12G\n" +
 	"\achannel\x18\x01 \x01(\v2-.lnrpc.PendingChannelsResponse.PendingChannelR\achannel\x12\x1d\n" +
 	"\n" +

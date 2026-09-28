@@ -4128,9 +4128,11 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 				"data: %w", err)
 		}
 
+		unifiedSigs := pendingChan.ChanType.HasUnifiedSigs()
 		result[i] = &lnrpc.PendingChannelsResponse_PendingOpenChannel{
 			Channel: &lnrpc.PendingChannelsResponse_PendingChannel{
 				RemoteNodePub:        hex.EncodeToString(pub),
+				UnifiedSigs:          unifiedSigs,
 				ChannelPoint:         pendingChan.FundingOutpoint.String(),
 				Capacity:             int64(pendingChan.Capacity),
 				LocalBalance:         int64(localCommitment.LocalBalance.ToSatoshis()),
@@ -4217,6 +4219,8 @@ func (r *rpcServer) fetchPendingForceCloseChannels() (pendingForceClose,
 			channel.CommitmentType = rpcCommitmentType(
 				historical.ChanType,
 			)
+			channel.UnifiedSigs =
+				historical.ChanType.HasUnifiedSigs()
 
 			// Get the number of forwarding packages from the
 			// historical channel.
@@ -4444,6 +4448,7 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 
 		localCommit := waitingClose.LocalCommitment
 		chanStatus := waitingClose.ChanStatus()
+		unifiedSigs := waitingClose.ChanType.HasUnifiedSigs()
 		channel := &lnrpc.PendingChannelsResponse_PendingChannel{
 			RemoteNodePub: hex.EncodeToString(pub),
 			ChannelPoint:  chanPoint.String(),
@@ -4466,6 +4471,7 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 			CommitmentType: rpcCommitmentType(
 				waitingClose.ChanType,
 			),
+			UnifiedSigs:           unifiedSigs,
 			NumForwardingPackages: int64(len(fwdPkgs)),
 			ChanStatusFlags:       chanStatus.String(),
 			Private:               isPrivate(waitingClose),
@@ -5076,6 +5082,7 @@ func createRPCOpenChannel(ctx context.Context, r *rpcServer,
 
 	channel := &lnrpc.Channel{
 		Active:                isActive,
+		UnifiedSigs:           dbChannel.ChanType.HasUnifiedSigs(),
 		Private:               isPrivate(dbChannel),
 		RemotePubkey:          nodeID,
 		ChannelPoint:          chanPoint.String(),

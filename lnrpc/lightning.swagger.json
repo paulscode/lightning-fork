@@ -3268,6 +3268,10 @@
           "type": "string",
           "format": "byte",
           "description": "Custom channel data that might be populated in custom channels."
+        },
+        "unified_sigs": {
+          "type": "boolean",
+          "description": "Whether the channel's bilateral signatures bind to the Bitcoin\nBLAKE2b chain under option_unified_sigs. A build without the\noption cannot sign for such a channel, so a node holding one\nmust not be downgraded to it. Numbered high to stay clear of\nfields upstream may add."
         }
       }
     },
@@ -4034,6 +4038,10 @@
           "type": "string",
           "format": "byte",
           "description": "Custom channel data that might be populated in custom channels."
+        },
+        "unified_sigs": {
+          "type": "boolean",
+          "description": "Whether the channel's bilateral signatures bind to the Bitcoin BLAKE2b\nchain under option_unified_sigs. A build without the option cannot\nsign for such a channel, so a node holding one must not be downgraded\nto it. Numbered high to stay clear of fields upstream may add."
         }
       }
     },

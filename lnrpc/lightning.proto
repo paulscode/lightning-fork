@@ -1581,6 +1581,12 @@ message Channel {
     Custom channel data that might be populated in custom channels.
     */
     bytes custom_channel_data = 37;
+
+    // Whether the channel's bilateral signatures bind to the Bitcoin BLAKE2b
+    // chain under option_unified_sigs. A build without the option cannot
+    // sign for such a channel, so a node holding one must not be downgraded
+    // to it. Numbered high to stay clear of fields upstream may add.
+    bool unified_sigs = 1001;
 }
 
 message ListChannelsRequest {
@@ -2757,6 +2763,13 @@ message PendingChannelsResponse {
         Custom channel data that might be populated in custom channels.
         */
         bytes custom_channel_data = 34;
+
+        // Whether the channel's bilateral signatures bind to the Bitcoin
+        // BLAKE2b chain under option_unified_sigs. A build without the
+        // option cannot sign for such a channel, so a node holding one
+        // must not be downgraded to it. Numbered high to stay clear of
+        // fields upstream may add.
+        bool unified_sigs = 1001;
     }
 
     message PendingOpenChannel {
