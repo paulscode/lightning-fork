@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/legacychain"
 	"github.com/lightningnetwork/lnd/lnutils"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -210,7 +211,35 @@ func VerifyChannelUpdateSignature(msg lnwire.ChannelUpdate,
 
 // verifyChannelUpdateSignature1 verifies that the channel update message was
 // signed by the party with the given node public key.
+//
+// As for a channel announcement, an update signed before the Bitcoin BLAKE2b
+// chain went back to the genesis hash is checked once more under that
+// network's withdrawn chain_hash; see validateChannelAnn1.
 func verifyChannelUpdate1Signature(msg *lnwire.ChannelUpdate1,
+	pubKey *btcec.PublicKey) error {
+
+	err := verifyChannelUpdate1Sig(msg, pubKey)
+	if err == nil {
+		return nil
+	}
+
+	legacy, ok := legacychain.For(msg.ChainHash)
+	if !ok {
+		return err
+	}
+
+	signed := *msg
+	signed.ChainHash = legacy
+	if verifyChannelUpdate1Sig(&signed, pubKey) != nil {
+		return err
+	}
+
+	return nil
+}
+
+// verifyChannelUpdate1Sig checks a channel update's signature over the
+// message exactly as given.
+func verifyChannelUpdate1Sig(msg *lnwire.ChannelUpdate1,
 	pubKey *btcec.PublicKey) error {
 
 	data, err := msg.DataToSign()

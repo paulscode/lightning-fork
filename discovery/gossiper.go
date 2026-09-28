@@ -2704,6 +2704,14 @@ func (d *AuthenticatedGossiper) handleChanAnnouncement(ctx context.Context,
 	log.Debugf("Processing ChannelAnnouncement1: peer=%v, short_chan_id=%v",
 		nMsg.peer, scid.ToUint64())
 
+	// One written before this chain went back to the genesis hash names
+	// the value it replaced; see normaliseLegacyChainHash.
+	if normaliseLegacyChainHash(&ann.ChainHash, chainHash) {
+		log.Debugf("ChannelAnnouncement1 for %v names the previous "+
+			"chain hash; taking it as this chain's",
+			scid.ToUint64())
+	}
+
 	// We'll ignore any channel announcements that target any chain other
 	// than the set of chains we know of.
 	if !bytes.Equal(ann.ChainHash[:], chainHash[:]) {
@@ -3189,6 +3197,14 @@ func (d *AuthenticatedGossiper) handleChanUpdate(ctx context.Context,
 		nMsg.peer, upd.ShortChannelID.ToUint64())
 
 	chainHash := d.cfg.ChainHash
+
+	// One written before this chain went back to the genesis hash names
+	// the value it replaced; see normaliseLegacyChainHash.
+	if normaliseLegacyChainHash(&upd.ChainHash, chainHash) {
+		log.Debugf("ChannelUpdate for %v names the previous chain "+
+			"hash; taking it as this chain's",
+			upd.ShortChannelID.ToUint64())
+	}
 
 	// We'll ignore any channel updates that target any chain other than
 	// the set of chains we know of.

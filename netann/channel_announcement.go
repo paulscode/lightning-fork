@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightningnetwork/lnd/graph/db/models"
+	"github.com/lightningnetwork/lnd/legacychain"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -93,7 +94,36 @@ func ValidateChannelAnn(a lnwire.ChannelAnnouncement,
 // validateChannelAnn1 validates the channel announcement message and checks
 // that node signatures covers the announcement message, and that the bitcoin
 // signatures covers the node keys.
+//
+// An announcement made before the Bitcoin BLAKE2b chain went back to the
+// genesis hash was signed under the chain_hash it replaced, and is still
+// relayed under the current one, since the stored channel no longer records
+// the old value. So one that fails under its stated chain_hash is checked
+// once more under that network's withdrawn value. Nothing else is tried: the
+// signatures still have to be the channel's own, over this very message.
 func validateChannelAnn1(a *lnwire.ChannelAnnouncement1) error {
+	err := verifyChannelAnn1Sigs(a)
+	if err == nil {
+		return nil
+	}
+
+	legacy, ok := legacychain.For(a.ChainHash)
+	if !ok {
+		return err
+	}
+
+	signed := *a
+	signed.ChainHash = legacy
+	if verifyChannelAnn1Sigs(&signed) != nil {
+		return err
+	}
+
+	return nil
+}
+
+// verifyChannelAnn1Sigs checks the four signatures of a channel announcement
+// over the message exactly as given.
+func verifyChannelAnn1Sigs(a *lnwire.ChannelAnnouncement1) error {
 	// First, we'll compute the digest (h) which is to be signed by each of
 	// the keys included within the node announcement message. This hash
 	// digest includes all the keys, so the (up to 4 signatures) will
