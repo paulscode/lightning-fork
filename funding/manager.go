@@ -3070,7 +3070,7 @@ func (f *Manager) waitForFundingWithTimeout(
 	// If we are not the initiator, we have no money at stake and will
 	// timeout waiting for the funding transaction to confirm after a
 	// while.
-	if !ch.IsInitiator && !ch.IsZeroConf() {
+	if fundingTimeoutApplies(ch) {
 		f.wg.Add(1)
 		go f.waitForTimeout(ch, cancelChan, timeoutChan)
 	}
@@ -3095,6 +3095,23 @@ func (f *Manager) waitForFundingWithTimeout(
 		}
 		return confirmedChannel, nil
 	}
+}
+
+// fundingTimeoutApplies reports whether a pending channel should be given up
+// on if its funding transaction has not confirmed within the timeout.
+//
+// Only a fundee gives up, having no funds of its own at stake, and not on a
+// zero-conf channel. Nor once the funding transaction has confirmed, which is
+// persisted in ConfirmationHeight and reset if a reorg takes it out again.
+// That case matters for a channel funded by a coinbase: it stays pending for
+// the whole of the coinbase maturity, thousands of blocks under the long
+// rule, and a restart in that window starts this wait again with the tip
+// already past the timeout. The timeout could then fire before the
+// confirmation lookup answered, and the fundee would forget a channel whose
+// funding had confirmed long before.
+func fundingTimeoutApplies(ch *channeldb.OpenChannel) bool {
+	return !ch.IsInitiator && !ch.IsZeroConf() &&
+		ch.ConfirmationHeight == 0
 }
 
 // MakeFundingScript re-creates the funding script for the funding transaction
