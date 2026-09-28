@@ -5003,8 +5003,16 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	// Before we init the channel, we'll also check to see what commitment
 	// format we can use with this peer. This is dependent on *both* us and
 	// the remote peer are signaling the proper feature bit.
-	chanType, commitType, err := negotiateCommitmentType(
+	//
+	// A requested type names the shape of the transactions; the chain the
+	// signatures are bound to is not the caller's to leave off, so as the
+	// funder we add the unified bit to it; see funderChannelType.
+	desiredChanType := funderChannelType(
 		msg.ChannelType, msg.Peer.LocalFeatures(),
+		msg.Peer.RemoteFeatures(),
+	)
+	chanType, commitType, err := negotiateCommitmentType(
+		desiredChanType, msg.Peer.LocalFeatures(),
 		msg.Peer.RemoteFeatures(),
 	)
 	if err != nil {

@@ -712,7 +712,10 @@ func TestUnifiedSigsNegotiation(t *testing.T) {
 		// the witness, while the default for that same commitment type
 		// closed with `21 21`. Nothing reported the difference.
 		chanType, commitType, err := negotiateCommitmentType(
-			&anchorsPlain, bothSupport, bothSupport,
+			funderChannelType(
+				&anchorsPlain, bothSupport, bothSupport,
+			),
+			bothSupport, bothSupport,
 		)
 		require.NoError(t, err)
 		require.Equal(
@@ -727,6 +730,30 @@ func TestUnifiedSigsNegotiation(t *testing.T) {
 				"chosen by default is")
 	})
 
+	t.Run("a fundee answers the type as proposed", func(t *testing.T) {
+		t.Parallel()
+
+		// negotiateCommitmentType is also what a fundee runs on the
+		// funder's open_channel. BOLT 2 has it answer with the type
+		// the funder proposed or refuse; answering with the bit added
+		// makes a funder that proposed a plain type abort the open.
+		chanType, commitType, err := negotiateCommitmentType(
+			&anchorsPlain, bothSupport, bothSupport,
+		)
+		require.NoError(t, err)
+		require.Equal(
+			t, lnwallet.CommitmentTypeAnchorsZeroFeeHtlcTx,
+			commitType,
+		)
+		require.Equal(t, anchorsPlain, *chanType)
+
+		chanType, _, err = negotiateCommitmentType(
+			&anchorsUnified, bothSupport, bothSupport,
+		)
+		require.NoError(t, err)
+		require.Equal(t, anchorsUnified, *chanType)
+	})
+
 	t.Run("a named type, peer cannot do it", func(t *testing.T) {
 		t.Parallel()
 
@@ -734,7 +761,10 @@ func TestUnifiedSigsNegotiation(t *testing.T) {
 		// opened into an error. A peer that cannot do it gets the
 		// plain type.
 		chanType, commitType, err := negotiateCommitmentType(
-			&anchorsPlain, bothSupport, noUnified,
+			funderChannelType(
+				&anchorsPlain, bothSupport, noUnified,
+			),
+			bothSupport, noUnified,
 		)
 		require.NoError(t, err)
 		require.Equal(
@@ -757,7 +787,10 @@ func TestUnifiedSigsNegotiation(t *testing.T) {
 		// taproot plus the bit is an error. Asking for a taproot
 		// channel must still give one.
 		chanType, commitType, err := negotiateCommitmentType(
-			&taprootPlain, bothSupport, bothSupport,
+			funderChannelType(
+				&taprootPlain, bothSupport, bothSupport,
+			),
+			bothSupport, bothSupport,
 		)
 		require.NoError(t, err)
 		require.Equal(

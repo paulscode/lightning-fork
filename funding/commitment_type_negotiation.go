@@ -53,6 +53,25 @@ func withUnifiedSigs(chanType lnwire.ChannelType, local,
 	return lnwire.ChannelType(*withBit)
 }
 
+// funderChannelType is the channel type a funder proposes when its caller
+// named one: the named type, with the unified bit added when both sides
+// support it.
+//
+// Only a funder does this. A fundee answers the type the funder proposed as
+// proposed, or refuses it, since a funder that is sent back a type it did not
+// propose aborts the open.
+func funderChannelType(desired *lnwire.ChannelType, local,
+	remote *lnwire.FeatureVector) *lnwire.ChannelType {
+
+	if desired == nil {
+		return nil
+	}
+
+	augmented := withUnifiedSigs(*desired, local, remote)
+
+	return &augmented
+}
+
 // negotiateCommitmentType negotiates the commitment type of a newly opened
 // channel. If a desiredChanType is provided, explicit negotiation for said type
 // will be attempted if the set of both local and remote features support it.
@@ -71,15 +90,6 @@ func negotiateCommitmentType(desiredChanType *lnwire.ChannelType, local,
 	)
 
 	chanTypeRequested := desiredChanType != nil
-
-	// A requested type names the shape of the transactions; the chain the
-	// signatures are bound to is not the caller's to leave off. Done here
-	// rather than in the RPC layer because it depends on what the peer
-	// supports, which only this side of the funding flow knows.
-	if chanTypeRequested {
-		augmented := withUnifiedSigs(*desiredChanType, local, remote)
-		desiredChanType = &augmented
-	}
 
 	switch {
 	case explicitNegotiation && chanTypeRequested:
