@@ -41,9 +41,7 @@ func withUnifiedSigs(chanType lnwire.ChannelType, local,
 	}
 
 	features := lnwire.RawFeatureVector(chanType)
-	if features.IsSet(lnwire.SimpleTaprootChannelsRequiredFinal) ||
-		features.IsSet(lnwire.SimpleTaprootChannelsRequiredStaging) {
-
+	if isTaprootType(features) {
 		return chanType
 	}
 
@@ -51,6 +49,16 @@ func withUnifiedSigs(chanType lnwire.ChannelType, local,
 	withBit.Set(lnwire.UnifiedSigsRequired)
 
 	return lnwire.ChannelType(*withBit)
+}
+
+// isTaprootType reports whether a channel type is one whose commitment is
+// signed with MuSig2, which the unified bit cannot yet be combined with: the
+// simple taproot types and the taproot overlay type that Taproot Assets
+// channels use, which is taproot underneath.
+func isTaprootType(features lnwire.RawFeatureVector) bool {
+	return features.IsSet(lnwire.SimpleTaprootChannelsRequiredFinal) ||
+		features.IsSet(lnwire.SimpleTaprootChannelsRequiredStaging) ||
+		features.IsSet(lnwire.SimpleTaprootOverlayChansRequired)
 }
 
 // funderChannelType is the channel type a funder proposes when its caller
@@ -157,9 +165,7 @@ func explicitNegotiateCommitmentType(channelType lnwire.ChannelType, local,
 		// commitment_signed) rather than a different hash type. Until
 		// that is specified, refusing is better than agreeing to a
 		// channel whose two sides would sign different digests.
-		if channelFeatures.IsSet(lnwire.SimpleTaprootChannelsRequiredFinal) ||
-			channelFeatures.IsSet(lnwire.SimpleTaprootChannelsRequiredStaging) {
-
+		if isTaprootType(channelFeatures) {
 			return 0, errUnsupportedChannelType
 		}
 

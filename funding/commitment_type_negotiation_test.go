@@ -826,3 +826,30 @@ func TestUnifiedSigsNegotiation(t *testing.T) {
 		require.True(t, features.IsSet(lnwire.UnifiedSigsRequired))
 	})
 }
+
+// TestUnifiedSigsNotOnTaprootOverlay checks that the taproot overlay type,
+// which Taproot Assets channels use and which is signed with MuSig2 like the
+// simple taproot types, is neither given the unified bit nor accepted with it.
+func TestUnifiedSigsNotOnTaprootOverlay(t *testing.T) {
+	t.Parallel()
+
+	both := lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(
+			lnwire.ExplicitChannelTypeOptional,
+			lnwire.UnifiedSigsOptional,
+			lnwire.SimpleTaprootOverlayChansOptional,
+		), lnwire.Features,
+	)
+
+	overlay := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		lnwire.SimpleTaprootOverlayChansRequired,
+	))
+	require.Equal(t, overlay, withUnifiedSigs(overlay, both, both))
+
+	overlayUnified := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		lnwire.SimpleTaprootOverlayChansRequired,
+		lnwire.UnifiedSigsRequired,
+	))
+	_, _, err := negotiateCommitmentType(&overlayUnified, both, both)
+	require.ErrorIs(t, err, errUnsupportedChannelType)
+}
