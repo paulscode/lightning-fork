@@ -1241,10 +1241,14 @@ func (g *GossipSyncer) genChanRangeQuery(ctx context.Context,
 	// Determine the number of blocks to request based on our best height.
 	// We'll take into account any potential underflows and explicitly set
 	// numBlocks to its minimum value of 1 if so.
+	//
+	// The best height can be below the start, now that the start is
+	// raised to the gossip floor for a node still syncing up to the
+	// activation, and the subtraction must not wrap.
 	bestHeight := g.cfg.bestHeight()
-	numBlocks := bestHeight - startHeight
-	if int64(numBlocks) < 1 {
-		numBlocks = 1
+	numBlocks := uint32(1)
+	if bestHeight > startHeight {
+		numBlocks = bestHeight - startHeight
 	}
 
 	log.Infof("GossipSyncer(%x): requesting new chans from height=%v "+

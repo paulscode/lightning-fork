@@ -3023,3 +3023,21 @@ func TestBelowFloorDropped(t *testing.T) {
 
 	require.Equal(t, replies, belowFloorDropped(replies, 0))
 }
+
+// TestGossipSyncerRangeQueryBelowFloor checks that a node whose best height is
+// still below the gossip floor asks for one block rather than a count that
+// wrapped around.
+func TestGossipSyncerRangeQueryBelowFloor(t *testing.T) {
+	t.Parallel()
+
+	_, syncer, _ := newTestSyncer(
+		lnwire.ShortChannelID{BlockHeight: 200},
+		defaultEncoding, defaultChunkSize,
+	)
+	syncer.cfg.minAnnouncementHeight = latestKnownHeight + 500
+
+	q, err := syncer.genChanRangeQuery(t.Context(), true)
+	require.NoError(t, err)
+	require.EqualValues(t, latestKnownHeight+500, q.FirstBlockHeight)
+	require.EqualValues(t, 1, q.NumBlocks)
+}
