@@ -2974,3 +2974,52 @@ func TestGossipSyncerStateHandlerErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestGossipSyncerRangeQueryFloor checks that a channel range query does not
+// reach below the gossip floor, historical or not, and that a query already
+// above it is left alone.
+func TestGossipSyncerRangeQueryFloor(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	const floor = 150
+	_, syncer, _ := newTestSyncer(
+		lnwire.ShortChannelID{BlockHeight: 200},
+		defaultEncoding, defaultChunkSize,
+	)
+	syncer.cfg.minAnnouncementHeight = floor
+
+	q, err := syncer.genChanRangeQuery(ctx, true)
+	require.NoError(t, err)
+	require.EqualValues(t, floor, q.FirstBlockHeight)
+	require.EqualValues(t, latestKnownHeight-floor, q.NumBlocks)
+
+	// The newest channel at 200 puts the recent query at 200 minus the
+	// buffer, which the floor raises if it is below.
+	q, err = syncer.genChanRangeQuery(ctx, false)
+	require.NoError(t, err)
+	want := uint32(200 - chanRangeQueryBuffer)
+	if want < floor {
+		want = floor
+	}
+	require.Equal(t, want, q.FirstBlockHeight)
+}
+
+// TestBelowFloorDropped checks the reply filter on its own.
+func TestBelowFloorDropped(t *testing.T) {
+	t.Parallel()
+
+	at := func(h uint32) graphdb.ChannelUpdateInfo {
+		return graphdb.ChannelUpdateInfo{
+			ShortChannelID: lnwire.ShortChannelID{BlockHeight: h},
+		}
+	}
+	replies := []graphdb.ChannelUpdateInfo{at(10), at(149), at(150), at(900)}
+
+	kept := belowFloorDropped(replies, 150)
+	require.Len(t, kept, 2)
+	require.EqualValues(t, 150, kept[0].ShortChannelID.BlockHeight)
+	require.EqualValues(t, 900, kept[1].ShortChannelID.BlockHeight)
+
+	require.Equal(t, replies, belowFloorDropped(replies, 0))
+}

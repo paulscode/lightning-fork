@@ -89,6 +89,11 @@ type SyncManagerCfg struct {
 	// chain.
 	ChainHash chainhash.Hash
 
+	// MinAnnouncementHeight is the gossip floor: channels funded below it
+	// are refused by the gossiper, so the syncers neither ask for them nor
+	// query them. Zero means no floor.
+	MinAnnouncementHeight uint32
+
 	// ChanSeries is an interface that provides access to a time series view
 	// of the current known channel graph. Each GossipSyncer enabled peer
 	// will utilize this in order to create and respond to channel graph
@@ -662,12 +667,13 @@ func (m *SyncManager) createGossipSyncer(peer lnpeer.Peer) *GossipSyncer {
 
 	encoding := lnwire.EncodingSortedPlain
 	s := newGossipSyncer(gossipSyncerCfg{
-		chainHash:     m.cfg.ChainHash,
-		peerPub:       nodeID,
-		channelSeries: m.cfg.ChanSeries,
-		encodingType:  encoding,
-		chunkSize:     encodingTypeToChunkSize[encoding],
-		batchSize:     requestBatchSize,
+		chainHash:             m.cfg.ChainHash,
+		minAnnouncementHeight: m.cfg.MinAnnouncementHeight,
+		peerPub:               nodeID,
+		channelSeries:         m.cfg.ChanSeries,
+		encodingType:          encoding,
+		chunkSize:             encodingTypeToChunkSize[encoding],
+		batchSize:             requestBatchSize,
 		sendMsg: func(ctx context.Context, sync bool,
 			msgs ...lnwire.Message) error {
 

@@ -636,6 +636,7 @@ func New(cfg Config, selfKeyDesc *keychain.KeyDescriptor) *AuthenticatedGossiper
 
 	gossiper.syncMgr = newSyncManager(&SyncManagerCfg{
 		ChainHash:                cfg.ChainHash,
+		MinAnnouncementHeight:    cfg.MinAnnouncementHeight,
 		ChanSeries:               cfg.ChanSeries,
 		RotateTicker:             cfg.RotateTicker,
 		HistoricalSyncTicker:     cfg.HistoricalSyncTicker,

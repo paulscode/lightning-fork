@@ -234,6 +234,10 @@ type gossipSyncerCfg struct {
 	// chainHash is the chain that this syncer is responsible for.
 	chainHash chainhash.Hash
 
+	// minAnnouncementHeight is the gossip floor; see
+	// SyncManagerCfg.MinAnnouncementHeight.
+	minAnnouncementHeight uint32
+
 	// peerPub is the public key of the peer we're syncing with, serialized
 	// in compressed format.
 	peerPub [33]byte
@@ -1132,11 +1136,23 @@ func (g *GossipSyncer) bufferChanRangeReply(_ context.Context,
 	log.Infof("GossipSyncer(%x): filtering through %v chans",
 		g.cfg.peerPub[:], len(g.bufferedChanRangeReplies))
 
+	// Drop what is below the gossip floor before asking for anything: a
+	// peer may send such channels whatever range we asked for, and every
+	// one of them would be fetched only to be refused.
+	replies := belowFloorDropped(
+		g.bufferedChanRangeReplies, g.cfg.minAnnouncementHeight,
+	)
+	dropped := len(g.bufferedChanRangeReplies) - len(replies)
+	if dropped > 0 {
+		log.Debugf("GossipSyncer(%x): ignoring %v chans funded below "+
+			"height %v", g.cfg.peerPub[:], dropped,
+			g.cfg.minAnnouncementHeight)
+	}
+
 	// Otherwise, this is the final response, so we'll now check to see
 	// which channels they know of that we don't.
 	newChans, err := g.cfg.channelSeries.FilterKnownChanIDs(
-		g.cfg.chainHash, g.bufferedChanRangeReplies,
-		g.cfg.isStillZombieChannel,
+		g.cfg.chainHash, replies, g.cfg.isStillZombieChannel,
 	)
 	if err != nil {
 		return fmt.Errorf("unable to filter chan ids: %w", err)
@@ -1212,6 +1228,14 @@ func (g *GossipSyncer) genChanRangeQuery(ctx context.Context,
 		startHeight = 0
 	default:
 		startHeight = newestChan.BlockHeight - chanRangeQueryBuffer
+	}
+
+	// Nothing below the gossip floor would be accepted, so there is no
+	// point asking for it. A peer that still holds gossip from before the
+	// activation would otherwise send all of it, on every historical
+	// sync.
+	if startHeight < g.cfg.minAnnouncementHeight {
+		startHeight = g.cfg.minAnnouncementHeight
 	}
 
 	// Determine the number of blocks to request based on our best height.
@@ -2027,4 +2051,23 @@ func (g *GossipSyncer) sendMsgRateLimited(ctx context.Context, sync bool,
 	}
 
 	return nil
+}
+
+// belowFloorDropped returns the channels in replies funded at or above
+// minHeight. A zero minHeight keeps everything.
+func belowFloorDropped(replies []graphdb.ChannelUpdateInfo,
+	minHeight uint32) []graphdb.ChannelUpdateInfo {
+
+	if minHeight == 0 {
+		return replies
+	}
+
+	kept := make([]graphdb.ChannelUpdateInfo, 0, len(replies))
+	for _, r := range replies {
+		if r.ShortChannelID.BlockHeight >= minHeight {
+			kept = append(kept, r)
+		}
+	}
+
+	return kept
 }
