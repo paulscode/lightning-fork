@@ -3870,9 +3870,12 @@ func (r *rpcServer) WalletBalance(ctx context.Context,
 	walletCtrl := r.server.cc.Wallet.WalletController
 	wallet, ok := walletCtrl.(immatureCoinbaseReporter)
 	if ok && in.Account == "" {
+		// Informational, so a failure here does not fail the call.
 		immatureCoinbase, err = wallet.ImmatureCoinbaseBalance()
 		if err != nil {
-			return nil, err
+			rpcsLog.Warnf("Unable to compute the immature "+
+				"coinbase balance: %v", err)
+			immatureCoinbase = 0
 		}
 	}
 
@@ -4112,6 +4115,14 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 		maxFundingHeight := waitBlocksForFundingConf +
 			pendingChan.BroadcastHeight()
 		fundingExpiryBlocks := int32(maxFundingHeight) - currentHeight
+
+		// A funding that has confirmed cannot expire. A channel funded
+		// by a coinbase stays pending for the whole of the coinbase
+		// maturity, well past the expiry height, and the count would
+		// otherwise run on into negative numbers.
+		if pendingChan.ConfirmationHeight != 0 {
+			fundingExpiryBlocks = 0
+		}
 
 		// Calculate remainingConfs, the number of blocks left until the
 		// funding transaction reaches the required confirmation height.
