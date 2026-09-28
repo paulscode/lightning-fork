@@ -3860,9 +3860,26 @@ func (r *rpcServer) WalletBalance(ctx context.Context,
 		uint32(currentNumAnchorChans),
 	)
 
+	// Coinbase outputs not yet deep enough for a spend of them to relay
+	// are in none of the balances above. The figure covers the whole
+	// wallet, so it is only reported when no account was asked for.
+	var immatureCoinbase btcutil.Amount
+	type immatureCoinbaseReporter interface {
+		ImmatureCoinbaseBalance() (btcutil.Amount, error)
+	}
+	walletCtrl := r.server.cc.Wallet.WalletController
+	wallet, ok := walletCtrl.(immatureCoinbaseReporter)
+	if ok && in.Account == "" {
+		immatureCoinbase, err = wallet.ImmatureCoinbaseBalance()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	rpcsLog.Debugf("[walletbalance] Total balance=%v (confirmed=%v, "+
-		"unconfirmed=%v, locked=%v)", totalBalance, confirmedBalance,
-		unconfirmedBalance, lockedBalance)
+		"unconfirmed=%v, locked=%v, immature coinbase=%v)",
+		totalBalance, confirmedBalance, unconfirmedBalance,
+		lockedBalance, immatureCoinbase)
 
 	return &lnrpc.WalletBalanceResponse{
 		TotalBalance:              int64(totalBalance),
@@ -3871,6 +3888,7 @@ func (r *rpcServer) WalletBalance(ctx context.Context,
 		LockedBalance:             int64(lockedBalance),
 		ReservedBalanceAnchorChan: int64(requiredReserve),
 		AccountBalance:            rpcAccountBalances,
+		ImmatureCoinbaseBalance:   int64(immatureCoinbase),
 	}, nil
 }
 

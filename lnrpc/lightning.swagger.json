@@ -7946,6 +7946,11 @@
             "$ref": "#/definitions/lnrpcWalletAccountBalance"
           },
           "description": "A mapping of each wallet account's name to its balance."
+        },
+        "immature_coinbase_balance": {
+          "type": "string",
+          "format": "int64",
+          "description": "Coinbase outputs this wallet holds that are not yet deep enough for a\nspend of them to relay, and so are counted in no other balance here.\nOn the Bitcoin BLAKE2b chain that is 6480 confirmations while the long\ncoinbase maturity rule is deployed, rather than 100. Numbered high to\nstay clear of fields upstream may add."
         }
       }
     },

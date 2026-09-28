@@ -9368,8 +9368,14 @@ type WalletBalanceResponse struct {
 	ReservedBalanceAnchorChan int64 `protobuf:"varint,6,opt,name=reserved_balance_anchor_chan,json=reservedBalanceAnchorChan,proto3" json:"reserved_balance_anchor_chan,omitempty"`
 	// A mapping of each wallet account's name to its balance.
 	AccountBalance map[string]*WalletAccountBalance `protobuf:"bytes,4,rep,name=account_balance,json=accountBalance,proto3" json:"account_balance,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Coinbase outputs this wallet holds that are not yet deep enough for a
+	// spend of them to relay, and so are counted in no other balance here.
+	// On the Bitcoin BLAKE2b chain that is 6480 confirmations while the long
+	// coinbase maturity rule is deployed, rather than 100. Numbered high to
+	// stay clear of fields upstream may add.
+	ImmatureCoinbaseBalance int64 `protobuf:"varint,1001,opt,name=immature_coinbase_balance,json=immatureCoinbaseBalance,proto3" json:"immature_coinbase_balance,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *WalletBalanceResponse) Reset() {
@@ -9442,6 +9448,13 @@ func (x *WalletBalanceResponse) GetAccountBalance() map[string]*WalletAccountBal
 		return x.AccountBalance
 	}
 	return nil
+}
+
+func (x *WalletBalanceResponse) GetImmatureCoinbaseBalance() int64 {
+	if x != nil {
+		return x.ImmatureCoinbaseBalance
+	}
+	return 0
 }
 
 type Amount struct {
@@ -19211,14 +19224,15 @@ const file_lightning_proto_rawDesc = "" +
 	"\x13unconfirmed_balance\x18\x02 \x01(\x03R\x12unconfirmedBalance\"M\n" +
 	"\x14WalletBalanceRequest\x12\x18\n" +
 	"\aaccount\x18\x01 \x01(\tR\aaccount\x12\x1b\n" +
-	"\tmin_confs\x18\x02 \x01(\x05R\bminConfs\"\xbd\x03\n" +
+	"\tmin_confs\x18\x02 \x01(\x05R\bminConfs\"\xfa\x03\n" +
 	"\x15WalletBalanceResponse\x12#\n" +
 	"\rtotal_balance\x18\x01 \x01(\x03R\ftotalBalance\x12+\n" +
 	"\x11confirmed_balance\x18\x02 \x01(\x03R\x10confirmedBalance\x12/\n" +
 	"\x13unconfirmed_balance\x18\x03 \x01(\x03R\x12unconfirmedBalance\x12%\n" +
 	"\x0elocked_balance\x18\x05 \x01(\x03R\rlockedBalance\x12?\n" +
 	"\x1creserved_balance_anchor_chan\x18\x06 \x01(\x03R\x19reservedBalanceAnchorChan\x12Y\n" +
-	"\x0faccount_balance\x18\x04 \x03(\v20.lnrpc.WalletBalanceResponse.AccountBalanceEntryR\x0eaccountBalance\x1a^\n" +
+	"\x0faccount_balance\x18\x04 \x03(\v20.lnrpc.WalletBalanceResponse.AccountBalanceEntryR\x0eaccountBalance\x12;\n" +
+	"\x19immature_coinbase_balance\x18\xe9\a \x01(\x03R\x17immatureCoinbaseBalance\x1a^\n" +
 	"\x13AccountBalanceEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x121\n" +
 	"\x05value\x18\x02 \x01(\v2\x1b.lnrpc.WalletAccountBalanceR\x05value:\x028\x01\".\n" +

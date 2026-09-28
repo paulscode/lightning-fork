@@ -3025,6 +3025,13 @@ message WalletBalanceResponse {
 
     // A mapping of each wallet account's name to its balance.
     map<string, WalletAccountBalance> account_balance = 4;
+
+    // Coinbase outputs this wallet holds that are not yet deep enough for a
+    // spend of them to relay, and so are counted in no other balance here.
+    // On the Bitcoin BLAKE2b chain that is 6480 confirmations while the long
+    // coinbase maturity rule is deployed, rather than 100. Numbered high to
+    // stay clear of fields upstream may add.
+    int64 immature_coinbase_balance = 1001;
 }
 
 message Amount {
