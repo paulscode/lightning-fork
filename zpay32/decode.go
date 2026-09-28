@@ -120,18 +120,22 @@ func Decode(invoice string, net *chaincfg.Params, opts ...DecodeOption) (
 	// not optimal for LN). See
 	// https://github.com/lightningnetwork/lightning-rfc/pull/844 for more
 	// information.
+	//
+	// An invoice this node issued under the withdrawn prefix is still
+	// decodable, so that stored payment requests keep listing. Nothing is
+	// emitted under it: see zpay32/hrp.go. It is tried first because on
+	// the test networks the standard prefix is a prefix of it ("tb" of
+	// "tblake"), and matching the shorter one would leave the rest of the
+	// old prefix to be parsed as an amount.
 	matchedPrefix := InvoiceHRP(net)
-	if !strings.HasPrefix(hrp[2:], matchedPrefix) {
-		// An invoice this node issued under the withdrawn prefix is
-		// still decodable, so that stored payment requests keep
-		// listing. Nothing is emitted under it: see zpay32/hrp.go.
-		legacy := legacyInvoiceHRP(net)
-		if matchesLegacyHRP(hrp[2:], legacy) {
-			matchedPrefix = legacy
-		} else {
-			return nil, fmt.Errorf("invoice not for current "+
-				"active network '%s'", net.Name)
-		}
+	legacy := legacyInvoiceHRP(net)
+	switch {
+	case matchesLegacyHRP(hrp[2:], legacy):
+		matchedPrefix = legacy
+
+	case !strings.HasPrefix(hrp[2:], matchedPrefix):
+		return nil, fmt.Errorf("invoice not for current active "+
+			"network '%s'", net.Name)
 	}
 	decodedInvoice.Net = net
 

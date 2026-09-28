@@ -180,3 +180,60 @@ func TestLegacyPrefixShadowing(t *testing.T) {
 		require.NoError(t, err)
 	}
 }
+
+// TestLegacyPrefixOnEveryNetwork mints an invoice under each network's
+// withdrawn prefix, with and without an amount, and decodes it. On the test
+// networks the standard prefix is a prefix of the withdrawn one ("tb" of
+// "tblake", "tbs" of "tbsblake"), so matching the standard one first left the
+// rest of the old prefix to be parsed as an amount and failed the decode, and
+// with it every listing that re-decodes a stored invoice.
+func TestLegacyPrefixOnEveryNetwork(t *testing.T) {
+	key, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	nets := []struct {
+		params *chaincfg.Params
+		legacy string
+	}{
+		{&chaincfg.MainNetParams, "blake"},
+		{&chaincfg.TestNet3Params, "tblake"},
+		{&chaincfg.TestNet4Params, "tblake"},
+		{&chaincfg.SigNetParams, "tbsblake"},
+		{&chaincfg.SimNetParams, "sblake"},
+		{&chaincfg.RegressionNetParams, "blakert"},
+	}
+
+	for _, n := range nets {
+		withLegacyInvoiceHRP(t, n.params, n.legacy)
+
+		amt := lnwire.MilliSatoshi(1500000)
+		for _, a := range []*lnwire.MilliSatoshi{nil, &amt} {
+			oldNet := *n.params
+			oldNet.Bech32HRPSegwit = n.legacy
+			if n.params.Name == chaincfg.SigNetParams.Name {
+				// InvoiceHRP spells signet "tbs" by name, so
+				// mint under another name to get the old one.
+				oldNet.Name = "signet-legacy"
+			}
+
+			str, err := newHRPTestInvoice(t, &oldNet, a).Encode(
+				signHRPTest(t, key),
+			)
+			require.NoError(t, err)
+			require.True(t, strings.HasPrefix(str, "ln"+n.legacy),
+				"%v: minted %v", n.params.Name, str[:14])
+
+			decoded, err := Decode(str, n.params)
+			require.NoError(t, err, "%v: %v", n.params.Name, str[:14])
+			require.Equal(t, a, decoded.MilliSat, n.params.Name)
+		}
+
+		// An ordinary invoice for the network still decodes.
+		str, err := newHRPTestInvoice(t, n.params, nil).Encode(
+			signHRPTest(t, key),
+		)
+		require.NoError(t, err)
+		_, err = Decode(str, n.params)
+		require.NoError(t, err, n.params.Name)
+	}
+}
