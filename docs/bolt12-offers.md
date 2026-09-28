@@ -50,6 +50,13 @@ with other peers it is a new offer, and the old one still works. A request for a
 longer has a record of, but which verifies as its own, is also served and
 the record restored. So a pool keeps paying to the string it already holds.
 
+Offers minted before `0.21.3-beta-blake2b.12` are the exception. They do not
+set `option_blake2b`, so no payer that has upgraded will request an invoice for
+one, and the node disables them the first time it starts on this release, with
+a log line for each. Minting the same description again gives a new string,
+which is the one to give the pool. A disabled offer of that kind cannot be
+enabled again.
+
 Channel state is not part of this: a restored node still needs a channel to
 receive on, as with any Lightning node. Nor is whether an offer had been
 disabled: an offer restored from a request comes back enabled, and the log
