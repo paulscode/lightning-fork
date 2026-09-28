@@ -225,6 +225,10 @@ func LoaderWithExternalWalletDB(db kvdb.Backend) LoaderOption {
 func NewWalletLoader(chainParams *chaincfg.Params, recoveryWindow uint32,
 	opts ...LoaderOption) (*base.Loader, error) {
 
+	// Every wallet lnd opens or creates goes through here, including the
+	// one the WalletUnlocker opens; see walletChainParams.
+	chainParams = walletChainParams(chainParams)
+
 	cfg := &loaderCfg{}
 
 	// Apply all functional options.
