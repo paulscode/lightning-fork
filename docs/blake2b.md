@@ -159,9 +159,13 @@ before upgrading.
 **Your channels are migrated, but back up first.** lnd keys channels by chain
 hash, so a node that opened channels under the old value would otherwise fail
 to start with `no chain bucket exists`. Channeldb migration 36 moves them, and
-moves the resolver reports of closed channels with them; it does nothing at all
-on a database that never held such a channel. It is one way: once migrated, the
-older release will not find its channels either. lnd takes no backup of its own
+moves the resolver reports of closed channels with them. Migration 37 moves the
+rest of what was stored under the old value: the contract resolutions and
+timelocked outputs of a channel that is closing, without which a close in
+progress at the upgrade would never be swept, and the chain hash each channel
+in the graph records. Neither does anything on a database that never held such
+state. It is one way: once migrated, the older release refuses to open the
+database at all. lnd takes no backup of its own
 before a migration, so copy `channel.db` out of
 `data/graph/<network>/` while the node is stopped, before starting the new
 build. If the migration finds anything it does not recognise it stops and
@@ -174,6 +178,15 @@ other does not know. The channel stays intact and stops being usable until both
 ends move, then resumes. Nothing in the migration can change this; it is what
 changing a chain identifier costs. If you have channels, agree a time with your
 peers rather than upgrading and hoping.
+
+**Gossip signed before the change still counts.** A public channel's
+`channel_announcement`, and every `channel_update` made before the upgrade,
+were signed over the old value, and only the two nodes that made them could
+sign again. So a node checks such a message under the current chain hash and,
+failing that, under this network's old one and nothing else, and takes a
+message that names the old value as naming this chain. Without that, a channel
+announced before the upgrade could never reach a node that had not already
+seen it, and its fee changes would reach nobody.
 
 Neither applies to a node with no channels, which can be upgraded whenever.
 

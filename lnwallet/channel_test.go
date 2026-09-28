@@ -422,7 +422,7 @@ func TestSimpleAddSettleWorkflow(t *testing.T) {
 
 	// The combination privkeyio's Core Lightning port negotiates:
 	// static_remotekey + anchors_zero_fee_htlc_tx + unified sigs, which
-	// is channel_type [12,22,70] on the wire.
+	// is channel_type [12,22,514] on the wire.
 	t.Run("anchors with unified sigs", func(t *testing.T) {
 		testAddSettleWorkflow(
 			t, true,

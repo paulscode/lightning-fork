@@ -289,7 +289,12 @@ A channel that negotiated `option_unified_sigs` records it in its own channel
 type, and every signature on it is made under `0x21` or `0xa3`. A build that
 does not know the bit reads the channel type without complaint, finds nothing
 it recognises, and signs `0x01` instead. The peer then rejects every
-signature, and the channel can neither update nor close cooperatively.
+signature, and the channel can neither update nor close cooperatively. Nor
+can the older build force close it: it puts `0x01` on the peer's signature,
+which was made under `0x21`, so its own commitment does not validate. And its
+static channel backups are closed to it too. A backup of a unified channel
+marks that in its version byte, which the older build reads as an unknown
+version, and refuses the whole file, ordinary channels included.
 
 So a node that has opened a unified channel must not be downgraded to a build
 from before this feature. That is the same rule that already applies to any
