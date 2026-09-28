@@ -3271,7 +3271,7 @@
         },
         "unified_sigs": {
           "type": "boolean",
-          "description": "Whether the channel's bilateral signatures bind to the Bitcoin\nBLAKE2b chain under option_unified_sigs. A build without the\noption cannot sign for such a channel, so a node holding one\nmust not be downgraded to it. Numbered high to stay clear of\nfields upstream may add."
+          "description": "Whether the channel's bilateral signatures bind to the Bitcoin\nBLAKE2b chain under option_unified_sigs. A build without the\noption cannot sign for such a channel, so a node holding one\nmust not be downgraded to it. False for a closing channel whose\ntype is not known, which commitment_type then reports as\nUNKNOWN_COMMITMENT_TYPE."
         }
       }
     },
@@ -4041,7 +4041,7 @@
         },
         "unified_sigs": {
           "type": "boolean",
-          "description": "Whether the channel's bilateral signatures bind to the Bitcoin BLAKE2b\nchain under option_unified_sigs. A build without the option cannot\nsign for such a channel, so a node holding one must not be downgraded\nto it. Numbered high to stay clear of fields upstream may add."
+          "description": "Whether the channel's bilateral signatures bind to the Bitcoin BLAKE2b\nchain under option_unified_sigs. A build without the option cannot\nsign for such a channel, so a node holding one must not be downgraded\nto it."
         }
       }
     },
@@ -7958,7 +7958,7 @@
         "immature_coinbase_balance": {
           "type": "string",
           "format": "int64",
-          "description": "Coinbase outputs this wallet holds that are not yet deep enough for a\nspend of them to relay, and so are counted in no other balance here.\nOn the Bitcoin BLAKE2b chain that is 6480 confirmations while the long\ncoinbase maturity rule is deployed, rather than 100. Numbered high to\nstay clear of fields upstream may add."
+          "description": "Coinbase outputs this wallet holds that are not yet deep enough for a\nspend of them to relay, and so are counted in no other balance here.\nOn the Bitcoin BLAKE2b chain that is 6480 confirmations while the long\ncoinbase maturity rule is deployed, rather than 100. It covers the whole\nwallet, and is 0 when an account was asked for."
         }
       }
     },

@@ -1,3 +1,9 @@
+//go:build !dev && !integration
+
+// Release builds only: development and integration builds never opt into the
+// unified signature hash (see input/sighash_dev.go), which is what these tests
+// check.
+
 package lnwallet
 
 import (

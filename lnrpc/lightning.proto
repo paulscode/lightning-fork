@@ -1585,7 +1585,7 @@ message Channel {
     // Whether the channel's bilateral signatures bind to the Bitcoin BLAKE2b
     // chain under option_unified_sigs. A build without the option cannot
     // sign for such a channel, so a node holding one must not be downgraded
-    // to it. Numbered high to stay clear of fields upstream may add.
+    // to it.
     bool unified_sigs = 1001;
 }
 
@@ -2767,8 +2767,9 @@ message PendingChannelsResponse {
         // Whether the channel's bilateral signatures bind to the Bitcoin
         // BLAKE2b chain under option_unified_sigs. A build without the
         // option cannot sign for such a channel, so a node holding one
-        // must not be downgraded to it. Numbered high to stay clear of
-        // fields upstream may add.
+        // must not be downgraded to it. False for a closing channel whose
+        // type is not known, which commitment_type then reports as
+        // UNKNOWN_COMMITMENT_TYPE.
         bool unified_sigs = 1001;
     }
 
@@ -3042,8 +3043,8 @@ message WalletBalanceResponse {
     // Coinbase outputs this wallet holds that are not yet deep enough for a
     // spend of them to relay, and so are counted in no other balance here.
     // On the Bitcoin BLAKE2b chain that is 6480 confirmations while the long
-    // coinbase maturity rule is deployed, rather than 100. Numbered high to
-    // stay clear of fields upstream may add.
+    // coinbase maturity rule is deployed, rather than 100. It covers the whole
+    // wallet, and is 0 when an account was asked for.
     int64 immature_coinbase_balance = 1001;
 }
 

@@ -4681,7 +4681,7 @@ type Channel struct {
 	// Whether the channel's bilateral signatures bind to the Bitcoin BLAKE2b
 	// chain under option_unified_sigs. A build without the option cannot
 	// sign for such a channel, so a node holding one must not be downgraded
-	// to it. Numbered high to stay clear of fields upstream may add.
+	// to it.
 	UnifiedSigs   bool `protobuf:"varint,1001,opt,name=unified_sigs,json=unifiedSigs,proto3" json:"unified_sigs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -9383,8 +9383,8 @@ type WalletBalanceResponse struct {
 	// Coinbase outputs this wallet holds that are not yet deep enough for a
 	// spend of them to relay, and so are counted in no other balance here.
 	// On the Bitcoin BLAKE2b chain that is 6480 confirmations while the long
-	// coinbase maturity rule is deployed, rather than 100. Numbered high to
-	// stay clear of fields upstream may add.
+	// coinbase maturity rule is deployed, rather than 100. It covers the whole
+	// wallet, and is 0 when an account was asked for.
 	ImmatureCoinbaseBalance int64 `protobuf:"varint,1001,opt,name=immature_coinbase_balance,json=immatureCoinbaseBalance,proto3" json:"immature_coinbase_balance,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
@@ -17898,8 +17898,9 @@ type PendingChannelsResponse_PendingChannel struct {
 	// Whether the channel's bilateral signatures bind to the Bitcoin
 	// BLAKE2b chain under option_unified_sigs. A build without the
 	// option cannot sign for such a channel, so a node holding one
-	// must not be downgraded to it. Numbered high to stay clear of
-	// fields upstream may add.
+	// must not be downgraded to it. False for a closing channel whose
+	// type is not known, which commitment_type then reports as
+	// UNKNOWN_COMMITMENT_TYPE.
 	UnifiedSigs   bool `protobuf:"varint,1001,opt,name=unified_sigs,json=unifiedSigs,proto3" json:"unified_sigs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

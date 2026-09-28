@@ -341,8 +341,8 @@ Every path that selects coins follows: `SendOutputs`, `CreateSimpleTx`,
 `FundPsbt`, `ListUnspentWitness`, and so channel opens funded from the node
 wallet. Until then the coin is in none of the wallet's spendable balances,
 the same as a coinbase younger than 100 blocks anywhere else;
-`lncli walletbalance` reports it as `immature_coinbase_balance`, and it moves
-into `confirmed_balance` at the relay depth.
+`lncli walletbalance` reports it as `immature_coinbase_balance`, and it becomes
+spendable at the relay depth, when it counts in the wallet's balances again.
 
 Releases up to `0.21.3-beta-blake2b.12` offered such a coin after 100
 confirmations. A send or channel open built from it was refused by the first
