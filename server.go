@@ -3295,25 +3295,12 @@ func initNetworkBootstrappers(s *server) ([]discovery.NetworkPeerBootstrapper, e
 	}
 	bootStrappers = append(bootStrappers, graphBootstrapper)
 
-	// If this isn't using simnet or regtest mode, then one of our
-	// additional bootstrapping sources will be the set of running DNS
-	// seeds.
-	if !s.cfg.Bitcoin.IsLocalNetwork() {
-		//nolint:ll
-		dnsSeeds, ok := chainreg.ChainDNSSeeds[s.cfg.ActiveNetParams.ChainHash]
-
-		// If we have a set of DNS seeds for this chain, then we'll add
-		// it as an additional bootstrapping source.
-		if ok {
-			srvrLog.Infof("Creating DNS peer bootstrapper with "+
-				"seeds: %v", dnsSeeds)
-
-			dnsBootStrapper := discovery.NewDNSSeedBootstrapper(
-				dnsSeeds, s.cfg.net, s.cfg.ConnectionTimeout,
-			)
-			bootStrappers = append(bootStrappers, dnsBootStrapper)
-		}
-	}
+	// No DNS seeds. Upstream's are keyed by chain hash, and this chain
+	// shares its genesis hash with Bitcoin, so the lookup would find
+	// Bitcoin's seeds and fill the peer table with Bitcoin Lightning nodes,
+	// every one of which disconnects on option_blake2b. Releases before the
+	// chain went back to the genesis hash found no seeds only because their
+	// chain hash was their own; this keeps them that way.
 
 	return bootStrappers, nil
 }
