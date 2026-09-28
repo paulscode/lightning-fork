@@ -328,28 +328,25 @@ to and including `0.21.3-beta-blake2b.10` had exactly that bug; it was found
 by running the rule for real rather than a scaled stand-in, which is the whole
 argument for doing so.
 
-### Known gap: the node's own wallet
+### The node's own wallet
 
-**This node's wallet still offers freshly mined coins after 100
-confirmations.** Coin selection happens inside upstream
-`github.com/btcsuite/btcwallet`, which filters coinbase outputs against
-`chainParams.CoinbaseMaturity`, and that field has to stay at 100 because btcd
-also reads it for consensus validation. Our btcwallet fork is scoped to the
-`wallet/txauthor` submodule, so the module carrying the filter is not replaced
-and cannot be patched from here. Closing this means moving the fork onto the
-v0.16.19 base and replacing the whole module.
+The wallet spends a coinbase output only once a spend of it will relay: 6480
+confirmations on mainnet while the rule is deployed, not 100. Coin selection
+happens inside upstream `github.com/btcsuite/btcwallet`, which filters
+coinbase outputs against `chainParams.CoinbaseMaturity`. That field has to stay
+at 100 for anything validating blocks, so lnd hands btcwallet a copy of the
+chain parameters with the relay depth in it, and changes nothing else.
 
-Affected paths are every one that selects coins: `SendOutputs`, `CreateSimpleTx`,
+Every path that selects coins follows: `SendOutputs`, `CreateSimpleTx`,
 `FundPsbt`, `ListUnspentWitness`, and so channel opens funded from the node
-wallet.
+wallet. Until then the coin is in none of the wallet's spendable balances,
+the same as a coinbase younger than 100 blocks anywhere else;
+`lncli walletbalance` reports it as `immature_coinbase_balance`, and it moves
+into `confirmed_balance` at the relay depth.
 
-The failure mode is a rejected broadcast, not lost funds: the transaction is
-built, refused by the first node it reaches, and the operation fails. The coin
-is still there and becomes spendable on schedule.
-
-**Until this is closed, keep freshly mined coins out of this node's wallet.**
-Send mining payouts to a wallet that follows the rule, and move them in once
-they have 6480 confirmations.
+Releases up to `0.21.3-beta-blake2b.12` offered such a coin after 100
+confirmations. A send or channel open built from it was refused by the first
+node it reached; nothing was lost, the operation failed.
 
 ## Verifying the constants yourself
 
