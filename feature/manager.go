@@ -84,6 +84,13 @@ type Config struct {
 	// CustomFeatures is a set of custom features to advertise in each
 	// set.
 	CustomFeatures map[Set][]lnwire.FeatureBit
+
+	// NoUnifiedSigs unsets option_unified_sigs, for a node whose own
+	// signatures do not opt into the unified signature hash. Offering a
+	// channel type that signs under it would then have the two ends of a
+	// channel disagree with the chain about what was signed. Always false
+	// on mainnet, where the opt-in cannot be switched off.
+	NoUnifiedSigs bool
 }
 
 // Manager is responsible for generating feature vectors for different requested
@@ -175,6 +182,10 @@ func newManager(cfg Config, desc setDesc) (*Manager, error) {
 					}
 				}
 			}
+		}
+		if cfg.NoUnifiedSigs {
+			raw.Unset(lnwire.UnifiedSigsOptional)
+			raw.Unset(lnwire.UnifiedSigsRequired)
 		}
 		if cfg.NoWumbo {
 			raw.Unset(lnwire.WumboChannelsOptional)
