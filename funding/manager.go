@@ -355,6 +355,14 @@ type Config struct {
 	// requests, and also reject all outgoing wumbo channel requests.
 	NoWumboChans bool
 
+	// RequireBlake2bPeer refuses to open a channel, in either direction,
+	// with a peer whose init message does not set option_blake2b. The
+	// connection itself is kept: BOLT 9 forbids refusing a peer for the
+	// bit, since clients that speak the wire protocol for other purposes
+	// need not set it. A channel is a different matter, because its
+	// funding output has to exist on the chain this node follows.
+	RequireBlake2bPeer bool
+
 	// IDKey is the PublicKey that is used to identify this node within the
 	// Lightning Network.
 	IDKey *btcec.PublicKey
@@ -1503,6 +1511,11 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 
 	// Create the channel identifier.
 	cid := newChanIdentifier(msg.PendingChannelID)
+
+	if err := f.checkPeerBlake2b(peer); err != nil {
+		f.failFundingFlow(peer, cid, err)
+		return
+	}
 
 	// Also count the channels that are already pending. There we don't know
 	// the underlying intent anymore, unfortunately.
@@ -4984,6 +4997,12 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		outpoints      = msg.Outpoints
 	)
 
+	if err := f.checkPeerBlake2b(msg.Peer); err != nil {
+		msg.Err <- fmt.Errorf("cannot open a channel with %x: %w",
+			peerKey.SerializeCompressed(), err)
+		return
+	}
+
 	// If no maximum CSV delay was set for this channel, we use our default
 	// value.
 	if maxCSV == 0 {
@@ -5725,4 +5744,26 @@ func (f *Manager) waitForPeerOnline(peerPubkey *btcec.PublicKey) (lnpeer.Peer,
 		return peer, ErrFundingManagerShuttingDown
 	}
 	return peer, nil
+}
+
+// checkPeerBlake2b returns lnwire.ErrPeerNotBlake2b when RequireBlake2bPeer is
+// set and the peer's init message sets neither form of option_blake2b.
+//
+// A node that has not upgraded never gets this far: our even bit 512 makes it
+// close the connection at init. What this catches is a peer that stayed
+// connected without saying which rules it follows, such as a client that
+// ignores unknown even bits. Either form counts, as it does for invoices.
+func (f *Manager) checkPeerBlake2b(peer lnpeer.Peer) error {
+	if !f.cfg.RequireBlake2bPeer {
+		return nil
+	}
+
+	remote := peer.RemoteFeatures()
+	if remote != nil && (remote.IsSet(lnwire.Blake2bRequired) ||
+		remote.IsSet(lnwire.Blake2bOptional)) {
+
+		return nil
+	}
+
+	return lnwire.ErrPeerNotBlake2b
 }

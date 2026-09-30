@@ -26,6 +26,12 @@ const (
 	// FundingOpen request for a channel that is above their current
 	// soft-limit.
 	ErrChanTooLarge FundingError = 2
+
+	// ErrPeerNotBlake2b is returned to a peer that asks to open a channel
+	// without setting option_blake2b in its init message: it has not said
+	// it follows the BLAKE2b proof of work rules, so a funding transaction
+	// between us might confirm on a chain this node does not follow.
+	ErrPeerNotBlake2b FundingError = 3
 )
 
 // String returns a human readable version of the target FundingError.
@@ -35,6 +41,8 @@ func (e FundingError) String() string {
 		return "Number of pending channels exceed maximum"
 	case ErrChanTooLarge:
 		return "channel too large"
+	case ErrPeerNotBlake2b:
+		return "peer does not set option_blake2b"
 	default:
 		return "unknown error"
 	}
