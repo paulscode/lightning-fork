@@ -40,7 +40,8 @@ func preForkChannels(channels []*channeldb.OpenChannel,
 }
 
 // warnPreForkChannels logs each pre-fork channel at startup with the advice
-// that applies: close it, and prefer coins received after the fork.
+// that applies: close it and open a new one, which this node funds with the
+// opt-in, so it cannot be replayed whatever coins pay for it.
 func (s *server) warnPreForkChannels() {
 	channels, err := s.chanStateDB.FetchAllOpenChannels()
 	if err != nil {
@@ -50,11 +51,12 @@ func (s *server) warnPreForkChannels() {
 
 	floor := s.cfg.ActiveNetParams.GossipFloor()
 	for _, desc := range preForkChannels(channels, floor) {
-		srvrLog.Warnf("Channel %s was funded before the BLAKE2b fork: "+
-			"its funding output exists on both chains and its "+
-			"commitment transactions are valid on both, so a close on "+
-			"one chain can be replayed on the other. Close it and "+
-			"reopen with coins received after block %d", desc,
-			floor)
+		srvrLog.Warnf("Channel %s was funded below block %d, before "+
+			"the proof of work changed: its funding output exists "+
+			"for nodes that have not upgraded too, and a close can "+
+			"be replayed there. Close it and open a new one: this "+
+			"node signs a new channel's funding with the opt-in, so "+
+			"it cannot be replayed, whatever coins pay for it",
+			desc, floor)
 	}
 }

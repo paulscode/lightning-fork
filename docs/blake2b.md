@@ -200,15 +200,18 @@ other implementation checks it over the message as sent, and Core Lightning
 answers each one with a `Bad node_signature` warning. From
 `0.21.3-beta-blake2b.14` an announcement whose proof holds only under the old
 value is kept out of what the node broadcasts and serves to peers, and so are
-other nodes' updates for such a channel; the node's own updates for one of its
-channels still go out, since the peer on the other end routes by them.
+updates for such a channel: served ones, and other nodes' relayed ones. The
+node's own updates for one of its channels are still broadcast, since the
+peer on the other end routes by them.
 
 Instead the channel is announced again. At startup the node finds every
 channel of its own whose proof was made under the old value and signs its
 half of a new one, over the message as it is sent now; when its peer, also on
 `.14` or later, does the same, the new proof replaces the old and the channel
-is announced to everyone. A peer on an earlier release answers with its old
-half, which is refused, and the old proof stays until that peer upgrades. A
+is announced to everyone. A peer on an earlier release, which still holds the
+old proof as complete, answers with the whole old announcement; that fails the
+check a replacement must pass, and the old proof stays until the peer
+upgrades. A
 node that learns a third party's channel this way replaces the old proof it
 held with the new one. Channel updates need none of this: a node signs a fresh
 one at least every two weeks, so any made before the change have long been
@@ -272,9 +275,11 @@ inputs are signed with the opt-in like every other on-chain spend, so the
 funding transaction cannot be replayed on the SHA256d chain and the funding
 output never exists there, whichever coins paid for it. Nothing is left on that
 side for a cooperative close or a revoked commitment to spend, even on a
-channel type without the opt-in. The exception is a funding transaction signed
-elsewhere without the bit and let through with
-`--bitcoin.allow-legacy-sighash`, see below.
+channel type without the opt-in. The exceptions are funding transactions this
+node does not sign: one signed elsewhere without the bit and let through with
+`--bitcoin.allow-legacy-sighash`, see below, and a channel opened with a
+`chan_point_shim`, whose funding transaction is built and broadcast entirely
+outside this node and is never checked here.
 
 Simple taproot channels, which are off by default (`--protocol.simple-taproot-chans`),
 never carry `option_unified_sigs`. Their commitment and closing signatures are
@@ -305,8 +310,8 @@ clients.
 A channel funded before the fork is the one thing this cannot protect: its
 funding output exists on both chains, and its commitment transactions carry
 the protocol's hash types. The daemon lists every such channel at startup,
-at WARN, with the advice to close it and reopen with coins received after
-block 961640. Restoring a stock LND seed here recovers the on-chain wallet
+at WARN, with the advice to close it and open a new one, which this node funds
+with the opt-in and so cannot be replayed, whatever coins pay for it. Restoring a stock LND seed here recovers the on-chain wallet
 only; its pre-fork coins are the same keys on both chains, and spending them
 here with the opt-in leaves their SHA256d twins untouched.
 

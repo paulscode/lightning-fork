@@ -98,8 +98,8 @@ here.
 ## 3. Gossip: a floor at the activation height
 
 A node ignores any `channel_announcement` whose `short_channel_id` names a
-block height **below 961,640**. At the activation height and above is
-ordinary.
+block height **below 961,640** (on testnet4, 150,308). At the activation height
+and above is ordinary.
 
 A funding output from before the change of proof of work exists for nodes
 that did not upgrade too, and its spend may happen where this node cannot
@@ -112,10 +112,11 @@ a channel of ours funded before the activation is in the same position.
 The rule applies to announcements as they arrive. It does not remove entries a
 node already holds: both implementations load their graph from a local store
 without re-checking it, so a pre-activation channel accepted before the rule
-existed stays until it is pruned as a zombie. An operator who wants it gone
-sooner can delete the gossip store and resync. This is worth knowing rather
-than worth engineering around, since the store is rebuilt from the network
-anyway.
+existed stays until it is pruned as a zombie. From `0.21.3-beta-blake2b.14`
+such a channel is treated as unannounced meanwhile, as the merged text of
+BOLT 7 asks: only an update its own peer sends, for that peer's side of a
+channel with this node, is used, and nothing about it is relayed or served.
+This node's own update for such a channel goes to the peer directly.
 
 
 ## 4. Channels: `option_unified_sigs`, bit 514 in `channel_type`
@@ -171,14 +172,19 @@ produces a transaction that is valid and malleable by a third party.
 
 The opt-in is not a property of the commitment type, and is not the
 operator's to choose: it is added to whatever channel type is negotiated,
-named or implicit, whenever both peers support it. Taproot channels are the
-exception and are refused, because there the commitment signature is a MuSig2
-partial signature over a BIP341 digest, so opting in would be a wire change
-rather than a hash type, and two sides would sign different digests.
+named or implicit, whenever both peers support it. Simple taproot channels are
+the exception: a taproot channel type carrying the opt-in is refused, because
+there the commitment signature is a MuSig2 partial signature over a BIP341
+digest, so opting in would be a wire change rather than a hash type, and two
+sides would sign different digests. A taproot channel without it can still be
+opened where `--protocol.simple-taproot-chans` is set.
 
-A channel funded from coins that existed before the fork, on a channel type
-without the opt-in, remains replayable through its commitment transactions.
-Prefer funding from coins received after the activation.
+A channel type without the opt-in does not make a channel this node funds
+replayable, whatever coins paid for it: the funding inputs are signed with the
+opt-in like every other on-chain spend, so the funding output never exists for
+nodes that have not upgraded, and there is nothing for a commitment or a close
+to spend there. See "Replay protection" in `docs/blake2b.md` for the
+exceptions, which are all funding transactions signed outside this node.
 
 ## 5. Invoices: `option_blake2b` in the `9` field
 
@@ -260,6 +266,7 @@ it had just minted, and every artifact from Core Lightning along with them.
 | --- | --- | --- |
 | 512 / 513 | `option_blake2b` | 512 in `init`, `node_announcement`, the BOLT 11 `9` field, `offer_features`, `invreq_features` and `invoice_features`; even only |
 | 514 / 515 | `option_unified_sigs` | 514 inside `channel_type`; 515 in `init` and `node_announcement` |
+| 512 / 513 (watchtower) | none | 512 in the watchtower protocol's own `Init`, from `0.21.3-beta-blake2b.14`; a separate namespace with the same numbers |
 
 These are the numbers allocated in `lightning-blake2b/bolts#3` and
 `lightning-blake2b/bolts#1`, with 516 to 519 kept for this rule set. 512 to
