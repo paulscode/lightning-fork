@@ -1469,7 +1469,13 @@ func (c *KVStore) AddEdgeProof(_ context.Context, chanID lnwire.ShortChannelID,
 	var chanKey [8]byte
 	binary.BigEndian.PutUint64(chanKey[:], chanID.ToUint64())
 
-	return kvdb.Update(c.db, func(tx kvdb.RwTx) error {
+	// The channel cache holds the edge info, proof included, for horizon
+	// queries. A proof can replace an earlier one, not only fill a
+	// missing one, so the cached copy must go with it.
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+
+	err := kvdb.Update(c.db, func(tx kvdb.RwTx) error {
 		edges := tx.ReadWriteBucket(edgeBucket)
 		if edges == nil {
 			return ErrEdgeNotFound
@@ -1489,6 +1495,13 @@ func (c *KVStore) AddEdgeProof(_ context.Context, chanID lnwire.ShortChannelID,
 
 		return putChanEdgeInfo(edgeIndex, edge, chanKey)
 	}, func() {})
+	if err != nil {
+		return err
+	}
+
+	c.chanCache.remove(lnwire.GossipVersion1, chanID.ToUint64())
+
+	return nil
 }
 
 const (

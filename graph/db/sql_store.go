@@ -3771,6 +3771,12 @@ func (s *SQLStore) AddEdgeProof(ctx context.Context,
 		scidBytes = channelIDToBytes(scid.ToUint64())
 	)
 
+	// The channel cache holds the edge info, proof included, for horizon
+	// queries. A proof can replace an earlier one, not only fill a
+	// missing one, so the cached copy must go with it.
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
 	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
 		var (
 			res sql.Result
@@ -3823,6 +3829,8 @@ func (s *SQLStore) AddEdgeProof(ctx context.Context,
 	if err != nil {
 		return fmt.Errorf("unable to add edge proof: %w", err)
 	}
+
+	s.chanCache.remove(proof.Version, scid.ToUint64())
 
 	return nil
 }
