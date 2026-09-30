@@ -31,7 +31,10 @@ const (
 	// without setting option_blake2b in its init message: it has not said
 	// it follows the BLAKE2b proof of work rules, so a funding transaction
 	// between us might confirm on a chain this node does not follow.
-	ErrPeerNotBlake2b FundingError = 3
+	//
+	// Numbered well clear of upstream's, which takes the next ones in
+	// order (0.21.4 adds 3 and 4); only the text goes on the wire.
+	ErrPeerNotBlake2b FundingError = 200
 )
 
 // String returns a human readable version of the target FundingError.
