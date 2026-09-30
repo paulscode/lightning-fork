@@ -2138,6 +2138,23 @@ func (f *Manager) funderProcessAcceptChannel(peer lnpeer.Peer,
 		// explicitly set it in the open_channel message. For now, we
 		// check that it's the same type we'd have arrived through
 		// implicit negotiation. If it's another type, we fail the flow.
+		//
+		// That comparison is of commitment types, which do not see
+		// option_unified_sigs: the bit is stripped before matching. A
+		// reply that carries it would have the peer sign under the
+		// unified hash while this reservation, made without an explicit
+		// type, signs the ordinary way, and the mismatch would only show
+		// as a bad signature later. Refuse it here instead.
+		acked := lnwire.RawFeatureVector(*msg.ChannelType)
+		if acked.IsSet(lnwire.UnifiedSigsRequired) ||
+			acked.IsSet(lnwire.UnifiedSigsOptional) {
+
+			err := errors.New("channel type binds signatures to " +
+				"the unified hash, which was not proposed")
+			f.failFundingFlow(peer, cid, err)
+			return
+		}
+
 		_, implicitCommitType := implicitNegotiateCommitmentType(
 			peer.LocalFeatures(), peer.RemoteFeatures(),
 		)

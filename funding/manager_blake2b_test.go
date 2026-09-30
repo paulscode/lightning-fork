@@ -9,8 +9,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
@@ -222,4 +222,97 @@ func TestRequireBlake2bPeerOffByDefault(t *testing.T) {
 	require.ErrorIs(
 		t, f.checkPeerBlake2b(&testNode{}), lnwire.ErrPeerNotBlake2b,
 	)
+}
+
+// TestAcceptChannelUnpromptedUnifiedSigs checks that a funder which proposed
+// no channel type refuses an accept_channel whose type carries
+// option_unified_sigs. Without explicit negotiation the reservation signs the
+// ordinary way; a peer signing under the unified hash could never produce a
+// signature it accepts.
+func TestAcceptChannelUnpromptedUnifiedSigs(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		reply   *lnwire.RawFeatureVector
+		refused bool
+	}{
+		{
+			// BOLT 2: no type proposed, none echoed.
+			name:    "no type",
+			refused: false,
+		},
+		{
+			name: "type with unified sigs",
+			reply: lnwire.NewRawFeatureVector(
+				lnwire.StaticRemoteKeyRequired,
+				lnwire.AnchorsZeroFeeHtlcTxRequired,
+				lnwire.UnifiedSigsRequired,
+			),
+			refused: true,
+		},
+		{
+			name: "type with the odd unified bit",
+			reply: lnwire.NewRawFeatureVector(
+				lnwire.StaticRemoteKeyRequired,
+				lnwire.AnchorsZeroFeeHtlcTxRequired,
+				lnwire.UnifiedSigsOptional,
+			),
+			refused: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			alice, bob := setupFundingManagers(t)
+			t.Cleanup(func() {
+				tearDownFundingManagers(t, alice, bob)
+			})
+
+			// Both sides support unified signatures but not
+			// explicit channel type negotiation, so Alice proposes
+			// no type and her reservation signs the ordinary way.
+			featureBits := []lnwire.FeatureBit{
+				lnwire.StaticRemoteKeyOptional,
+				lnwire.AnchorsZeroFeeHtlcTxOptional,
+				lnwire.Blake2bRequired,
+				lnwire.UnifiedSigsOptional,
+			}
+			alice.localFeatures = featureBits
+			alice.remoteFeatures = featureBits
+			bob.localFeatures = featureBits
+			bob.remoteFeatures = featureBits
+
+			alice.fundingMgr.InitFundingWorkflow(&InitFundingMsg{
+				Peer:            bob,
+				TargetPubkey:    bob.privKey.PubKey(),
+				ChainHash:       *fundingNetParams.GenesisHash,
+				LocalFundingAmt: 500000,
+				Updates: make(
+					chan *lnrpc.OpenStatusUpdate,
+				),
+				Err: make(chan error, 1),
+			})
+			open := expectOpenChannelMsg(t, alice.msgChan)
+			require.Nil(t, open.ChannelType)
+
+			bob.fundingMgr.ProcessFundingMsg(open, alice)
+			accept, ok := assertFundingMsgSent(
+				t, bob.msgChan, "AcceptChannel",
+			).(*lnwire.AcceptChannel)
+			require.True(t, ok)
+
+			// Bob's reply names a type anyway, or none.
+			accept.ChannelType = (*lnwire.ChannelType)(tc.reply)
+			alice.fundingMgr.ProcessFundingMsg(accept, bob)
+
+			if tc.refused {
+				assertFundingMsgSent(t, alice.msgChan, "Error")
+			} else {
+				assertFundingMsgSent(
+					t, alice.msgChan, "FundingCreated",
+				)
+			}
+		})
+	}
 }
