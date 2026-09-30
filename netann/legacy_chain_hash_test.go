@@ -174,3 +174,41 @@ func TestLegacyChainHashGossip(t *testing.T) {
 		require.Error(t, verifyChannelUpdate1Signature(u, pub))
 	})
 }
+
+// TestSignedUnderLegacyChainHash checks the question the gossiper asks before
+// passing an announcement on: do its signatures hold only under the withdrawn
+// chain_hash? And that the strict check refuses exactly those.
+func TestSignedUnderLegacyChainHash(t *testing.T) {
+	t.Parallel()
+
+	current := *chaincfg.MainNetParams.GenesisHash
+	legacy, ok := legacychain.For(current)
+	require.True(t, ok)
+
+	// Signed under the current hash: an ordinary announcement.
+	fresh := signedAnn1(t, current, current)
+	require.False(t, SignedUnderLegacyChainHash(fresh))
+	require.NoError(t, ValidateChannelAnnStrict(fresh))
+
+	// Signed under the withdrawn hash, carried under the current one, as
+	// this fork relays those made by releases up to .9.
+	old := signedAnn1(t, legacy, current)
+	require.True(t, SignedUnderLegacyChainHash(old))
+	require.Error(t, ValidateChannelAnnStrict(old))
+	require.NoError(t, validateChannelAnn1(old),
+		"still accepted into this node's own graph")
+
+	// Signed under an unrelated value: neither, and invalid.
+	bogus := signedAnn1(t, chainhash.Hash{0x01}, current)
+	require.False(t, SignedUnderLegacyChainHash(bogus))
+	require.Error(t, ValidateChannelAnnStrict(bogus))
+
+	// A network with no withdrawn value has nothing to fall back to.
+	none := signedAnn1(t, chainhash.Hash{0x02}, chainhash.Hash{0x03})
+	require.False(t, SignedUnderLegacyChainHash(none))
+
+	// One tampered signature: not legacy either, whatever hash it names.
+	tampered := signedAnn1(t, legacy, current)
+	tampered.NodeSig2 = fresh.NodeSig2
+	require.False(t, SignedUnderLegacyChainHash(tampered))
+}

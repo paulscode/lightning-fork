@@ -121,6 +121,39 @@ func validateChannelAnn1(a *lnwire.ChannelAnnouncement1) error {
 	return nil
 }
 
+// SignedUnderLegacyChainHash reports whether a channel announcement's
+// signatures hold only under the chain_hash its network advertised until
+// 2026-09-17, not under the one it names now.
+//
+// Such an announcement is accepted here, by the fallback in
+// validateChannelAnn1, but no other implementation can check it: BOLT 7 has
+// the signatures cover the message as sent. So it is kept for this node's own
+// graph and not passed on. A malformed announcement, or one that holds under
+// neither value, reports false; ValidateChannelAnn is what rejects those.
+func SignedUnderLegacyChainHash(a *lnwire.ChannelAnnouncement1) bool {
+	if verifyChannelAnn1Sigs(a) == nil {
+		return false
+	}
+
+	legacy, ok := legacychain.For(a.ChainHash)
+	if !ok {
+		return false
+	}
+
+	signed := *a
+	signed.ChainHash = legacy
+
+	return verifyChannelAnn1Sigs(&signed) == nil
+}
+
+// ValidateChannelAnnStrict is ValidateChannelAnn without the fallback to the
+// withdrawn chain_hash: the signatures must hold over the message as given.
+// It is for proofs this node assembles or replaces, which have to be ones
+// every implementation can check.
+func ValidateChannelAnnStrict(a *lnwire.ChannelAnnouncement1) error {
+	return verifyChannelAnn1Sigs(a)
+}
+
 // verifyChannelAnn1Sigs checks the four signatures of a channel announcement
 // over the message exactly as given.
 func verifyChannelAnn1Sigs(a *lnwire.ChannelAnnouncement1) error {
