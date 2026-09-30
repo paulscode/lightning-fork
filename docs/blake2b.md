@@ -38,13 +38,17 @@ given in the four places it actually matters:
 | --- | --- | --- |
 | Genesis hash and BOLT `chain_hash` | unchanged, and the same value a node which has not upgraded uses | `init` networks, `open_channel`, gossip, channel backups. **Says nothing about which rules a node follows, anywhere.** |
 | `option_blake2b`, bit 512, even | set in `init` and `node_announcement` | Peering. A node that does not know the bit must hang up, per BOLT 1 |
-| Gossip height floor | 961,640 | `channel_announcement` below the activation is ignored |
+| Gossip height floor | 961,640 (testnet4: 150,308) | `channel_announcement` below the activation is ignored; a channel below it already in the graph is treated as unannounced |
 | `option_unified_sigs`, bit 514 | inside `channel_type` | Channels: both sides sign with `SIGHASH_UNIFIED` set |
 | `option_blake2b` in the `9` field and the BOLT 12 vectors | bit 512, even | BOLT 11 invoices, and BOLT 12 offers, invoice requests and invoices. A payer which has not upgraded refuses them on the unknown even bit rather than attempting a payment it could not settle |
+| Watchtower `Init` bit 512, even | set by every tower and client | Watchtower sessions. A tower which has not upgraded refuses on the unknown even bit, and this node refuses a tower or client that does not set 512 or 513 |
 
-The bit numbers are the ones allocated in
+The bit numbers, the height floor and the unified signature hash are specified
+in [lightning-blake2b/bolts](https://github.com/lightning-blake2b/bolts),
+shared with privkeyio's Core Lightning:
 [bolts#3](https://github.com/lightning-blake2b/bolts/pull/3) (512/513) and
-[bolts#1](https://github.com/lightning-blake2b/bolts/pull/1) (514/515). Earlier
+[bolts#1](https://github.com/lightning-blake2b/bolts/pull/1) (514/515 and the
+gossip rules), both merged on 2026-09-29. Earlier
 builds emitted 68 and 70, which were never allocated to anything; moving to the
 allocated pair is a flag day, because a build on either pair refuses one on the
 other in both directions.
@@ -67,7 +71,12 @@ Consequences:
   Invoices this daemon minted under the old prefix still decode, so that
   `listinvoices` keeps working across the upgrade.
 - A node which has not upgraded never gets as far as sending `open_channel` or
-  gossip: it disconnects at `init` on bit 512. Its announcements would not be
+  gossip: it disconnects at `init` on bit 512. A peer that stays connected
+  without setting 512 or 513, such as a client that speaks the wire protocol
+  only to reach a node's RPC, is kept, as BOLT 9 requires, but no channel is
+  opened with it in either direction: `open_channel` from it is answered with
+  `peer does not set option_blake2b`, and `openchannel` to it fails the same
+  way. Its announcements would not be
   ignored on `chain_hash` grounds if they did arrive, because it sends the
   same `chain_hash` this node does; what covers them is the height floor for
   pre-activation channels and the funding output lookup for the rest.
@@ -179,14 +188,29 @@ ends move, then resumes. Nothing in the migration can change this; it is what
 changing a chain identifier costs. If you have channels, agree a time with your
 peers rather than upgrading and hoping.
 
-**Gossip signed before the change still counts.** A public channel's
-`channel_announcement`, and every `channel_update` made before the upgrade,
-were signed over the old value, and only the two nodes that made them could
-sign again. So a node checks such a message under the current chain hash and,
-failing that, under this network's old one and nothing else, and takes a
-message that names the old value as naming this chain. Without that, a channel
-announced before the upgrade could never reach a node that had not already
-seen it, and its fee changes would reach nobody.
+**Gossip signed before the change is kept, and signed again.** A public
+channel's `channel_announcement`, and every `channel_update` made before the
+upgrade, were signed over the old value. A node checks such a message under the
+current chain hash and, failing that, under this network's old one and nothing
+else, and takes a message that names the old value as naming this chain, so
+those channels stay in its own graph and can be routed through.
+
+It does not pass them on. Only this fork can check such a signature: every
+other implementation checks it over the message as sent, and Core Lightning
+answers each one with a `Bad node_signature` warning. From
+`0.21.3-beta-blake2b.14` an announcement whose proof holds only under the old
+value is kept out of what the node broadcasts and serves to peers.
+
+Instead the channel is announced again. At startup the node finds every
+channel of its own whose proof was made under the old value and signs its
+half of a new one, over the message as it is sent now; when its peer, also on
+`.14` or later, does the same, the new proof replaces the old and the channel
+is announced to everyone. A peer on an earlier release answers with its old
+half, which is refused, and the old proof stays until that peer upgrades. A
+node that learns a third party's channel this way replaces the old proof it
+held with the new one. Channel updates need none of this: a node signs a fresh
+one at least every two weeks, so any made before the change have long been
+replaced.
 
 Neither applies to a node with no channels, which can be upgraded whenever.
 
@@ -202,7 +226,7 @@ network with no filter servers; both are refused at configuration time.
 
 | Option | Meaning |
 | --- | --- |
-| `bitcoin.blake2b-activation-height=N` | Required on regtest and simnet; must match the node's `-testactivationheight=blake2b@N`. Overrides the node-reported height on testnet4. Refused on mainnet. |
+| `bitcoin.blake2b-activation-height=N` | Required on regtest and simnet; must match the node's `-testactivationheight=blake2b@N`. On testnet4 it overrides the node-reported height, and the gossip floor, which is otherwise 150,308 as the spec fixes it. Refused on mainnet. |
 | `bitcoin.chain-hash-override=<hex>` | Regtest only: advertise this chain hash instead of the built-in one, for interoperability testing. |
 | `require-peer-networks` | Off by default; see above. Disconnects peers that send no networks list. `allow-peers-without-networks` is accepted and ignored, so configurations written before this still start. |
 
@@ -240,10 +264,24 @@ signs them the way BOLT 3 already says, so a peer that has never heard of the
 opt-in stays able to verify.
 
 That channel type is what closes the replay hole for bilateral signatures, and
-it is negotiated by default with any peer that supports it. What is left is a
-channel funded from pre-fork coins on a channel type *without* the opt-in,
-which is now only reachable with a peer that cannot do it. Prefer funding from
-coins received after the activation.
+it is negotiated by default with any peer that supports it. It is not the only
+thing standing in the way, though, for a channel this node funds. Its funding
+inputs are signed with the opt-in like every other on-chain spend, so the
+funding transaction cannot be replayed on the SHA256d chain and the funding
+output never exists there, whichever coins paid for it. Nothing is left on that
+side for a cooperative close or a revoked commitment to spend, even on a
+channel type without the opt-in. The exception is a funding transaction signed
+elsewhere without the bit and let through with
+`--bitcoin.allow-legacy-sighash`, see below.
+
+Simple taproot channels, which are off by default (`--protocol.simple-taproot-chans`),
+never carry `option_unified_sigs`. Their commitment and closing signatures are
+MuSig2 partial signatures under `SIGHASH_DEFAULT`, which has no hash type byte
+to carry the bit, and opting them in would be a change to the wire format that
+nobody has specified. They are bound to this chain by their funding
+transaction alone: safe for a channel this node funds, for the reason above.
+For one a peer funds, it is the peer's own coins whose twins are at stake, if
+the peer signed its funding inputs without the opt-in.
 
 The justice transactions handed to a watchtower are signed the legacy way,
 because the tower reconstructs their witnesses without a hash type byte. That
@@ -251,6 +289,16 @@ is safe for a reason worth stating: such a transaction spends an output created
 by a commitment transaction that was itself signed with the opt-in, so on the
 SHA256d chain that output does not exist and there is nothing to replay
 against.
+
+What does matter is which chain the tower watches. A tower learns it only from
+the genesis hash in the watchtower `Init` message, which does not tell the two
+apart, so up to `.13` a client would open sessions with a stock SHA256d tower,
+and that tower would watch a chain where the breaches it guards against never
+appear. From `.14` every tower and client of this fork sets an even bit 512 in
+its `Init`: a stock tower or client refuses it at the handshake, and this node
+refuses one that sets neither 512 nor 513. A tower running an earlier Lightning
+Fork release does not set it either, so update a tower together with its
+clients.
 
 A channel funded before the fork is the one thing this cannot protect: its
 funding output exists on both chains, and its commitment transactions carry
