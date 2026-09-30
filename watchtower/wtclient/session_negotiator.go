@@ -372,7 +372,14 @@ func (n *sessionNegotiator) createSession(tower *Tower, keyIndex uint32) error {
 			fallthrough
 
 		case err != nil:
-			n.log.Debugf("Request for session negotiation with "+
+			// A tower that does not say it follows the BLAKE2b
+			// rules is one no session will ever be made with; say
+			// so where an operator will see it, not only at debug.
+			logf := n.log.Debugf
+			if errors.Is(err, wtwire.ErrNotBlake2b) {
+				logf = n.log.Warnf
+			}
+			logf("Request for session negotiation with "+
 				"tower=%s failed, trying again -- reason: "+
 				"%v", lnAddr, err)
 

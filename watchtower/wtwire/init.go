@@ -106,10 +106,11 @@ func (msg *Init) CheckRemoteInit(remoteInit *Init,
 		return err
 	}
 
-	// A peer that does not say it follows the BLAKE2b rules may be on the
-	// chain that did not upgrade, which shares the genesis hash checked
-	// above. A tower there would watch the wrong chain, and a client there
-	// would send justice transactions this tower cannot use.
+	// A peer that does not say it follows the BLAKE2b rules may be one
+	// that has not upgraded, which carries the genesis hash checked above.
+	// Such a tower would never see a breach on the blocks this node
+	// follows, and such a client would send justice transactions this
+	// tower cannot use.
 	if msg.ConnFeatures.IsSet(Blake2bRequired) &&
 		!remoteConnFeatures.IsSet(Blake2bRequired) &&
 		!remoteConnFeatures.IsSet(Blake2bOptional) {
@@ -123,10 +124,10 @@ func (msg *Init) CheckRemoteInit(remoteInit *Init,
 // ErrNotBlake2b is returned when the remote Init does not set Blake2bRequired
 // or Blake2bOptional while ours does.
 var ErrNotBlake2b = errors.New("remote init does not set the blake2b bit: " +
-	"the peer may follow the chain that did not upgrade its proof of " +
-	"work, which shares this chain's genesis hash, and would watch or " +
-	"be watched on the wrong chain; update the tower or client to a " +
-	"Lightning Fork release that sets it")
+	"the peer has not said it follows the BLAKE2b proof of work rules, " +
+	"and a tower or client which has not upgraded carries the same " +
+	"genesis hash, so nothing else tells them apart; update it to a " +
+	"Lightning Fork release that sets the bit")
 
 // ErrUnknownChainHash signals that the remote Init has a different chain hash
 // from the one we advertised.
