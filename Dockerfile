@@ -9,7 +9,7 @@
 # The builder runs on the build machine's own architecture and cross-compiles
 # for the target (the release build has no cgo), so a multi-platform build
 # does not run the Go compiler under emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS builder
 
 ARG checkout="blake2b"
 ARG git_url="https://github.com/paulscode/lightning-fork"
