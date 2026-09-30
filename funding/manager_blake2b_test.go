@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntest/mock"
@@ -315,4 +316,118 @@ func TestAcceptChannelUnpromptedUnifiedSigs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestResignChannelProof checks that this node's half of a channel's proof
+// can be signed again, as the gossiper asks for a channel whose stored proof
+// was made under the withdrawn chain_hash. The new half covers the message as
+// it is sent now, so for a channel announced by this release it is the very
+// half sent the first time: the signatures are deterministic.
+func TestResignChannelProof(t *testing.T) {
+	t.Parallel()
+
+	alice, bob := setupFundingManagers(t)
+	t.Cleanup(func() { tearDownFundingManagers(t, alice, bob) })
+
+	updateChan := make(chan *lnrpc.OpenStatusUpdate)
+	fundingOutPoint, fundingTx := openChannel(
+		t, alice, bob, 500000, 0, 1, updateChan, true, nil,
+	)
+	chanID := lnwire.NewChanIDFromOutPoint(*fundingOutPoint)
+
+	sendAndCheckFirstConfirmation(t, alice, chanID, fundingTx)
+	sendAndCheckFirstConfirmation(t, bob, chanID, fundingTx)
+	assertMarkedOpen(t, alice, bob, fundingOutPoint)
+
+	readyAlice, ok := assertFundingMsgSent(
+		t, alice.msgChan, "ChannelReady",
+	).(*lnwire.ChannelReady)
+	require.True(t, ok)
+	readyBob, ok := assertFundingMsgSent(
+		t, bob.msgChan, "ChannelReady",
+	).(*lnwire.ChannelReady)
+	require.True(t, ok)
+	assertChannelReadySent(t, alice, bob, fundingOutPoint)
+	alice.fundingMgr.ProcessFundingMsg(readyBob, bob)
+	bob.fundingMgr.ProcessFundingMsg(readyAlice, alice)
+	assertHandleChannelReady(t, alice, bob)
+	assertChannelAnnouncements(t, alice, bob, 500000, nil, nil, nil, nil)
+	assertAddedToGraph(t, alice, bob, fundingOutPoint)
+	waitForOpenUpdate(t, updateChan)
+
+	alice.mockNotifier.sixConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+	bob.mockNotifier.sixConfChannel <- &chainntnfs.TxConfirmation{
+		Tx: fundingTx,
+	}
+
+	// Alice's first half, among what she announces at six confirmations.
+	var first *lnwire.AnnounceSignatures1
+	for i := 0; i < 2; i++ {
+		select {
+		case msg := <-alice.announceChan:
+			if sig, ok := msg.(*lnwire.AnnounceSignatures1); ok {
+				first = sig
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("alice did not announce the channel")
+		}
+	}
+	require.NotNil(t, first)
+
+	channels, err := alice.fundingMgr.cfg.ChannelDB.FetchAllOpenChannels()
+	require.NoError(t, err)
+	require.Len(t, channels, 1)
+	scid := channels[0].ShortChanID()
+	require.Equal(t, first.ShortChannelID, scid)
+
+	// Handing the half over waits for the gossiper to take it, which is
+	// why the gossiper calls this from a goroutine of its own.
+	errChan := make(chan error, 1)
+	go func() { errChan <- alice.fundingMgr.ResignChannelProof(scid) }()
+
+	select {
+	case msg := <-alice.announceChan:
+		again, ok := msg.(*lnwire.AnnounceSignatures1)
+		require.True(t, ok, "sent %T", msg)
+		require.Equal(t, first, again)
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("no new half was handed to the gossiper")
+	}
+	require.NoError(t, <-errChan)
+
+	// A channel it does not have is refused.
+	unknown := scid
+	unknown.TxPosition++
+	require.ErrorContains(t,
+		alice.fundingMgr.ResignChannelProof(unknown), "no open channel")
+
+}
+
+// TestResignChannelProofPrivate: a private channel has no proof to replace,
+// and is refused.
+func TestResignChannelProofPrivate(t *testing.T) {
+	t.Parallel()
+
+	alice, bob := setupFundingManagers(t)
+	t.Cleanup(func() { tearDownFundingManagers(t, alice, bob) })
+
+	updateChan := make(chan *lnrpc.OpenStatusUpdate)
+	fundingOutPoint, fundingTx := openChannel(
+		t, alice, bob, 500000, 0, 1, updateChan, false, nil,
+	)
+	chanID := lnwire.NewChanIDFromOutPoint(*fundingOutPoint)
+	sendAndCheckFirstConfirmation(t, alice, chanID, fundingTx)
+	sendAndCheckFirstConfirmation(t, bob, chanID, fundingTx)
+	assertMarkedOpen(t, alice, bob, fundingOutPoint)
+
+	channels, err := alice.fundingMgr.cfg.ChannelDB.FetchAllOpenChannels()
+	require.NoError(t, err)
+	require.Len(t, channels, 1)
+
+	require.ErrorContains(t, alice.fundingMgr.ResignChannelProof(
+		channels[0].ShortChanID(),
+	), "not public")
 }
