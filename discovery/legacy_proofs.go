@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -357,8 +358,7 @@ var _ ChannelGraphTimeSeries = (*servedSeries)(nil)
 // of this node's own channels it finds.
 //
 // NOTE: must be run as a goroutine.
-func (d *AuthenticatedGossiper) scanLegacyProofs(ctx context.Context,
-	bestHeight uint32) {
+func (d *AuthenticatedGossiper) scanLegacyProofs(ctx context.Context) {
 
 	defer d.wg.Done()
 
@@ -366,9 +366,11 @@ func (d *AuthenticatedGossiper) scanLegacyProofs(ctx context.Context,
 	copy(self[:], d.selfKey.SerializeCompressed())
 
 	for {
+		// Every channel above the floor, whatever the height: once
+		// the scan finishes the set is taken as complete.
 		err := d.legacyProofs.scan(
 			ctx, d.cfg.ChanSeries, d.cfg.ChainHash,
-			d.cfg.MinAnnouncementHeight, bestHeight, self,
+			d.cfg.MinAnnouncementHeight, math.MaxUint32, self,
 			d.confirmLegacyProof, d.resignChannelProof,
 		)
 		if err == nil || ctx.Err() != nil {
@@ -439,8 +441,9 @@ func (d *AuthenticatedGossiper) resignChannelProof(
 	}()
 }
 
-// withoutLegacyProofs drops, from a batch about to be broadcast, the channel
-// announcements whose proof holds only under the withdrawn chain_hash, and,
+// withoutLegacyProofs drops, from a batch about to be broadcast, anything
+// about a channel funded below the gossip floor, the channel announcements
+// whose proof holds only under the withdrawn chain_hash, and,
 // when relayed is set, the updates of such channels as well. This node's own
 // updates for them stay: its counterparty, on an earlier release, still
 // routes by them.
@@ -449,8 +452,16 @@ func (d *AuthenticatedGossiper) withoutLegacyProofs(msgs []msgWithSenders,
 
 	kept := msgs[:0:0]
 	for _, m := range msgs {
+		floor := d.cfg.MinAnnouncementHeight
 		switch msg := m.msg.(type) {
 		case *lnwire.ChannelAnnouncement1:
+			// Nothing below the gossip floor is announced, this
+			// node's own channels included (BOLT-blake2b #7); an
+			// exchange of proofs that completes late for one would
+			// otherwise send it out.
+			if belowFloor(msg.ShortChannelID, floor) {
+				continue
+			}
 			if d.legacyProofs.isLegacyAnn(msg) {
 				log.Debugf("Not broadcasting the announcement "+
 					"of %v: its proof was signed under the "+
@@ -460,6 +471,9 @@ func (d *AuthenticatedGossiper) withoutLegacyProofs(msgs []msgWithSenders,
 			}
 
 		case *lnwire.ChannelUpdate1:
+			if belowFloor(msg.ShortChannelID, floor) {
+				continue
+			}
 			if relayed && d.legacyProofs.has(msg.ShortChannelID) {
 				continue
 			}
@@ -582,4 +596,28 @@ func (d *AuthenticatedGossiper) keepOwnHalf(own *channeldb.WaitingProof) {
 	if err := d.cfg.WaitingProofStore.Add(own); err != nil {
 		log.Debugf("Unable to keep this node's half: %v", err)
 	}
+}
+
+// storedProofIsLegacy reports whether a channel's stored proof holds only
+// under the withdrawn chain_hash. After the startup scan the set answers;
+// before it, the stored announcement's signatures do, and a legacy one is
+// remembered, so that the re-proof exchange works from the first message.
+func (d *AuthenticatedGossiper) storedProofIsLegacy(
+	info *models.ChannelEdgeInfo, e1, e2 *models.ChannelEdgePolicy) bool {
+
+	scid := lnwire.NewShortChanIDFromInt(info.ChannelID)
+	if d.legacyProofs.has(scid) {
+		return true
+	}
+	if d.legacyProofs.scanned.Load() || info.AuthProof == nil {
+		return false
+	}
+
+	stored, _, _, err := netann.CreateChanAnnouncement(info, e1, e2)
+	if err != nil || !netann.SignedUnderLegacyChainHash(stored) {
+		return false
+	}
+	d.legacyProofs.add(scid)
+
+	return true
 }

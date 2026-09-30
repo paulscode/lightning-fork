@@ -207,9 +207,8 @@ type Config struct {
 
 	// ChainHash is the BOLT chain_hash of the network this node gossips
 	// for. Announcements and updates for any other chain are rejected. It
-	// is the genesis hash, which the Bitcoin BLAKE2b chain shares with the
-	// chain that did not upgrade, so it does not tell their gossip apart;
-	// MinAnnouncementHeight does that.
+	// is the genesis hash, which nodes that have not upgraded carry too,
+	// so it does not tell their gossip apart; MinAnnouncementHeight does.
 	ChainHash chainhash.Hash
 
 	// MinAnnouncementHeight is the lowest funding height a
@@ -772,7 +771,7 @@ func (d *AuthenticatedGossiper) start(ctx context.Context) error {
 
 	if d.cfg.ScanLegacyProofs {
 		d.wg.Add(1)
-		go d.scanLegacyProofs(ctx, height)
+		go d.scanLegacyProofs(ctx)
 	}
 
 	return nil
@@ -2210,7 +2209,13 @@ func (d *AuthenticatedGossiper) processRejectedEdge(_ context.Context,
 	if err != nil {
 		return nil, err
 	}
-	err = netann.ValidateChannelAnn(chanAnn, d.fetchPKScript)
+	// A proof that holds only under the withdrawn chain_hash is kept but
+	// marked, so that it is not passed on; see legacy_proofs.go.
+	legacyProof := false
+	if netann.ValidateChannelAnnStrict(chanAnn) != nil {
+		err = netann.ValidateChannelAnn(chanAnn, d.fetchPKScript)
+		legacyProof = err == nil
+	}
 	if err != nil {
 		err := fmt.Errorf("assembled channel announcement proof "+
 			"for shortChanID=%v isn't valid: %v",
@@ -2227,6 +2232,9 @@ func (d *AuthenticatedGossiper) processRejectedEdge(_ context.Context,
 			chanAnnMsg.ShortChannelID, err)
 		log.Error(err)
 		return nil, err
+	}
+	if legacyProof {
+		d.legacyProofs.add(chanAnnMsg.ShortChannelID)
 	}
 
 	// As we now have a complete channel announcement for this channel,
@@ -3188,12 +3196,14 @@ func (d *AuthenticatedGossiper) handleChanAnnouncement(ctx context.Context,
 		return nil, false
 	}
 
-	// If err is nil, release the lock immediately.
-	d.channelMtx.Unlock(scid.ToUint64())
-
+	// Marked before the lock is released, so that nothing serves the
+	// new edge in between.
 	if legacyProof {
 		d.legacyProofs.add(scid)
 	}
+
+	// If err is nil, release the lock immediately.
+	d.channelMtx.Unlock(scid.ToUint64())
 
 	log.Debugf("Finish adding edge for short_chan_id: %v", scid.ToUint64())
 
@@ -3869,7 +3879,7 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 	// A stored proof signed under the withdrawn chain_hash is being
 	// replaced: this half, with the other side's, makes the new one.
 	legacyProof := chanInfo.AuthProof != nil &&
-		d.legacyProofs.has(ann.ShortChannelID)
+		d.storedProofIsLegacy(chanInfo, e1, e2)
 
 	// Check if we already have the full proof for this channel.
 	if chanInfo.AuthProof != nil && !legacyProof {
@@ -4003,6 +4013,8 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 		return nil, false
 	}
 
+	var newLegacyProof bool
+
 	// With all the necessary components assembled validate the full
 	// channel announcement proof. One replacing a proof signed under the
 	// withdrawn chain_hash must hold over the message as sent, or it is no
@@ -4015,8 +4027,13 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 			// half pairs with it rather than asking for another.
 			d.keepOwnHalf(proof)
 		}
-	} else {
+	} else if netann.ValidateChannelAnnStrict(chanAnn) != nil {
+		// Two halves both signed under the withdrawn chain_hash, for
+		// an exchange that began before the change and completes now.
+		// The proof is kept, as any such one is, but marked, so that it
+		// is not passed on, and signed again below.
 		err = netann.ValidateChannelAnn(chanAnn, d.fetchPKScript)
+		newLegacyProof = err == nil
 	}
 	if err != nil {
 		err := fmt.Errorf("channel announcement proof for "+
@@ -4047,6 +4064,10 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 		log.Infof("Replaced the proof of channel %v, which was signed "+
 			"under the withdrawn chain hash; announcing it again",
 			ann.ShortChannelID)
+	}
+	if newLegacyProof {
+		d.legacyProofs.add(ann.ShortChannelID)
+		d.resignChannelProof(ann.ShortChannelID)
 	}
 
 	err = d.cfg.WaitingProofStore.Remove(proof.OppositeKey())

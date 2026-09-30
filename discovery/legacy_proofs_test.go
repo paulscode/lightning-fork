@@ -1176,3 +1176,136 @@ func TestMarkResigned(t *testing.T) {
 	require.False(t, l.markResigned(a))
 	require.True(t, l.markResigned(b))
 }
+
+// TestPreFloorProofNotAnnounced: a channel of this node's funded below the
+// floor, stored before the floor existed without a proof, completes its proof
+// exchange late. The proof is kept, but nothing about the channel is
+// broadcast (BOLT-blake2b #7 applies to this node's own announcements).
+func TestPreFloorProofNotAnnounced(t *testing.T) {
+	t.Parallel()
+
+	const floor = 1000
+	const height = 990
+
+	tCtx, err := createTestCtx(t, floor+proofMatureDelta, false)
+	require.NoError(t, err)
+	tCtx.gossiper.cfg.MinAnnouncementHeight = floor
+
+	ann := testAnn(
+		t, height, *chaincfg.MainNetParams.GenesisHash, selfKeyPriv,
+		remoteKeyPriv1,
+	)
+	edge, err := models.NewV1Channel(
+		ann.ShortChannelID.ToUint64(), ann.ChainHash, ann.NodeID1,
+		ann.NodeID2, &models.ChannelV1Fields{
+			BitcoinKey1Bytes: ann.BitcoinKey1,
+			BitcoinKey2Bytes: ann.BitcoinKey2,
+		},
+	)
+	require.NoError(t, err)
+	edge.Capacity = 1_000_000
+	require.NoError(t, tCtx.router.AddEdge(t.Context(), edge))
+
+	remotePeer := &mockPeer{
+		remoteKeyPriv1.PubKey(), make(chan lnwire.Message, 10),
+		tCtx.gossiper.quit, atomic.Bool{},
+	}
+	sendLocalMsg(t, tCtx, &lnwire.AnnounceSignatures1{
+		ShortChannelID:   ann.ShortChannelID,
+		NodeSignature:    ann.NodeSig1,
+		BitcoinSignature: ann.BitcoinSig1,
+	})
+	sendRemoteMsg(t, tCtx, &lnwire.AnnounceSignatures1{
+		ShortChannelID:   ann.ShortChannelID,
+		NodeSignature:    ann.NodeSig2,
+		BitcoinSignature: ann.BitcoinSig2,
+	}, remotePeer)
+
+	require.NotNil(t, storedProof(t, tCtx, ann.ShortChannelID))
+	for _, m := range broadcastsFor(tCtx, 4*trickleDelay) {
+		switch m.(type) {
+		case *lnwire.ChannelAnnouncement1, *lnwire.ChannelUpdate1:
+			t.Fatalf("broadcast %T for a channel below the floor", m)
+		}
+	}
+}
+
+// TestLateLegacyProofMarked: a proof exchange begun before the chain_hash
+// change completes after it, both halves signed under the old value. The
+// proof is kept, as any such one is, but marked, not broadcast, and this
+// node's half is signed again.
+func TestLateLegacyProofMarked(t *testing.T) {
+	t.Parallel()
+
+	tCtx, err := createTestCtx(t, proofMatureDelta, false)
+	require.NoError(t, err)
+	batch, err := tCtx.createLocalAnnouncements(0)
+	require.NoError(t, err)
+	sendLocalMsg(t, tCtx, batch.chanAnn)
+	assertNoBroadcast(t, tCtx)
+
+	resigned := make(chan lnwire.ShortChannelID, 1)
+	tCtx.gossiper.cfg.ResignChannelProof = func(
+		scid lnwire.ShortChannelID) error {
+
+		resigned <- scid
+		return nil
+	}
+
+	old := signAnnUnder(
+		t, batch.chanAnn, mainnetLegacyHash(t),
+		[4]*btcec.PrivateKey{
+			selfKeyPriv, remoteKeyPriv1, bitcoinKeyPriv1,
+			bitcoinKeyPriv2,
+		},
+	)
+	remotePeer := &mockPeer{
+		remoteKeyPriv1.PubKey(), make(chan lnwire.Message, 10),
+		tCtx.gossiper.quit, atomic.Bool{},
+	}
+	sendLocalMsg(t, tCtx, &lnwire.AnnounceSignatures1{
+		ShortChannelID:   old.ShortChannelID,
+		NodeSignature:    old.NodeSig1,
+		BitcoinSignature: old.BitcoinSig1,
+	})
+	sendRemoteMsg(t, tCtx, &lnwire.AnnounceSignatures1{
+		ShortChannelID:   old.ShortChannelID,
+		NodeSignature:    old.NodeSig2,
+		BitcoinSignature: old.BitcoinSig2,
+	}, remotePeer)
+
+	require.Equal(t, old.NodeSig1.ToSignatureBytes(),
+		storedProof(t, tCtx, old.ShortChannelID).NodeSig1())
+	require.True(t, tCtx.gossiper.legacyProofs.has(old.ShortChannelID))
+	for _, m := range broadcastsFor(tCtx, 4*trickleDelay) {
+		if _, ok := m.(*lnwire.ChannelAnnouncement1); ok {
+			t.Fatal("a legacy proof was broadcast")
+		}
+	}
+	select {
+	case scid := <-resigned:
+		require.Equal(t, old.ShortChannelID, scid)
+	case <-time.After(3 * time.Second):
+		t.Fatal("this node's half was not signed again")
+	}
+}
+
+// TestLegacyProofResignedBeforeScan: a peer's fresh half arriving before the
+// startup scan has marked the channel still starts the re-proof: the stored
+// proof is judged by its signatures.
+func TestLegacyProofResignedBeforeScan(t *testing.T) {
+	t.Parallel()
+
+	h := newResignHarness(t)
+	h.tCtx.gossiper.legacyProofs.remove(h.scid)
+	require.False(t, h.tCtx.gossiper.legacyProofs.scanned.Load())
+
+	sendRemoteMsg(t, h.tCtx, h.batch.remoteProofAnn, h.remotePeer)
+	select {
+	case <-h.resigned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("this node did not sign its half again")
+	}
+	h.assertHalfSentToPeer(t)
+	h.assertReplaced(t)
+}
