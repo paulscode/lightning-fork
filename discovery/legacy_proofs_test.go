@@ -664,6 +664,19 @@ func TestServedSeries(t *testing.T) {
 	}
 	require.Equal(t, want, horizon)
 
+	// A range reply lists only what a query for it would return. The
+	// legacy proof is known by now, from the fetches above.
+	require.True(t, s.legacy.has(old.ShortChannelID))
+	ranges, err := s.FilterChannelRange(current, 0, 2*floor, false)
+	require.NoError(t, err)
+	var listed []lnwire.ShortChannelID
+	for _, r := range ranges {
+		for _, c := range r.Channels {
+			listed = append(listed, c.ShortChannelID)
+		}
+	}
+	require.Equal(t, []lnwire.ShortChannelID{fine.ShortChannelID}, listed)
+
 	// With no floor, only the legacy proof is held back.
 	s.floor = 0
 	got, err = s.FetchChanAnns(current, []lnwire.ShortChannelID{

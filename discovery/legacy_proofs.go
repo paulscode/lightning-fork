@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/netann"
@@ -229,6 +230,43 @@ func (s *servedSeries) FetchChanAnns(chain chainhash.Hash,
 		if s.keep(msg) {
 			kept = append(kept, msg)
 		}
+	}
+
+	return kept, nil
+}
+
+// FilterChannelRange returns the inner series' ranges less the channels this
+// node will not serve, so that a reply_channel_range does not list channels
+// a query for which would come back empty.
+func (s *servedSeries) FilterChannelRange(chain chainhash.Hash, startHeight,
+	endHeight uint32, withTimestamps bool) ([]graphdb.BlockChannelRange,
+	error) {
+
+	ranges, err := s.ChannelGraphTimeSeries.FilterChannelRange(
+		chain, startHeight, endHeight, withTimestamps,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	kept := ranges[:0:0]
+	for _, r := range ranges {
+		if s.floor != 0 && r.Height < s.floor {
+			continue
+		}
+
+		chans := r.Channels[:0:0]
+		for _, c := range r.Channels {
+			if !s.legacy.has(c.ShortChannelID) {
+				chans = append(chans, c)
+			}
+		}
+		if len(chans) == 0 {
+			continue
+		}
+
+		r.Channels = chans
+		kept = append(kept, r)
 	}
 
 	return kept, nil
