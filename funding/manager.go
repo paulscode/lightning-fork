@@ -5784,3 +5784,53 @@ func (f *Manager) checkPeerBlake2b(peer lnpeer.Peer) error {
 
 	return lnwire.ErrPeerNotBlake2b
 }
+
+// ResignChannelProof signs this node's half of a channel announcement proof
+// again, for an open public channel of this node's, and hands it to the
+// gossiper, which sends it to the peer and assembles the new proof once the
+// peer's half is in.
+//
+// The gossiper asks for this for a channel whose stored proof was signed
+// under the chain_hash the network advertised until 2026-09-17: other
+// implementations cannot check that proof, so the channel is announced again
+// under the current one. It does not wait for the gossiper, which is where
+// the request comes from.
+func (f *Manager) ResignChannelProof(scid lnwire.ShortChannelID) error {
+	channels, err := f.cfg.ChannelDB.FetchAllOpenChannels()
+	if err != nil {
+		return err
+	}
+
+	var ch *channeldb.OpenChannel
+	for _, c := range channels {
+		if c.ShortChanID() == scid ||
+			(c.IsZeroConf() && c.ZeroConfRealScid() == scid) {
+
+			ch = c
+			break
+		}
+	}
+	switch {
+	case ch == nil:
+		return fmt.Errorf("no open channel with short_chan_id=%v", scid)
+
+	case ch.ChannelFlags&lnwire.FFAnnounceChannel == 0:
+		return fmt.Errorf("channel %v is not public", scid)
+	}
+
+	ann, err := f.newChanAnnouncement(
+		f.cfg.IDKey, ch.IdentityPub, &ch.LocalChanCfg.MultiSigKey,
+		ch.RemoteChanCfg.MultiSigKey.PubKey, scid,
+		lnwire.NewChanIDFromOutPoint(ch.FundingOutpoint), 0, 0, nil,
+		ch.ChanType,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Handed over, not awaited: the gossiper both asked for this and
+	// processes it.
+	f.cfg.SendAnnouncement(ann.chanProof)
+
+	return nil
+}

@@ -1316,6 +1316,12 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 		ChainParams:           s.cfg.ActiveNetParams.Params,
 		ChainHash:             s.cfg.ActiveNetParams.ChainHash,
 		MinAnnouncementHeight: s.cfg.ActiveNetParams.GossipFloor(),
+		ScanLegacyProofs:      true,
+		ResignChannelProof: func(scid lnwire.ShortChannelID) error {
+			// The funding manager is created after the gossiper;
+			// this is only called once both have started.
+			return s.fundingMgr.ResignChannelProof(scid)
+		},
 		Broadcast:             s.BroadcastMessage,
 		ChanSeries:            chanSeries,
 		NotifyWhenOnline:      s.NotifyWhenOnline,

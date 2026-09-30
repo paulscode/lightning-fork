@@ -206,9 +206,10 @@ type Config struct {
 	ChainParams *chaincfg.Params
 
 	// ChainHash is the BOLT chain_hash of the network this node gossips
-	// for. Announcements and updates for any other chain are rejected. On
-	// the Bitcoin BLAKE2b chain this is not the genesis hash, which that
-	// chain shares with Bitcoin.
+	// for. Announcements and updates for any other chain are rejected. It
+	// is the genesis hash, which the Bitcoin BLAKE2b chain shares with the
+	// chain that did not upgrade, so it does not tell their gossip apart;
+	// MinAnnouncementHeight does that.
 	ChainHash chainhash.Hash
 
 	// MinAnnouncementHeight is the lowest funding height a
@@ -221,6 +222,22 @@ type Config struct {
 	// against one would never leave the graph. Set to the activation
 	// height, which is where the two chains stop sharing outputs.
 	MinAnnouncementHeight uint32
+
+	// ResignChannelProof, if set, asks for a fresh announcement_signatures
+	// for one of this node's own public channels, to be handed back to the
+	// gossiper as a local message. It is called for a channel whose stored
+	// proof was signed under the chain_hash the network advertised until
+	// 2026-09-17, so that the channel can be announced in a form other
+	// implementations can check; see legacy_proofs.go.
+	ResignChannelProof func(lnwire.ShortChannelID) error
+
+	// ScanLegacyProofs runs, at start, the scan for stored proofs signed
+	// under the withdrawn chain_hash. The daemon sets it; it is off by
+	// default because the scan reads the whole graph through ChanSeries,
+	// which the syncer tests replace with a mock that answers only the
+	// queries each test expects. Until a scan has run, announcements are
+	// checked by their signatures as they are sent.
+	ScanLegacyProofs bool
 
 	// Graph is the subsystem which is responsible for managing the
 	// topology of lightning network. After incoming channel, node, channel
@@ -544,6 +561,10 @@ type AuthenticatedGossiper struct {
 	// banman tracks our peer's ban status.
 	banman *banman
 
+	// legacyProofs tracks the channels whose stored proof holds only under
+	// the withdrawn chain_hash; see legacy_proofs.go.
+	legacyProofs *legacyProofs
+
 	// networkMsgs is a channel that carries new network broadcasted
 	// message from outside the gossiper service to be processed by the
 	// networkHandler.
@@ -630,14 +651,19 @@ func New(cfg Config, selfKeyDesc *keychain.KeyDescriptor) *AuthenticatedGossiper
 		),
 		chanUpdateRateLimiter: make(map[uint64][2]*rate.Limiter),
 		banman:                newBanman(cfg.BanThreshold),
+		legacyProofs:          newLegacyProofs(),
 	}
 
 	gossiper.vb = NewValidationBarrier(1000, gossiper.quit)
 
 	gossiper.syncMgr = newSyncManager(&SyncManagerCfg{
-		ChainHash:                cfg.ChainHash,
-		MinAnnouncementHeight:    cfg.MinAnnouncementHeight,
-		ChanSeries:               cfg.ChanSeries,
+		ChainHash:             cfg.ChainHash,
+		MinAnnouncementHeight: cfg.MinAnnouncementHeight,
+		ChanSeries: &servedSeries{
+			ChannelGraphTimeSeries: cfg.ChanSeries,
+			legacy:                 gossiper.legacyProofs,
+			floor:                  cfg.MinAnnouncementHeight,
+		},
 		RotateTicker:             cfg.RotateTicker,
 		HistoricalSyncTicker:     cfg.HistoricalSyncTicker,
 		NumActiveSyncers:         cfg.NumActiveSyncers,
@@ -743,6 +769,11 @@ func (d *AuthenticatedGossiper) start(ctx context.Context) error {
 	d.wg.Add(2)
 	go d.syncBlockHeight()
 	go d.networkHandler(ctx)
+
+	if d.cfg.ScanLegacyProofs {
+		d.wg.Add(1)
+		go d.scanLegacyProofs(ctx, height)
+	}
 
 	return nil
 }
@@ -1426,9 +1457,14 @@ func (d *AuthenticatedGossiper) splitAndSendAnnBatch(ctx context.Context,
 		}
 	}
 
-	// Fetch the local and remote announcements.
-	localBatches := d.splitAnnouncementBatches(annBatch.localMsgs)
-	remoteBatches := d.splitAnnouncementBatches(annBatch.remoteMsgs)
+	// Fetch the local and remote announcements, less any whose proof no
+	// other implementation can check.
+	localBatches := d.splitAnnouncementBatches(
+		d.withoutLegacyProofs(annBatch.localMsgs),
+	)
+	remoteBatches := d.splitAnnouncementBatches(
+		d.withoutLegacyProofs(annBatch.remoteMsgs),
+	)
 
 	d.wg.Add(1)
 	go func() {
@@ -2446,8 +2482,11 @@ func (d *AuthenticatedGossiper) isMsgStale(_ context.Context,
 
 		// If the proof exists in the graph, then we have successfully
 		// received the remote proof and assembled the full proof, so we
-		// can safely delete the local proof from the database.
-		return chanInfo.AuthProof != nil
+		// can safely delete the local proof from the database. Unless
+		// the stored proof is one being signed again: then this half is
+		// what replaces it.
+		return chanInfo.AuthProof != nil &&
+			!d.legacyProofs.has(msg.ShortChannelID)
 
 	case *lnwire.ChannelUpdate1:
 		_, p1, p2, err := d.cfg.Graph.GetChannelByID(msg.ShortChannelID)
@@ -2798,10 +2837,17 @@ func (d *AuthenticatedGossiper) handleChanAnnouncement(ctx context.Context,
 	d.Unlock()
 
 	// At this point, we'll now ask the router if this is a zombie/known
-	// edge. If so we can skip all the processing below.
+	// edge. If so we can skip all the processing below, unless the stored
+	// proof is one signed under the withdrawn chain_hash and this
+	// announcement may carry its replacement.
 	if d.cfg.Graph.IsKnownEdge(scid) {
+		var anns []networkMsg
+		if nMsg.isRemote && d.legacyProofs.has(scid) {
+			anns = d.upgradeLegacyProof(ann)
+		}
+
 		completeGossipResult(nMsg.errPromise, nil)
-		return nil, true
+		return anns, true
 	}
 
 	// Check if the channel is already closed in which case we can ignore
@@ -2841,9 +2887,20 @@ func (d *AuthenticatedGossiper) handleChanAnnouncement(ctx context.Context,
 
 	// If this is a remote channel announcement, then we'll validate all
 	// the signatures within the proof as it should be well formed.
-	var proof *models.ChannelAuthProof
+	var (
+		proof       *models.ChannelAuthProof
+		legacyProof bool
+	)
 	if nMsg.isRemote {
-		err := netann.ValidateChannelAnn(ann, d.fetchPKScript)
+		// A proof that holds over the message as sent is the ordinary
+		// case. One that holds only under the withdrawn chain_hash is
+		// accepted for this node's graph and remembered, so that it is
+		// not passed on; see legacy_proofs.go.
+		err := netann.ValidateChannelAnnStrict(ann)
+		if err != nil {
+			err = netann.ValidateChannelAnn(ann, d.fetchPKScript)
+			legacyProof = err == nil
+		}
 		if err != nil {
 			err := fmt.Errorf("unable to validate announcement: "+
 				"%v", err)
@@ -3105,6 +3162,10 @@ func (d *AuthenticatedGossiper) handleChanAnnouncement(ctx context.Context,
 
 	// If err is nil, release the lock immediately.
 	d.channelMtx.Unlock(scid.ToUint64())
+
+	if legacyProof {
+		d.legacyProofs.add(scid)
+	}
 
 	log.Debugf("Finish adding edge for short_chan_id: %v", scid.ToUint64())
 
@@ -3447,6 +3508,28 @@ func (d *AuthenticatedGossiper) handleChanUpdate(ctx context.Context,
 		"edge policy=%v", chanInfo.ChannelID,
 		pubKey.SerializeCompressed(), edgeToUpdate != nil)
 
+	// BOLT-blake2b #7: a channel funded below the gossip floor is treated
+	// as unannounced, whatever proof it has. Only an update its own peer
+	// sends, for that peer's side of a channel with this node, is used,
+	// and nothing about it is passed on.
+	preFloor := belowFloor(
+		lnwire.NewShortChanIDFromInt(chanInfo.ChannelID),
+		d.cfg.MinAnnouncementHeight,
+	)
+	if preFloor && nMsg.isRemote && !d.isOwnPeerUpdate(
+		nMsg, chanInfo, pubKey,
+	) {
+
+		log.Debugf("Ignoring ChannelUpdate for short_chan_id=%v from "+
+			"peer=%v: funded below the gossip floor, and not an "+
+			"update from this node's own peer on it", shortChanID,
+			nMsg.peer)
+
+		completeGossipResult(nMsg.errPromise, nil)
+
+		return nil, false
+	}
+
 	// Validate the channel announcement with the expected public key and
 	// channel capacity. In the case of an invalid channel update, we'll
 	// return an error to the caller and exit early.
@@ -3559,7 +3642,7 @@ func (d *AuthenticatedGossiper) handleChanUpdate(ctx context.Context,
 	// to the greater network. However, our channel counter party will need
 	// to be given the update, so we'll try sending the update directly to
 	// the remote peer.
-	if !nMsg.isRemote && chanInfo.AuthProof == nil {
+	if !nMsg.isRemote && (chanInfo.AuthProof == nil || preFloor) {
 		if nMsg.optionalMsgFields != nil {
 			remoteAlias := nMsg.optionalMsgFields.remoteAlias
 			if remoteAlias != nil {
@@ -3622,7 +3705,9 @@ func (d *AuthenticatedGossiper) handleChanUpdate(ctx context.Context,
 	// authentication proof. We also won't broadcast the update if it
 	// contains an alias because the network would reject this.
 	var announcements []networkMsg
-	if chanInfo.AuthProof != nil && !d.cfg.IsAlias(upd.ShortChannelID) {
+	if chanInfo.AuthProof != nil && !d.cfg.IsAlias(upd.ShortChannelID) &&
+		!preFloor {
+
 		announcements = append(announcements, networkMsg{
 			peer:     nMsg.peer,
 			source:   nMsg.source,
@@ -3753,8 +3838,13 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 		}
 	}
 
+	// A stored proof signed under the withdrawn chain_hash is being
+	// replaced: this half, with the other side's, makes the new one.
+	legacyProof := chanInfo.AuthProof != nil &&
+		d.legacyProofs.has(ann.ShortChannelID)
+
 	// Check if we already have the full proof for this channel.
-	if chanInfo.AuthProof != nil {
+	if chanInfo.AuthProof != nil && !legacyProof {
 		// If we already have the fully assembled proof, then the peer
 		// sending us their proof has probably not received our local
 		// proof yet. So be kind and send them the full proof.
@@ -3828,6 +3918,12 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 			"short_chan_id=%v, waiting for other half",
 			shortChanID)
 
+		// The peer is signing again a proof this node holds under the
+		// withdrawn chain_hash; answer with this node's own half.
+		if legacyProof && nMsg.isRemote {
+			d.resignChannelProof(ann.ShortChannelID)
+		}
+
 		completeGossipResult(nMsg.errPromise, nil)
 		return nil, false
 	}
@@ -3880,8 +3976,14 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 	}
 
 	// With all the necessary components assembled validate the full
-	// channel announcement proof.
-	err = netann.ValidateChannelAnn(chanAnn, d.fetchPKScript)
+	// channel announcement proof. One replacing a proof signed under the
+	// withdrawn chain_hash must hold over the message as sent, or it is no
+	// improvement.
+	if legacyProof {
+		err = netann.ValidateChannelAnnStrict(chanAnn)
+	} else {
+		err = netann.ValidateChannelAnn(chanAnn, d.fetchPKScript)
+	}
 	if err != nil {
 		err := fmt.Errorf("channel announcement proof for "+
 			"short_chan_id=%v isn't valid: %v", shortChanID, err)
@@ -3904,6 +4006,13 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 		log.Error(err)
 		completeGossipResult(nMsg.errPromise, err)
 		return nil, false
+	}
+
+	if legacyProof {
+		d.legacyProofs.remove(ann.ShortChannelID)
+		log.Infof("Replaced the proof of channel %v, which was signed "+
+			"under the withdrawn chain hash; announcing it again",
+			ann.ShortChannelID)
 	}
 
 	err = d.cfg.WaitingProofStore.Remove(proof.OppositeKey())
