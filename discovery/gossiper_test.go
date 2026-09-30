@@ -237,6 +237,15 @@ func (r *mockGraphSource) ForAllOutgoingChannels(_ context.Context,
 	}
 
 	for _, channel := range chans {
+		// As graph.Builder does: a channel without an outgoing policy
+		// is an error, not a nil policy, and a policy for a channel
+		// the mock never stored belongs to nothing.
+		if channel.Info == nil {
+			continue
+		}
+		if channel.Policy1 == nil {
+			return fmt.Errorf("channel from self node has no policy")
+		}
 		if err := cb(channel.Info, channel.Policy1); err != nil {
 			return err
 		}
