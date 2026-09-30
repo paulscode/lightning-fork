@@ -94,6 +94,13 @@ var deps = depDesc{
 	lnwire.Bolt11BlindedPathsOptional: {
 		lnwire.RouteBlindingOptional: {},
 	},
+	// BOLT-blake2b #9: option_unified_sigs depends on option_blake2b,
+	// because the unified signature hash does not exist without those
+	// rules. The dependency is between feature vectors; a channel_type
+	// carries option_unified_sigs alone.
+	lnwire.UnifiedSigsOptional: {
+		lnwire.Blake2bOptional: {},
+	},
 }
 
 // ValidateDeps asserts that a feature vector sets all features and their
