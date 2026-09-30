@@ -99,6 +99,17 @@ func TestRequireBlake2bPeer(t *testing.T) {
 
 	requireBit := func(c *Config) { c.RequireBlake2bPeer = true }
 
+	// What both sides support besides the bit under test: an explicit
+	// channel type, as upstream from v0.21.4 requires, and anchors.
+	common := []lnwire.FeatureBit{
+		lnwire.ExplicitChannelTypeOptional,
+		lnwire.StaticRemoteKeyOptional,
+		lnwire.AnchorsZeroFeeHtlcTxOptional,
+	}
+	with := func(bits ...lnwire.FeatureBit) []lnwire.FeatureBit {
+		return append(append([]lnwire.FeatureBit{}, common...), bits...)
+	}
+
 	t.Run("funder refuses", func(t *testing.T) {
 		t.Parallel()
 
@@ -106,8 +117,10 @@ func TestRequireBlake2bPeer(t *testing.T) {
 		t.Cleanup(func() { tearDownFundingManagers(t, alice, bob) })
 
 		// A testNode's remoteFeatures are what its peer sees of it:
-		// Bob's init set nothing, so Alice will not start.
-		bob.remoteFeatures = nil
+		// Bob's init sets everything but the bit, so Alice will not
+		// start.
+		alice.localFeatures = with(lnwire.Blake2bRequired)
+		bob.remoteFeatures = with()
 
 		errChan := make(chan error, 1)
 		alice.fundingMgr.InitFundingWorkflow(&InitFundingMsg{
@@ -141,12 +154,10 @@ func TestRequireBlake2bPeer(t *testing.T) {
 		// Alice sees the bit from Bob and starts; Bob sees an init
 		// from her without it. A testNode's remoteFeatures are what its
 		// peer sees of it.
-		bob.remoteFeatures = []lnwire.FeatureBit{
-			lnwire.Blake2bRequired,
-		}
-		alice.remoteFeatures = []lnwire.FeatureBit{
-			lnwire.StaticRemoteKeyOptional,
-		}
+		alice.localFeatures = with(lnwire.Blake2bRequired)
+		bob.localFeatures = with(lnwire.Blake2bRequired)
+		bob.remoteFeatures = with(lnwire.Blake2bRequired)
+		alice.remoteFeatures = with()
 
 		errChan := make(chan error, 1)
 		alice.fundingMgr.InitFundingWorkflow(&InitFundingMsg{
@@ -196,8 +207,10 @@ func TestRequireBlake2bPeer(t *testing.T) {
 				tearDownFundingManagers(t, alice, bob)
 			})
 
-			alice.remoteFeatures = []lnwire.FeatureBit{bit}
-			bob.remoteFeatures = []lnwire.FeatureBit{bit}
+			alice.localFeatures = with(lnwire.Blake2bRequired)
+			bob.localFeatures = with(lnwire.Blake2bRequired)
+			alice.remoteFeatures = with(bit)
+			bob.remoteFeatures = with(bit)
 
 			updateChan := make(chan *lnrpc.OpenStatusUpdate)
 			openChannel(
