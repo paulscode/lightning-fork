@@ -102,3 +102,27 @@ func TestParseChainHashOverride(t *testing.T) {
 		require.Error(t, err, bad)
 	}
 }
+
+// TestGossipFloor pins BOLT-blake2b #7's activation heights as the gossip
+// floor: fixed on mainnet, the spec's height on testnet4 while the identity
+// check keeps reading the node's, a configured height wherever one is set,
+// and none on a network without one.
+func TestGossipFloor(t *testing.T) {
+	t.Parallel()
+
+	require.EqualValues(t, 961640, BitcoinMainNetParams.GossipFloor())
+	require.EqualValues(t, 150308, BitcoinTestNet4Params.GossipFloor())
+	require.Zero(t, BitcoinTestNet4Params.Blake2bActivationHeight,
+		"testnet4's identity check reads the height from the node")
+	require.Zero(t, BitcoinRegTestNetParams.GossipFloor())
+	require.Zero(t, BitcoinTestNetParams.GossipFloor())
+
+	configured := BitcoinTestNet4Params
+	configured.Blake2bActivationHeight = 150400
+	require.EqualValues(t, 150400, configured.GossipFloor(),
+		"a configured height overrides the spec's")
+
+	regtest := BitcoinRegTestNetParams
+	regtest.Blake2bActivationHeight = 20
+	require.EqualValues(t, 20, regtest.GossipFloor())
+}

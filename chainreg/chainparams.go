@@ -42,6 +42,11 @@ const (
 	// block on mainnet: 961639 is the last SHA256d block.
 	Blake2bMainnetActivationHeight uint32 = 961640
 
+	// Blake2bTestnet4ActivationHeight is the activation height BOLT-blake2b
+	// #7 fixes for testnet4. The chain-identity check still reads the
+	// node's own height there (see GossipFloor for why they differ).
+	Blake2bTestnet4ActivationHeight uint32 = 150308
+
 	// blake2bMainnetActivationHashStr is the id of block 961640, the first
 	// BLAKE2b block, in display order. Checkpointed in Bitcoin Knots since
 	// v29.4.1rc5; read from the chain and confirmed against an independent
@@ -206,4 +211,24 @@ func mustHashFromStr(s string) *chainhash.Hash {
 		panic(fmt.Sprintf("invalid built-in hash %q: %v", s, err))
 	}
 	return h
+}
+
+// GossipFloor returns the BLAKE2b activation height BOLT-blake2b #7 applies to
+// gossip on this network: channels funded below it are not announced, their
+// updates are treated as a peer's own, and range queries do not ask below it.
+//
+// It is the configured or fixed activation height where there is one. On
+// testnet4, where Blake2bActivationHeight is left zero so that the
+// chain-identity check reads the height from the node, it is the height the
+// spec fixes. Zero means no floor, as on a local network run without one.
+func (p *BitcoinNetParams) GossipFloor() uint32 {
+	if p.Blake2bActivationHeight != 0 {
+		return p.Blake2bActivationHeight
+	}
+
+	if p.Params != nil && p.Net == bitcoinWire.TestNet4 {
+		return Blake2bTestnet4ActivationHeight
+	}
+
+	return 0
 }

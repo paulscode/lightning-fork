@@ -48,14 +48,13 @@ func (s *server) warnPreForkChannels() {
 		return
 	}
 
-	for _, desc := range preForkChannels(
-		channels, s.cfg.ActiveNetParams.Blake2bActivationHeight,
-	) {
+	floor := s.cfg.ActiveNetParams.GossipFloor()
+	for _, desc := range preForkChannels(channels, floor) {
 		srvrLog.Warnf("Channel %s was funded before the BLAKE2b fork: "+
 			"its funding output exists on both chains and its "+
 			"commitment transactions are valid on both, so a close on "+
 			"one chain can be replayed on the other. Close it and "+
 			"reopen with coins received after block %d", desc,
-			s.cfg.ActiveNetParams.Blake2bActivationHeight)
+			floor)
 	}
 }
