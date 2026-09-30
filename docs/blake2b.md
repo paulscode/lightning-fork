@@ -199,7 +199,9 @@ It does not pass them on. Only this fork can check such a signature: every
 other implementation checks it over the message as sent, and Core Lightning
 answers each one with a `Bad node_signature` warning. From
 `0.21.3-beta-blake2b.14` an announcement whose proof holds only under the old
-value is kept out of what the node broadcasts and serves to peers.
+value is kept out of what the node broadcasts and serves to peers, and so are
+other nodes' updates for such a channel; the node's own updates for one of its
+channels still go out, since the peer on the other end routes by them.
 
 Instead the channel is announced again. At startup the node finds every
 channel of its own whose proof was made under the old value and signs its

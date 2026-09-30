@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"sync"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightningnetwork/lnd/channeldb"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -33,11 +35,17 @@ import (
 // legacyScanBatch is how many channels the startup scan fetches at a time.
 const legacyScanBatch = 500
 
+// legacyScanRetry is how long a failed startup scan waits before trying again.
+const legacyScanRetry = time.Minute
+
 // legacyProofs is the set of channels whose stored proof holds only under the
 // withdrawn chain_hash.
 type legacyProofs struct {
 	mu    sync.RWMutex
 	scids map[uint64]struct{}
+
+	// resigned holds the channels this node has signed again this run.
+	resigned map[uint64]struct{}
 
 	// scanned is set once the startup scan has covered the whole graph.
 	// Until then a channel not in scids may still be one, and is checked
@@ -100,14 +108,19 @@ func (l *legacyProofs) isLegacyAnn(ann *lnwire.ChannelAnnouncement1) bool {
 }
 
 // scan finds every channel in the graph whose proof holds only under the
-// withdrawn chain_hash, records it, and hands each one of this node's own to
-// ownChannel. It reads through series, which must be the unfiltered one.
+// withdrawn chain_hash and hands it to confirm, which checks the stored proof
+// again under the channel's lock (a concurrent replacement may have landed
+// since the batch was read) and records it if it still holds. Each confirmed
+// one of this node's own goes to ownChannel. It reads through series, which
+// must be the unfiltered one.
+//
+// Only a scan that covers the whole graph marks the set as scanned; until
+// then announcements keep being checked by their signatures as they are sent.
 func (l *legacyProofs) scan(ctx context.Context,
 	series ChannelGraphTimeSeries, chain chainhash.Hash, floor,
 	bestHeight uint32, self [33]byte,
+	confirm func(*lnwire.ChannelAnnouncement1) bool,
 	ownChannel func(lnwire.ShortChannelID)) error {
-
-	defer l.scanned.Store(true)
 
 	ranges, err := series.FilterChannelRange(
 		chain, floor, bestHeight, false,
@@ -145,8 +158,9 @@ func (l *legacyProofs) scan(ctx context.Context,
 			if !ok || !netann.SignedUnderLegacyChainHash(ann) {
 				continue
 			}
-
-			l.add(ann.ShortChannelID)
+			if !confirm(ann) {
+				continue
+			}
 			found++
 
 			if ann.NodeID1 == self || ann.NodeID2 == self {
@@ -162,8 +176,29 @@ func (l *legacyProofs) scan(ctx context.Context,
 			"they are not passed on, and this node's are being "+
 			"signed again with their peers", found, own)
 	}
+	l.scanned.Store(true)
 
 	return nil
+}
+
+// markResigned records that this node's half of scid's proof has been asked
+// for in this run, and reports whether it had not been already. A channel is
+// signed again at most once per run: after that this node's half waits in
+// the proof store for the peer's, so a peer sending halves that do not verify
+// cannot have it sign on demand.
+func (l *legacyProofs) markResigned(scid lnwire.ShortChannelID) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.resigned == nil {
+		l.resigned = make(map[uint64]struct{})
+	}
+	if _, ok := l.resigned[scid.ToUint64()]; ok {
+		return false
+	}
+	l.resigned[scid.ToUint64()] = struct{}{}
+
+	return true
 }
 
 // servedSeries is the channel series the syncers answer peers from. It
@@ -188,10 +223,47 @@ func (s *servedSeries) keep(msg lnwire.Message) bool {
 		return !s.legacy.isLegacyAnn(m)
 
 	case *lnwire.ChannelUpdate1:
-		return !belowFloor(m.ShortChannelID, s.floor)
+		// A channel whose announcement is held back is one the peer
+		// cannot place; its updates would only prompt a query that
+		// comes back empty.
+		return !belowFloor(m.ShortChannelID, s.floor) &&
+			!s.legacy.has(m.ShortChannelID)
 	}
 
 	return true
+}
+
+// FilterKnownChanIDs returns what the inner series does, plus the channels
+// whose stored proof holds only under the withdrawn chain_hash: those are
+// asked for again, so that a peer holding the proof its nodes signed afresh
+// hands it over, and the stored one is replaced (see upgradeLegacyProof).
+func (s *servedSeries) FilterKnownChanIDs(chain chainhash.Hash,
+	superSet []graphdb.ChannelUpdateInfo,
+	isZombieChan func(graphdb.ChannelUpdateInfo) bool) (
+	[]lnwire.ShortChannelID, error) {
+
+	unknown, err := s.ChannelGraphTimeSeries.FilterKnownChanIDs(
+		chain, superSet, isZombieChan,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	listed := make(map[lnwire.ShortChannelID]struct{}, len(unknown))
+	for _, scid := range unknown {
+		listed[scid] = struct{}{}
+	}
+	for _, c := range superSet {
+		if _, ok := listed[c.ShortChannelID]; ok {
+			continue
+		}
+		if s.legacy.has(c.ShortChannelID) {
+			unknown = append(unknown, c.ShortChannelID)
+			listed[c.ShortChannelID] = struct{}{}
+		}
+	}
+
+	return unknown, nil
 }
 
 // UpdatesInHorizon returns the inner series' messages less those not to be
@@ -293,15 +365,51 @@ func (d *AuthenticatedGossiper) scanLegacyProofs(ctx context.Context,
 	var self [33]byte
 	copy(self[:], d.selfKey.SerializeCompressed())
 
-	err := d.legacyProofs.scan(
-		ctx, d.cfg.ChanSeries, d.cfg.ChainHash,
-		d.cfg.MinAnnouncementHeight, bestHeight, self,
-		d.resignChannelProof,
-	)
-	if err != nil && ctx.Err() == nil {
+	for {
+		err := d.legacyProofs.scan(
+			ctx, d.cfg.ChanSeries, d.cfg.ChainHash,
+			d.cfg.MinAnnouncementHeight, bestHeight, self,
+			d.confirmLegacyProof, d.resignChannelProof,
+		)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+
 		log.Errorf("Unable to scan the graph for proofs signed under "+
-			"the withdrawn chain hash: %v", err)
+			"the withdrawn chain hash, retrying in %v: %v",
+			legacyScanRetry, err)
+
+		select {
+		case <-time.After(legacyScanRetry):
+		case <-ctx.Done():
+			return
+		case <-d.quit:
+			return
+		}
 	}
+}
+
+// confirmLegacyProof checks, under the channel's lock, that the stored proof
+// of ann's channel still holds only under the withdrawn chain_hash, and
+// records it if so.
+func (d *AuthenticatedGossiper) confirmLegacyProof(
+	ann *lnwire.ChannelAnnouncement1) bool {
+
+	scid := ann.ShortChannelID
+	d.channelMtx.Lock(scid.ToUint64())
+	defer d.channelMtx.Unlock(scid.ToUint64())
+
+	info, e1, e2, err := d.cfg.Graph.GetChannelByID(scid)
+	if err != nil || info.AuthProof == nil {
+		return false
+	}
+	stored, _, _, err := netann.CreateChanAnnouncement(info, e1, e2)
+	if err != nil || !netann.SignedUnderLegacyChainHash(stored) {
+		return false
+	}
+	d.legacyProofs.add(scid)
+
+	return true
 }
 
 // resignChannelProof asks, in the background, for a fresh
@@ -311,7 +419,9 @@ func (d *AuthenticatedGossiper) scanLegacyProofs(ctx context.Context,
 func (d *AuthenticatedGossiper) resignChannelProof(
 	scid lnwire.ShortChannelID) {
 
-	if d.cfg.ResignChannelProof == nil {
+	if d.cfg.ResignChannelProof == nil ||
+		!d.legacyProofs.markResigned(scid) {
+
 		return
 	}
 
@@ -330,19 +440,29 @@ func (d *AuthenticatedGossiper) resignChannelProof(
 }
 
 // withoutLegacyProofs drops, from a batch about to be broadcast, the channel
-// announcements whose proof holds only under the withdrawn chain_hash.
-func (d *AuthenticatedGossiper) withoutLegacyProofs(
-	msgs []msgWithSenders) []msgWithSenders {
+// announcements whose proof holds only under the withdrawn chain_hash, and,
+// when relayed is set, the updates of such channels as well. This node's own
+// updates for them stay: its counterparty, on an earlier release, still
+// routes by them.
+func (d *AuthenticatedGossiper) withoutLegacyProofs(msgs []msgWithSenders,
+	relayed bool) []msgWithSenders {
 
 	kept := msgs[:0:0]
 	for _, m := range msgs {
-		ann, ok := m.msg.(*lnwire.ChannelAnnouncement1)
-		if ok && d.legacyProofs.isLegacyAnn(ann) {
-			log.Debugf("Not broadcasting the announcement of %v: "+
-				"its proof was signed under the withdrawn chain "+
-				"hash", ann.ShortChannelID)
+		switch msg := m.msg.(type) {
+		case *lnwire.ChannelAnnouncement1:
+			if d.legacyProofs.isLegacyAnn(msg) {
+				log.Debugf("Not broadcasting the announcement "+
+					"of %v: its proof was signed under the "+
+					"withdrawn chain hash", msg.ShortChannelID)
 
-			continue
+				continue
+			}
+
+		case *lnwire.ChannelUpdate1:
+			if relayed && d.legacyProofs.has(msg.ShortChannelID) {
+				continue
+			}
 		}
 		kept = append(kept, m)
 	}
@@ -448,4 +568,18 @@ func (d *AuthenticatedGossiper) isOwnPeerUpdate(nMsg *networkMsg,
 	copy(self[:], d.selfKey.SerializeCompressed())
 
 	return chanInfo.NodeKey1Bytes == self || chanInfo.NodeKey2Bytes == self
+}
+
+// keepOwnHalf replaces, in the waiting proof store, a peer's half that did
+// not pair with this node's by this node's own.
+func (d *AuthenticatedGossiper) keepOwnHalf(own *channeldb.WaitingProof) {
+	if err := d.cfg.WaitingProofStore.Remove(own.OppositeKey()); err != nil &&
+		!errors.Is(err, channeldb.ErrWaitingProofNotFound) {
+
+		log.Debugf("Unable to drop the peer's half of %v: %v",
+			own.OppositeKey(), err)
+	}
+	if err := d.cfg.WaitingProofStore.Add(own); err != nil {
+		log.Debugf("Unable to keep this node's half: %v", err)
+	}
 }

@@ -298,14 +298,18 @@ func (r *mockGraphSource) GetChannelByID(chanID lnwire.ShortChannelID) (
 		return &chanInfo, nil, nil, nil
 	}
 
+	// Copies, as the graph database hands out: callers such as
+	// updateChannel write to the policies they are given.
 	var edge1 *models.ChannelEdgePolicy
 	if !reflect.DeepEqual(edges[0], models.ChannelEdgePolicy{}) {
-		edge1 = &edges[0]
+		e := edges[0]
+		edge1 = &e
 	}
 
 	var edge2 *models.ChannelEdgePolicy
 	if !reflect.DeepEqual(edges[1], models.ChannelEdgePolicy{}) {
-		edge2 = &edges[1]
+		e := edges[1]
+		edge2 = &e
 	}
 
 	return &chanInfo, edge1, edge2, nil

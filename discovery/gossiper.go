@@ -1460,10 +1460,10 @@ func (d *AuthenticatedGossiper) splitAndSendAnnBatch(ctx context.Context,
 	// Fetch the local and remote announcements, less any whose proof no
 	// other implementation can check.
 	localBatches := d.splitAnnouncementBatches(
-		d.withoutLegacyProofs(annBatch.localMsgs),
+		d.withoutLegacyProofs(annBatch.localMsgs, false),
 	)
 	remoteBatches := d.splitAnnouncementBatches(
-		d.withoutLegacyProofs(annBatch.remoteMsgs),
+		d.withoutLegacyProofs(annBatch.remoteMsgs, true),
 	)
 
 	d.wg.Add(1)
@@ -1980,9 +1980,31 @@ func (d *AuthenticatedGossiper) retransmitStaleAnns(ctx context.Context,
 			return fmt.Errorf("unable to update channel: %w", err)
 		}
 
+		// A channel funded below the gossip floor is treated as
+		// unannounced (BOLT-blake2b #7): its update goes to the peer
+		// alone, and its announcement nowhere.
+		scid := lnwire.NewShortChanIDFromInt(chanToUpdate.info.ChannelID)
+		if belowFloor(scid, d.cfg.MinAnnouncementHeight) {
+			remotePubKey := remotePubFromChanInfo(
+				chanToUpdate.info, chanUpdate.ChannelFlags,
+			)
+			err := d.reliableSender.sendMessage(
+				ctx, chanUpdate, remotePubKey,
+			)
+			if err != nil {
+				log.Errorf("Unable to reliably send %v for "+
+					"channel=%v to peer=%x: %v",
+					chanUpdate.MsgType(), scid,
+					remotePubKey, err)
+			}
+
+			continue
+		}
+
 		// If we have a valid announcement to transmit, then we'll send
-		// that along with the update.
-		if chanAnn != nil {
+		// that along with the update, unless its proof is one only
+		// this fork can check.
+		if chanAnn != nil && !d.legacyProofs.isLegacyAnn(chanAnn) {
 			signedUpdates = append(signedUpdates, chanAnn)
 		}
 
@@ -2058,8 +2080,14 @@ func (d *AuthenticatedGossiper) processChanPolicyUpdate(ctx context.Context,
 
 		// We'll avoid broadcasting any updates for private channels to
 		// avoid directly giving away their existence. Instead, we'll
-		// send the update directly to the remote party.
-		if edgeInfo.Info.AuthProof == nil {
+		// send the update directly to the remote party. A channel funded
+		// below the gossip floor is treated the same way, whatever proof
+		// it holds (BOLT-blake2b #7).
+		preFloor := belowFloor(
+			lnwire.NewShortChanIDFromInt(edgeInfo.Info.ChannelID),
+			d.cfg.MinAnnouncementHeight,
+		)
+		if edgeInfo.Info.AuthProof == nil || preFloor {
 			// If AuthProof is nil and an alias was found for this
 			// ChannelID (meaning the option-scid-alias feature was
 			// negotiated), we'll replace the ShortChannelID in the
@@ -3981,6 +4009,12 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 	// improvement.
 	if legacyProof {
 		err = netann.ValidateChannelAnnStrict(chanAnn)
+		if err != nil && !nMsg.isRemote {
+			// The peer's half on file does not pair with this
+			// node's. Keep this node's instead, so the peer's next
+			// half pairs with it rather than asking for another.
+			d.keepOwnHalf(proof)
+		}
 	} else {
 		err = netann.ValidateChannelAnn(chanAnn, d.fetchPKScript)
 	}
