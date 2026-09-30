@@ -1,6 +1,7 @@
 package wtwire
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -24,12 +25,20 @@ type Init struct {
 }
 
 // NewInitMessage generates a new Init message from a raw connection feature
-// vector and chain hash.
+// vector and chain hash. The vector is copied, and Blake2bRequired is set in
+// the copy: every tower and client in this build follows the BLAKE2b rules,
+// and says so.
 func NewInitMessage(connFeatures *lnwire.RawFeatureVector,
 	chainHash chainhash.Hash) *Init {
 
+	features := lnwire.NewRawFeatureVector()
+	if connFeatures != nil {
+		features = connFeatures.Clone()
+	}
+	features.Set(Blake2bRequired)
+
 	return &Init{
-		ConnFeatures: connFeatures,
+		ConnFeatures: features,
 		ChainHash:    chainHash,
 	}
 }
@@ -93,8 +102,31 @@ func (msg *Init) CheckRemoteInit(remoteInit *Init,
 
 	// Check that the remote peer doesn't have any required connection
 	// feature bits that we ourselves are unaware of.
-	return feature.ValidateRequired(remoteConnFeatures)
+	if err := feature.ValidateRequired(remoteConnFeatures); err != nil {
+		return err
+	}
+
+	// A peer that does not say it follows the BLAKE2b rules may be on the
+	// chain that did not upgrade, which shares the genesis hash checked
+	// above. A tower there would watch the wrong chain, and a client there
+	// would send justice transactions this tower cannot use.
+	if msg.ConnFeatures.IsSet(Blake2bRequired) &&
+		!remoteConnFeatures.IsSet(Blake2bRequired) &&
+		!remoteConnFeatures.IsSet(Blake2bOptional) {
+
+		return ErrNotBlake2b
+	}
+
+	return nil
 }
+
+// ErrNotBlake2b is returned when the remote Init does not set Blake2bRequired
+// or Blake2bOptional while ours does.
+var ErrNotBlake2b = errors.New("remote init does not set the blake2b bit: " +
+	"the peer may follow the chain that did not upgrade its proof of " +
+	"work, which shares this chain's genesis hash, and would watch or " +
+	"be watched on the wrong chain; update the tower or client to a " +
+	"Lightning Fork release that sets it")
 
 // ErrUnknownChainHash signals that the remote Init has a different chain hash
 // from the one we advertised.

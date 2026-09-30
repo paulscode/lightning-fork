@@ -11,6 +11,8 @@ var FeatureNames = map[lnwire.FeatureBit]string{
 	AnchorCommitOptional:     "anchor-commit",
 	TaprootCommitRequired:    "taproot-commit",
 	TaprootCommitOptional:    "taproot-commit",
+	Blake2bRequired:          "blake2b",
+	Blake2bOptional:          "blake2b",
 }
 
 const (
@@ -41,4 +43,20 @@ const (
 	// TaprootCommitOptional specifies that the advertising tower allows the
 	// remote party to negotiate sessions for protecting taproot channels.
 	TaprootCommitOptional lnwire.FeatureBit = 5
+
+	// Blake2bRequired says the advertiser follows the BLAKE2b proof of work
+	// rules, which took effect on Bitcoin at block 961,640. It is the
+	// watchtower counterpart of option_blake2b, with the same numbers.
+	//
+	// A tower is told the chain only by the genesis hash in Init, which the
+	// Bitcoin BLAKE2b chain shares with the chain that did not upgrade. So
+	// a tower on the other side would accept sessions and then watch a
+	// chain where the breaches it guards against never appear. The even
+	// bit makes an implementation without these rules refuse at Init, and
+	// CheckRemoteInit makes this one refuse a peer that does not set it.
+	Blake2bRequired lnwire.FeatureBit = 512
+
+	// Blake2bOptional is the optional form of Blake2bRequired. Either form
+	// satisfies CheckRemoteInit.
+	Blake2bOptional lnwire.FeatureBit = 513
 )
