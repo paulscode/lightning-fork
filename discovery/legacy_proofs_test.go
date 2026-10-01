@@ -1309,3 +1309,98 @@ func TestLegacyProofResignedBeforeScan(t *testing.T) {
 	h.assertHalfSentToPeer(t)
 	h.assertReplaced(t)
 }
+
+// TestRejectedEdgeLegacyProof: a full announcement completing the proof of a
+// channel of this node's that had none (processRejectedEdge), with a proof
+// signed under the withdrawn chain_hash, is kept but marked, and this node's
+// half is signed again.
+func TestRejectedEdgeLegacyProof(t *testing.T) {
+	t.Parallel()
+
+	tCtx, err := createTestCtx(t, proofMatureDelta, false)
+	require.NoError(t, err)
+	batch, err := tCtx.createLocalAnnouncements(0)
+	require.NoError(t, err)
+	sendLocalMsg(t, tCtx, batch.chanAnn)
+	assertNoBroadcast(t, tCtx)
+	require.Nil(t, storedProof(t, tCtx, batch.chanAnn.ShortChannelID))
+
+	resigned := make(chan lnwire.ShortChannelID, 1)
+	tCtx.gossiper.cfg.ResignChannelProof = func(
+		scid lnwire.ShortChannelID) error {
+
+		resigned <- scid
+		return nil
+	}
+
+	old := signAnnUnder(
+		t, batch.chanAnn, mainnetLegacyHash(t),
+		[4]*btcec.PrivateKey{
+			selfKeyPriv, remoteKeyPriv1, bitcoinKeyPriv1,
+			bitcoinKeyPriv2,
+		},
+	)
+	proof := models.NewV1ChannelAuthProof(
+		old.NodeSig1.ToSignatureBytes(), old.NodeSig2.ToSignatureBytes(),
+		old.BitcoinSig1.ToSignatureBytes(),
+		old.BitcoinSig2.ToSignatureBytes(),
+	)
+	_, err = tCtx.gossiper.processRejectedEdge(t.Context(), old, proof)
+	require.NoError(t, err)
+
+	require.NotNil(t, storedProof(t, tCtx, old.ShortChannelID))
+	require.True(t, tCtx.gossiper.legacyProofs.has(old.ShortChannelID))
+	select {
+	case scid := <-resigned:
+		require.Equal(t, old.ShortChannelID, scid)
+	case <-time.After(3 * time.Second):
+		t.Fatal("this node's half was not signed again")
+	}
+}
+
+// TestThirdPartyAnnSigNoResign: a peer's announcement_signatures for a
+// channel of its own with someone else, held under a legacy proof, does not
+// make this node sign anything: it has no half of that channel.
+func TestThirdPartyAnnSigNoResign(t *testing.T) {
+	t.Parallel()
+
+	tCtx, err := createTestCtx(t, proofMatureDelta, false)
+	require.NoError(t, err)
+	ann, err := tCtx.createRemoteChannelAnnouncement(0)
+	require.NoError(t, err)
+	old := signAnnUnder(
+		t, ann, mainnetLegacyHash(t),
+		[4]*btcec.PrivateKey{
+			remoteKeyPriv1, remoteKeyPriv2, bitcoinKeyPriv1,
+			bitcoinKeyPriv2,
+		},
+	)
+	peer := &mockPeer{
+		remoteKeyPriv1.PubKey(), make(chan lnwire.Message, 10),
+		tCtx.gossiper.quit, atomic.Bool{},
+	}
+	sendRemoteMsg(t, tCtx, old, peer)
+	require.True(t, tCtx.gossiper.legacyProofs.has(old.ShortChannelID))
+
+	resigned := make(chan lnwire.ShortChannelID, 1)
+	tCtx.gossiper.cfg.ResignChannelProof = func(
+		scid lnwire.ShortChannelID) error {
+
+		resigned <- scid
+		return nil
+	}
+
+	_ = mustProcess(t, tCtx.gossiper.ProcessRemoteAnnouncement(
+		t.Context(), &lnwire.AnnounceSignatures1{
+			ShortChannelID:   old.ShortChannelID,
+			NodeSignature:    old.NodeSig1,
+			BitcoinSignature: old.BitcoinSig1,
+		}, peer,
+	))
+	select {
+	case <-resigned:
+		t.Fatal("signed again for a channel this node is not on")
+	case <-time.After(3 * trickleDelay):
+	}
+	require.True(t, tCtx.gossiper.legacyProofs.has(old.ShortChannelID))
+}

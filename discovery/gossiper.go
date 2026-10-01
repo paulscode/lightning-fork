@@ -2235,6 +2235,9 @@ func (d *AuthenticatedGossiper) processRejectedEdge(_ context.Context,
 	}
 	if legacyProof {
 		d.legacyProofs.add(chanAnnMsg.ShortChannelID)
+		if d.isOwnChannel(chanInfo) {
+			d.resignChannelProof(chanAnnMsg.ShortChannelID)
+		}
 	}
 
 	// As we now have a complete channel announcement for this channel,
@@ -3878,7 +3881,11 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 
 	// A stored proof signed under the withdrawn chain_hash is being
 	// replaced: this half, with the other side's, makes the new one.
-	legacyProof := chanInfo.AuthProof != nil &&
+	// Only for a channel of this node's: a peer can send
+	// announcement_signatures for a channel of its own with a third party,
+	// which this node has no half of to sign.
+	ownChannel := d.isOwnChannel(chanInfo)
+	legacyProof := chanInfo.AuthProof != nil && ownChannel &&
 		d.storedProofIsLegacy(chanInfo, e1, e2)
 
 	// Check if we already have the full proof for this channel.
@@ -4067,7 +4074,9 @@ func (d *AuthenticatedGossiper) handleAnnSig(ctx context.Context,
 	}
 	if newLegacyProof {
 		d.legacyProofs.add(ann.ShortChannelID)
-		d.resignChannelProof(ann.ShortChannelID)
+		if ownChannel {
+			d.resignChannelProof(ann.ShortChannelID)
+		}
 	}
 
 	err = d.cfg.WaitingProofStore.Remove(proof.OppositeKey())

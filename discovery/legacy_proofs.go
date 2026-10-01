@@ -578,10 +578,7 @@ func (d *AuthenticatedGossiper) isOwnPeerUpdate(nMsg *networkMsg,
 		return false
 	}
 
-	var self [33]byte
-	copy(self[:], d.selfKey.SerializeCompressed())
-
-	return chanInfo.NodeKey1Bytes == self || chanInfo.NodeKey2Bytes == self
+	return d.isOwnChannel(chanInfo)
 }
 
 // keepOwnHalf replaces, in the waiting proof store, a peer's half that did
@@ -620,4 +617,14 @@ func (d *AuthenticatedGossiper) storedProofIsLegacy(
 	d.legacyProofs.add(scid)
 
 	return true
+}
+
+// isOwnChannel reports whether this node is one of the channel's two nodes.
+func (d *AuthenticatedGossiper) isOwnChannel(
+	info *models.ChannelEdgeInfo) bool {
+
+	var self [33]byte
+	copy(self[:], d.selfKey.SerializeCompressed())
+
+	return info.NodeKey1Bytes == self || info.NodeKey2Bytes == self
 }
