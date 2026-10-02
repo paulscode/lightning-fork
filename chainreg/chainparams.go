@@ -111,20 +111,20 @@ type BitcoinNetParams struct {
 // BitcoinTestNetParams contains parameters specific to the 3rd version of the
 // test network.
 var BitcoinTestNetParams = BitcoinNetParams{
-	Params:     &bitcoinCfg.TestNet3Params,
-	RPCPort:    "18334",
-	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  *bitcoinCfg.TestNet3Params.GenesisHash,
+	Params:           &bitcoinCfg.TestNet3Params,
+	RPCPort:          "18334",
+	CoinType:         keychain.CoinTypeTestnet,
+	ChainHash:        *bitcoinCfg.TestNet3Params.GenesisHash,
 	LegacyInvoiceHRP: legacyInvoiceHRPTestnet,
 }
 
 // BitcoinTestNet4Params contains parameters specific to the 4th version of the
 // test network.
 var BitcoinTestNet4Params = BitcoinNetParams{
-	Params:     &bitcoinCfg.TestNet4Params,
-	RPCPort:    "48334",
-	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  *bitcoinCfg.TestNet4Params.GenesisHash,
+	Params:           &bitcoinCfg.TestNet4Params,
+	RPCPort:          "48334",
+	CoinType:         keychain.CoinTypeTestnet,
+	ChainHash:        *bitcoinCfg.TestNet4Params.GenesisHash,
 	LegacyInvoiceHRP: legacyInvoiceHRPTestnet,
 }
 
@@ -143,29 +143,29 @@ var BitcoinMainNetParams = BitcoinNetParams{
 // BitcoinSimNetParams contains parameters specific to the simulation test
 // network.
 var BitcoinSimNetParams = BitcoinNetParams{
-	Params:     &bitcoinCfg.SimNetParams,
-	RPCPort:    "18556",
-	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  *bitcoinCfg.SimNetParams.GenesisHash,
+	Params:           &bitcoinCfg.SimNetParams,
+	RPCPort:          "18556",
+	CoinType:         keychain.CoinTypeTestnet,
+	ChainHash:        *bitcoinCfg.SimNetParams.GenesisHash,
 	LegacyInvoiceHRP: legacyInvoiceHRPSimnet,
 }
 
 // BitcoinSigNetParams contains parameters specific to the signet test network.
 var BitcoinSigNetParams = BitcoinNetParams{
-	Params:     &bitcoinCfg.SigNetParams,
-	RPCPort:    "38332",
-	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  *bitcoinCfg.SigNetParams.GenesisHash,
+	Params:           &bitcoinCfg.SigNetParams,
+	RPCPort:          "38332",
+	CoinType:         keychain.CoinTypeTestnet,
+	ChainHash:        *bitcoinCfg.SigNetParams.GenesisHash,
 	LegacyInvoiceHRP: legacyInvoiceHRPSignet,
 }
 
 // BitcoinRegTestNetParams contains parameters specific to a local bitcoin
 // regtest network.
 var BitcoinRegTestNetParams = BitcoinNetParams{
-	Params:     &bitcoinCfg.RegressionNetParams,
-	RPCPort:    "18334",
-	CoinType:   keychain.CoinTypeTestnet,
-	ChainHash:  *bitcoinCfg.RegressionNetParams.GenesisHash,
+	Params:           &bitcoinCfg.RegressionNetParams,
+	RPCPort:          "18334",
+	CoinType:         keychain.CoinTypeTestnet,
+	ChainHash:        *bitcoinCfg.RegressionNetParams.GenesisHash,
 	LegacyInvoiceHRP: legacyInvoiceHRPRegtest,
 }
 
