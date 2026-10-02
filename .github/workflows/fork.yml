@@ -45,6 +45,10 @@ jobs:
           [ -z "$files" ] || { out=$(gofmt -l $files); [ -z "$out" ] || { echo "gofmt:"; echo "$out"; exit 1; }; }
           pkgs=$(echo "$files" | xargs -r -n1 dirname | sort -u | sed 's|^|./|')
           [ -z "$pkgs" ] || go vet $pkgs
+      - name: Install bitcoind
+        # routing/chainview runs against a regtest bitcoind. Same image and
+        # version as upstream's CI.
+        run: ./scripts/install_bitcoind.sh 29
       - name: Unit tests (packages the fork changes)
         run: |
           go test -count=1 -timeout 20m \
