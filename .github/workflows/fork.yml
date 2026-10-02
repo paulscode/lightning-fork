@@ -1,0 +1,65 @@
+name: Fork checks
+
+# Lightning Fork's own CI. Upstream's workflows in this directory are kept
+# so that merging lnd stays clean, but are switched off in the repository's
+# Actions settings: they publish to Lightning Labs' registries, need their
+# secrets, or run their full integration suite. Weekly govulncheck is left
+# on: it reports findings as a warning and fails only if it cannot run.
+#
+# This runs the unit tests of the packages the fork changes, the fork's
+# htlcswitch tests (which need the dev tag), and gofmt and vet on the Go
+# files changed since the upstream base. Releases are still tagged, built
+# and published by hand; nothing here does any of that.
+on:
+  push:
+    branches: ['blake2b', 'blake2b-next', 'blake2b-next-*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOWORK: 'off'
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          # Keep with GO_VERSION in the Makefile; the next step checks.
+          go-version: '1.26.8'
+          cache: true
+      - name: Go version matches the Makefile
+        run: test "$(go env GOVERSION)" = "go$(sed -n 's/^GO_VERSION = //p' Makefile)"
+      - name: gofmt and vet on files the fork changed
+        run: |
+          base=$(git merge-base HEAD "$(git tag --list 'v0.*-beta' --sort=-v:refname | head -1)")
+          files=$(git diff --name-only --diff-filter=AM "$base" HEAD -- '*.go' | grep -v '\.pb\.' || true)
+          echo "$files" | sed 's/^/  /'
+          [ -z "$files" ] || { out=$(gofmt -l $files); [ -z "$out" ] || { echo "gofmt:"; echo "$out"; exit 1; }; }
+          pkgs=$(echo "$files" | xargs -r -n1 dirname | sort -u | sed 's|^|./|')
+          [ -z "$pkgs" ] || go vet $pkgs
+      - name: Unit tests (packages the fork changes)
+        run: |
+          go test -count=1 -timeout 20m \
+            . ./chainreg/... ./discovery/... ./feature/... ./funding/... \
+            ./graph/... ./input/... ./lnwire/... ./netann/... ./legacychain/... \
+            ./lnwallet ./lnwallet/btcwallet/... ./lnwallet/chanfunding/... \
+            ./lnwallet/rpcwallet/... ./zpay32/... ./bolt12/... \
+            ./offers/... ./offerpay/... ./offerserve/... ./chanbackup/... \
+            ./routing/... ./peer/... ./sweep/... ./contractcourt/... \
+            ./invoices/... ./chanacceptor/... ./lncfg/...
+      - name: Watchtower tests
+        # On their own: the client tests wait a fixed time for backups to
+        # reach the tower, which a runner busy with the step above can miss.
+        run: go test -count=1 ./watchtower/...
+      - name: Unit tests, SQL graph backend
+        run: go test -count=1 -tags test_db_sqlite ./graph/db/...
+      - name: htlcswitch (dev tag)
+        run: go test -count=1 -tags dev ./htlcswitch/...
