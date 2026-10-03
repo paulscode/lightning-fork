@@ -107,6 +107,14 @@ type Server struct {
 	//
 	// Read through service, never directly.
 	svc *service
+
+	// startErr is why the bridge is enabled and not up, while it keeps
+	// trying. Guarded by mu.
+	startErr error
+
+	// quit ends the retry loop, and wg waits for it.
+	quit chan struct{}
+	wg   sync.WaitGroup
 }
 
 // service is the running bridge, or nil if it is not up.
@@ -151,26 +159,80 @@ func (s *Server) Start() error {
 		return nil
 	}
 
+	// A bridge that cannot come up must not keep the node from coming up.
+	// lnd aborts its whole start when a sub-server's Start fails, and the
+	// usual reason this one would is the SHA256 node being down or
+	// misconfigured: taking the operator's own Lightning node offline over
+	// that would be the wrong way round. So try now, and if that fails,
+	// say why in Status and the log and keep trying in the background.
+	s.quit = make(chan struct{})
+	if err := s.connect(); err != nil {
+		s.setStartErr(err)
+		log.Warnf("Bridge did not start, retrying every %v: %v",
+			retryInterval, err)
+
+		s.wg.Add(1)
+		go s.retry()
+	}
+
+	return nil
+}
+
+// retryInterval is how often a bridge that could not start tries again.
+const retryInterval = time.Minute
+
+// retry keeps trying to bring the bridge up until it is, or the node stops.
+func (s *Server) retry() {
+	defer s.wg.Done()
+
+	tick := time.NewTicker(retryInterval)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-s.quit:
+			return
+		case <-tick.C:
+		}
+
+		err := s.connect()
+		s.setStartErr(err)
+		if err == nil {
+			return
+		}
+		log.Debugf("Bridge still cannot start: %v", err)
+	}
+}
+
+// setStartErr records why the bridge is not up, or clears it.
+func (s *Server) setStartErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.startErr = err
+}
+
+// connect dials the SHA256 node, checks both nodes, and starts the bridge. On
+// any failure nothing is left running or open.
+func (s *Server) connect() error {
 	conn, dialErr := dialSHA256Node(s.cfg)
 	if dialErr != nil {
 		return dialErr
 	}
-	s.conn = conn
-	s.remote = NewRemote(conn)
+	remoteNode := NewRemote(conn)
 
 	// Both nodes have to answer before anything is served. Dialling
 	// succeeds against a node that is not there, so a wrong address, a
 	// wrong macaroon or a node that is down has to be found here rather
-	// than by a swap that has already accepted someone's money. That is a
-	// refusal to start: a bridge that cannot reach one of its two nodes
-	// cannot honour a quote, and starting anyway advertises one.
+	// than by a swap that has already accepted someone's money. A bridge
+	// that cannot reach one of its two nodes cannot honour a quote, and
+	// serving anyway advertises one.
 	//
 	// Being behind the chain is deliberately not part of this. Every node
 	// is behind for a while after it starts, so refusing on that would
-	// make the daemon unbootable on every restart, and this one runs
-	// inside the node it is checking. It is already refused where it
-	// counts: no swap is sized against a height that may be stale. Say so
-	// and carry on.
+	// keep the bridge down on every restart, and this one runs inside the
+	// node it is checking. It is already refused where it counts: no swap
+	// is sized against a height that may be stale. Say so and carry on.
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 
@@ -180,7 +242,7 @@ func (s *Server) Start() error {
 
 		return fmt.Errorf("the bridge cannot use this node: %w", err)
 	}
-	remote, err := s.remote.Reachable(ctx)
+	remote, err := remoteNode.Reachable(ctx)
 	if err != nil {
 		_ = conn.Close()
 
@@ -191,7 +253,7 @@ func (s *Server) Start() error {
 	if s.cfg.Deps != nil {
 		network = s.cfg.Deps.Network
 	}
-	if err := s.remote.CheckChain(ctx, network,
+	if err := remoteNode.CheckChain(ctx, network,
 		s.local.NodeKey()); err != nil {
 
 		_ = conn.Close()
@@ -206,25 +268,33 @@ func (s *Server) Start() error {
 			local.Height, remote.SyncedToChain, remote.Height)
 	}
 
-	svc, err := newService(s.cfg, s.local, s.remote)
+	svc, err := newService(s.cfg, s.local, remoteNode)
 	if err != nil {
 		_ = conn.Close()
 
 		return err
 	}
 	// Started before it is published, so a caller that reaches Quote the
-	// instant the RPC server opens cannot find a service whose context is
-	// not set yet.
+	// instant it is published cannot find a service whose context is not
+	// set yet.
 	svc.start()
 
 	s.mu.Lock()
-	s.svc = svc
+	s.conn, s.remote, s.svc = conn, remoteNode, svc
 	s.mu.Unlock()
 
 	log.Infof("Bridge is up, serving %d direction(s) through the SHA256 "+
 		"node at %s", len(svc.sides), s.cfg.SHA256RPCHost)
 
 	return nil
+}
+
+// remoteNode is the SHA256 node once the bridge has connected, or nil.
+func (s *Server) remoteNode() *Remote {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.remote
 }
 
 // Stop signals any active goroutines for a graceful closure.
@@ -235,6 +305,13 @@ func (s *Server) Stop() error {
 		return nil
 	}
 
+	// The retry loop first, so it cannot start a bridge while this one is
+	// being stopped.
+	if s.quit != nil {
+		close(s.quit)
+	}
+	s.wg.Wait()
+
 	// Swaps in flight are waited for before the connection they are
 	// talking over is closed. The node tears down the invoice registry and
 	// the router after this returns, and a swap still driving would find
@@ -242,8 +319,11 @@ func (s *Server) Stop() error {
 	if svc := s.service(); svc != nil {
 		svc.stop()
 	}
-	if s.conn != nil {
-		_ = s.conn.Close()
+	s.mu.RLock()
+	conn := s.conn
+	s.mu.RUnlock()
+	if conn != nil {
+		_ = conn.Close()
 	}
 
 	return nil
@@ -472,16 +552,25 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	if err := s.local.Check(ctx); err != nil {
 		resp.Refusals = append(resp.Refusals, err.Error())
 	}
-	if s.remote != nil {
-		if err := s.remote.Check(ctx); err != nil {
+	if remote := s.remoteNode(); remote != nil {
+		if err := remote.Check(ctx); err != nil {
 			resp.Refusals = append(resp.Refusals, err.Error())
 		}
 	}
 
 	svc := s.service()
 	if svc == nil {
-		resp.Refusals = append(resp.Refusals, "the bridge is enabled "+
-			"but did not start; see the node's log")
+		s.mu.RLock()
+		why := s.startErr
+		s.mu.RUnlock()
+
+		msg := "the bridge is enabled but has not started"
+		if why != nil {
+			msg = fmt.Sprintf("the bridge is enabled but cannot "+
+				"start, and tries again every %v: %v",
+				retryInterval, why)
+		}
+		resp.Refusals = append(resp.Refusals, msg)
 
 		return resp, nil
 	}

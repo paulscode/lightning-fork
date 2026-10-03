@@ -706,3 +706,58 @@ func TestTheSHA256NodeIsCheckedForWhatItIs(t *testing.T) {
 		t.Errorf("this node itself was accepted as the SHA256 one: %v", err)
 	}
 }
+
+// TestABridgeThatCannotStartDoesNotStopTheNode: lnd aborts its whole start
+// when a sub-server's Start fails, so a SHA256 node that is down or
+// misconfigured must leave the bridge refusing and retrying, never the
+// operator's own node offline.
+func TestABridgeThatCannotStartDoesNotStopTheNode(t *testing.T) {
+	t.Parallel()
+
+	srv, _, err := New(&Config{
+		Enabled: true, ToSHA256: true, FixedRate: 0.004,
+		SHA256RPCHost:      "127.0.0.1:1",
+		SHA256MacaroonPath: filepath.Join(t.TempDir(), "missing.macaroon"),
+		Deps:               (&fakeNode{synced: true}).deps(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed, which would stop the node: %v", err)
+	}
+
+	st, err := srv.Status(context.Background(), &StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var said bool
+	for _, r := range st.Refusals {
+		if strings.Contains(r, "cannot start") &&
+			strings.Contains(r, "tries again") {
+
+			said = true
+		}
+	}
+	if !said {
+		t.Errorf("Status does not say why the bridge is down: %v",
+			st.Refusals)
+	}
+	if _, err := srv.Quote(context.Background(),
+		&QuoteRequest{Invoice: "lnbc1x"}); err == nil {
+
+		t.Error("a bridge that is not up quoted")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = srv.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not end the retry loop")
+	}
+}
