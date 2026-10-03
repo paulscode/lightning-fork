@@ -71,7 +71,7 @@ lncli bridge code --url https://<this node's onion>:8080 --label "Alice"
 ```
 
 prints the code and its root key id. They add it in their dashboard under
-"Paying Bitcoin invoices". To revoke it:
+"Paying SHA256 invoices". To revoke it:
 
 ```
 lncli deletemacaroonid <root_key_id>
