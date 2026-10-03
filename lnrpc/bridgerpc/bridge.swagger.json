@@ -362,6 +362,13 @@
           "type": "string",
           "format": "int64",
           "description": "When it stops being used, as a Unix timestamp in seconds, or zero if the\nbridge allows a rate of any age."
+        },
+        "needs_operator": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Swaps that need the operator: ones that ended lost (paid out and the\nclaim on the money coming in could not be settled) or that the bridge\nstopped driving because it must not decide them alone. Each is the\npayment hash, the state and why. The bridge keeps quoting; these are for\na person to look at."
         }
       }
     },

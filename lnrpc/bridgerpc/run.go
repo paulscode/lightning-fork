@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/paulscode/lightning-fork-bridge/chainrate"
+	"github.com/paulscode/lightning-fork-bridge/driver"
 	"github.com/paulscode/lightning-fork-bridge/node"
 	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/runner"
@@ -272,6 +273,9 @@ func (s *service) drive(sd *side, hash node.Hash) {
 		default:
 			log.Errorf("Bridge failed driving %s swap %s: %v",
 				sd.name, hex.EncodeToString(hash[:]), err)
+			if errors.Is(err, driver.ErrNeedsOperator) {
+				s.markStopped(hash, err.Error())
+			}
 		}
 	}()
 }

@@ -186,6 +186,15 @@ message StatusResponse {
     bridge allows a rate of any age.
     */
     int64 rate_expires_at = 7;
+
+    /*
+    Swaps that need the operator: ones that ended lost (paid out and the
+    claim on the money coming in could not be settled) or that the bridge
+    stopped driving because it must not decide them alone. Each is the
+    payment hash, the state and why. The bridge keeps quoting; these are for
+    a person to look at.
+    */
+    repeated string needs_operator = 8;
 }
 
 message InfoRequest {

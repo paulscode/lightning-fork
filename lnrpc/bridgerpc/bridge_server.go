@@ -605,6 +605,7 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	}
 
 	resp.Refusals = append(resp.Refusals, svc.liquidityRefusals(ctx)...)
+	resp.NeedsOperator = svc.needsOperator(ctx)
 
 	return resp, nil
 }

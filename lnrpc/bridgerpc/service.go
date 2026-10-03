@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -133,6 +134,12 @@ type service struct {
 	// what both directions are priced against. A field so it can be
 	// replaced in tests, like each side's balance.
 	positionOf func(context.Context) (uint64, error)
+
+	// stopped holds swaps the runner stopped driving because the bridge
+	// must not decide them alone, by hash, with why. In memory: a restart
+	// drives them again, and if the reason stands it is found again.
+	stoppedMu sync.Mutex
+	stopped   map[node.Hash]string
 
 	// sides holds whichever directions are enabled, in the order a quote
 	// request tries them.
@@ -763,6 +770,44 @@ func (s *service) directionInfo(ctx context.Context, sd *side) *DirectionInfo {
 	}
 
 	out.Open = true
+
+	return out
+}
+
+// markStopped records a swap the runner gave up on, for the operator to see.
+func (s *service) markStopped(hash node.Hash, why string) {
+	s.stoppedMu.Lock()
+	defer s.stoppedMu.Unlock()
+
+	if s.stopped == nil {
+		s.stopped = map[node.Hash]string{}
+	}
+	s.stopped[hash] = why
+}
+
+// needsOperator lists the swaps a person has to look at: those that ended
+// lost, and those the runner stopped driving. The bridge keeps quoting
+// either way; this is so they are seen rather than found in a log.
+func (s *service) needsOperator(ctx context.Context) []string {
+	var out []string
+
+	lost, err := s.journal.Where(ctx, func(r store.Record) bool {
+		return r.State == swap.Lost
+	})
+	if err != nil {
+		out = append(out, "the journal cannot be read: "+err.Error())
+	}
+	for _, r := range lost {
+		out = append(out, fmt.Sprintf("%x lost: paid out, and the "+
+			"payment coming in could not be claimed", r.Hash))
+	}
+
+	s.stoppedMu.Lock()
+	defer s.stoppedMu.Unlock()
+	for hash, why := range s.stopped {
+		out = append(out, fmt.Sprintf("%x stopped: %s", hash, why))
+	}
+	sort.Strings(out)
 
 	return out
 }

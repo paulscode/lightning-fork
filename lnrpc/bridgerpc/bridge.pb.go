@@ -376,6 +376,12 @@ type StatusResponse struct {
 	// When it stops being used, as a Unix timestamp in seconds, or zero if the
 	// bridge allows a rate of any age.
 	RateExpiresAt int64 `protobuf:"varint,7,opt,name=rate_expires_at,json=rateExpiresAt,proto3" json:"rate_expires_at,omitempty"`
+	// Swaps that need the operator: ones that ended lost (paid out and the
+	// claim on the money coming in could not be settled) or that the bridge
+	// stopped driving because it must not decide them alone. Each is the
+	// payment hash, the state and why. The bridge keeps quoting; these are for
+	// a person to look at.
+	NeedsOperator []string `protobuf:"bytes,8,rep,name=needs_operator,json=needsOperator,proto3" json:"needs_operator,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -457,6 +463,13 @@ func (x *StatusResponse) GetRateExpiresAt() int64 {
 		return x.RateExpiresAt
 	}
 	return 0
+}
+
+func (x *StatusResponse) GetNeedsOperator() []string {
+	if x != nil {
+		return x.NeedsOperator
+	}
+	return nil
 }
 
 type InfoRequest struct {
@@ -801,7 +814,7 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\rincoming_msat\x18\x03 \x01(\x04R\fincomingMsat\x12#\n" +
 	"\routgoing_msat\x18\x04 \x01(\x04R\foutgoingMsat\x12\x1a\n" +
 	"\bpreimage\x18\x05 \x01(\fR\bpreimage\"\x0f\n" +
-	"\rStatusRequest\"\xea\x01\n" +
+	"\rStatusRequest\"\x91\x02\n" +
 	"\x0eStatusResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1e\n" +
 	"\n" +
@@ -811,7 +824,8 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\x0fswaps_in_flight\x18\x04 \x01(\rR\rswapsInFlight\x12\x12\n" +
 	"\x04rate\x18\x05 \x01(\x01R\x04rate\x12\x1e\n" +
 	"\vrate_set_at\x18\x06 \x01(\x03R\trateSetAt\x12&\n" +
-	"\x0frate_expires_at\x18\a \x01(\x03R\rrateExpiresAt\"\r\n" +
+	"\x0frate_expires_at\x18\a \x01(\x03R\rrateExpiresAt\x12%\n" +
+	"\x0eneeds_operator\x18\b \x03(\tR\rneedsOperator\"\r\n" +
 	"\vInfoRequest\"\xf6\x01\n" +
 	"\rDirectionInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +

@@ -19,6 +19,8 @@ import (
 	"github.com/paulscode/lightning-fork-bridge/node"
 	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/rate"
+	"github.com/paulscode/lightning-fork-bridge/store"
+	"github.com/paulscode/lightning-fork-bridge/swap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -759,5 +761,41 @@ func TestABridgeThatCannotStartDoesNotStopTheNode(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop did not end the retry loop")
+	}
+}
+
+// TestStatusNamesSwapsThatNeedTheOperator: a lost swap is terminal and the
+// runner stops on one it must not decide alone; both are for a person, and a
+// log line is not where a person looks.
+func TestStatusNamesSwapsThatNeedTheOperator(t *testing.T) {
+	t.Parallel()
+
+	srv, svc := measuredServer(t, 100_000_000_000)
+	ctx := context.Background()
+	now := time.Now()
+
+	err := svc.journal.Put(ctx, store.Record{
+		Hash: [32]byte{0xaa}, State: swap.Lost, OutgoingCLTVLimit: 40,
+		Invoice: "lnbc1lost", IncomingMsat: 1, OutgoingMsat: 1,
+		Created: now, Updated: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.markStopped([32]byte{0xbb}, "the outgoing payment has no record")
+
+	st, err := srv.Status(ctx, &StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.NeedsOperator) != 2 {
+		t.Fatalf("needs operator %v, wanted the lost and the stopped swap",
+			st.NeedsOperator)
+	}
+	joined := strings.Join(st.NeedsOperator, "\n")
+	if !strings.Contains(joined, "aa00") || !strings.Contains(joined,
+		"lost") || !strings.Contains(joined, "bb00") {
+
+		t.Errorf("needs operator %v", st.NeedsOperator)
 	}
 }
