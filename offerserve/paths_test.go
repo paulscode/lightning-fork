@@ -97,3 +97,29 @@ func TestFindPathsWithFallback(t *testing.T) {
 	require.Empty(t, routes)
 	require.Len(t, asked, 1)
 }
+
+// TestUnreceivablePeers: a peer is left out of an invoice's paths when none of
+// its channels with this node is up with enough inbound for the amount, as on
+// mainnet, where a path through a peer offline for days was handed out and
+// payers failed on it.
+func TestUnreceivablePeers(t *testing.T) {
+	t.Parallel()
+
+	var offline, drained, good, mixed route.Vertex
+	offline[0], drained[0], good[0], mixed[0] = 1, 2, 3, 4
+	chans := []PeerChannel{
+		{Peer: offline, Active: false, Inbound: 5_000_000_000},
+		{Peer: offline, Active: false, Inbound: 1_000_000_000},
+		{Peer: drained, Active: true, Inbound: 200_000},
+		{Peer: good, Active: true, Inbound: 7_000_000_000},
+		// One channel of two can take it: the peer is usable.
+		{Peer: mixed, Active: true, Inbound: 0},
+		{Peer: mixed, Active: true, Inbound: 2_000_000},
+	}
+
+	require.Equal(t, []route.Vertex{offline, drained},
+		UnreceivablePeers(chans, 1_000_000))
+	require.Equal(t, []route.Vertex{offline},
+		UnreceivablePeers(chans, 100_000), "a small amount fits")
+	require.Empty(t, UnreceivablePeers(nil, 1_000_000))
+}

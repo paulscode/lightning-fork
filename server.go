@@ -5814,6 +5814,41 @@ func (s *server) offersDeps() *offersrpc.Deps {
 	}
 }
 
+// unreceivablePeers lists the peers through none of whose channels this node
+// can be paid amt right now (see offerserve.UnreceivablePeers). A failure to
+// read the channels leaves nobody out, as before.
+func (s *server) unreceivablePeers(amt lnwire.MilliSatoshi) []route.Vertex {
+	chans, err := s.chanStateDB.FetchAllOpenChannels()
+	if err != nil {
+		srvrLog.Warnf("Offer invoice paths: reading channels: %v", err)
+
+		return nil
+	}
+
+	peers := make([]offerserve.PeerChannel, 0, len(chans))
+	for _, c := range chans {
+		reserve := lnwire.NewMSatFromSatoshis(c.RemoteChanCfg.ChanReserve)
+		var inbound lnwire.MilliSatoshi
+		if bal := c.LocalCommitment.RemoteBalance; bal > reserve {
+			inbound = bal - reserve
+		}
+		peers = append(peers, offerserve.PeerChannel{
+			Peer: route.NewVertex(c.IdentityPub),
+			Active: s.htlcSwitch.HasActiveLink(
+				lnwire.NewChanIDFromOutPoint(c.FundingOutpoint),
+			),
+			Inbound: inbound,
+		})
+	}
+	omitted := offerserve.UnreceivablePeers(peers, amt)
+	for _, p := range omitted {
+		srvrLog.Debugf("Offer invoice paths: leaving out peer %x, which "+
+			"cannot pay %v to this node now", p[:], amt)
+	}
+
+	return omitted
+}
+
 // addOfferInvoice creates the Lightning invoice behind a BOLT 12 invoice:
 // a registry invoice with blinded payment paths under the node's blinded
 // path settings, whose paths are read back for the BOLT 12 invoice to
@@ -5860,6 +5895,15 @@ func (s *server) addOfferInvoice(ctx context.Context, amountMsat uint64,
 		QueryBlindedRoutes: func(amt lnwire.MilliSatoshi) (
 			[]*route.Route, error) {
 
+			// No path through a peer that cannot pay this node the
+			// amount now: offline, or short of inbound. The graph
+			// still shows those channels as usable.
+			r := *restrictions
+			r.NodeOmissionSet = fn.NewSet[route.Vertex]()
+			for _, peer := range s.unreceivablePeers(amt) {
+				r.NodeOmissionSet.Add(peer)
+			}
+
 			routes, fellBack, err := offerserve.FindPathsWithFallback(
 				func(r *routing.BlindedPathRestrictions) (
 					[]*route.Route, error) {
@@ -5868,7 +5912,7 @@ func (s *server) addOfferInvoice(ctx context.Context, amountMsat uint64,
 						selfNode, amt,
 						s.defaultMC.GetProbability, r,
 					)
-				}, restrictions,
+				}, &r,
 			)
 			if fellBack {
 				srvrLog.Infof("No peer can start a blinded " +
