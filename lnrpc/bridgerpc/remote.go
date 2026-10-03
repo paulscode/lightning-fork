@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -480,6 +481,56 @@ func (r *Remote) Reachable(ctx context.Context) (BlockInfo, error) {
 	}
 
 	return info, nil
+}
+
+// CheckChain confirms the node is a Lightning node on the SHA256 chain, on the
+// same network as this one, and not this node.
+//
+// Both chains run lnd, both report "bitcoin" and the same network names, and
+// both read each other's invoices, so a misconfigured address that pointed at
+// another Lightning Fork node would answer every call and start. What tells
+// them apart is option_blake2b: a Lightning Fork node always advertises it,
+// and a stock lnd never does. Checking a chain's identity at the node, not
+// only at its chain backend, is the lesson this exists for.
+func (r *Remote) CheckChain(ctx context.Context, network,
+	localKey string) error {
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	info, err := r.main.GetInfo(ctx, &lnrpc.GetInfoRequest{})
+	if err != nil {
+		return fmt.Errorf("bitcoin node: %w", err)
+	}
+
+	for _, bit := range node.BLAKE2bFeatureBits {
+		if _, ok := info.GetFeatures()[bit]; ok {
+			return fmt.Errorf("%w: the node at the SHA256 address "+
+				"advertises option_blake2b, so it is a Lightning "+
+				"Fork node on the BLAKE2b chain; point "+
+				"bridgerpc.sha256.rpchost at a stock lnd on the "+
+				"SHA256 chain", ErrConfig)
+		}
+	}
+	if localKey != "" && strings.EqualFold(info.GetIdentityPubkey(),
+		localKey) {
+
+		return fmt.Errorf("%w: the SHA256 address reaches this node "+
+			"itself", ErrConfig)
+	}
+
+	var got string
+	for _, c := range info.GetChains() {
+		if c.GetChain() == "bitcoin" {
+			got = c.GetNetwork()
+		}
+	}
+	if network != "" && got != network {
+		return fmt.Errorf("%w: the SHA256 node is on %q and this node "+
+			"on %q", ErrConfig, got, network)
+	}
+
+	return nil
 }
 
 // Balance is what that node can still send over its channels.

@@ -65,6 +65,8 @@ func (s *server) bridgeDeps(
 			s.identityECDH.PubKey().SerializeCompressed(),
 		),
 
+		Network: bridgeNetworkName(s.cfg.ActiveNetParams.Params.Name),
+
 		DecodeInvoice: func(_ context.Context,
 			invoice string) (*zpay32.Invoice, error) {
 
@@ -87,6 +89,16 @@ func (s *server) bridgeDeps(
 
 		ChannelBalance: s.bridgeChannelBalance,
 	}
+}
+
+// bridgeNetworkName is a chain parameters name as lnd's GetInfo reports it,
+// which is how the SHA256 node will name its own network.
+func bridgeNetworkName(params string) string {
+	if params == "testnet3" {
+		return "testnet"
+	}
+
+	return params
 }
 
 // forgetBridgeInvoice deletes a cancelled invoice, the same way the

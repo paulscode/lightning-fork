@@ -662,3 +662,47 @@ func TestInfoAndSetRateWhileDisabled(t *testing.T) {
 		t.Errorf("SetRate: %v", err)
 	}
 }
+
+// TestTheSHA256NodeIsCheckedForWhatItIs: both chains run lnd and report the
+// same chain and network names, so a misconfigured address pointing at another
+// Lightning Fork node would answer every call. option_blake2b is what gives it
+// away, and the network and identity are checked as well.
+func TestTheSHA256NodeIsCheckedForWhatItIs(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	chains := []*lnrpc.Chain{{Chain: "bitcoin", Network: "mainnet"}}
+	stock := &lnrpc.GetInfoResponse{
+		IdentityPubkey: "03aa", Chains: chains,
+		Features: map[uint32]*lnrpc.Feature{9: {}, 15: {}},
+	}
+
+	if err := remote(&fakeMain{info: stock}, nil, nil).CheckChain(ctx,
+		"mainnet", "02bb"); err != nil {
+
+		t.Fatalf("a stock lnd on the same network was refused: %v", err)
+	}
+
+	fork := proto.Clone(stock).(*lnrpc.GetInfoResponse)
+	fork.Features[512] = &lnrpc.Feature{Name: "blake2b"}
+	err := remote(&fakeMain{info: fork}, nil, nil).CheckChain(ctx, "mainnet",
+		"02bb")
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(),
+		"option_blake2b") {
+
+		t.Errorf("a Lightning Fork node was accepted as the SHA256 one: %v",
+			err)
+	}
+
+	if err := remote(&fakeMain{info: stock}, nil, nil).CheckChain(ctx,
+		"regtest", "02bb"); !errors.Is(err, ErrConfig) {
+
+		t.Errorf("a node on another network was accepted: %v", err)
+	}
+
+	if err := remote(&fakeMain{info: stock}, nil, nil).CheckChain(ctx,
+		"mainnet", "03AA"); !errors.Is(err, ErrConfig) {
+
+		t.Errorf("this node itself was accepted as the SHA256 one: %v", err)
+	}
+}

@@ -187,6 +187,18 @@ func (s *Server) Start() error {
 		return fmt.Errorf("the bridge cannot use the SHA256 node at "+
 			"%s: %w", s.cfg.SHA256RPCHost, err)
 	}
+	var network string
+	if s.cfg.Deps != nil {
+		network = s.cfg.Deps.Network
+	}
+	if err := s.remote.CheckChain(ctx, network,
+		s.local.NodeKey()); err != nil {
+
+		_ = conn.Close()
+
+		return fmt.Errorf("the bridge will not use the SHA256 node at "+
+			"%s: %w", s.cfg.SHA256RPCHost, err)
+	}
 	if !local.SyncedToChain || !remote.SyncedToChain {
 		log.Infof("Bridge will refuse to quote until both nodes catch "+
 			"up (this node synced=%v at height %d, SHA256 node "+

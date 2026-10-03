@@ -53,6 +53,10 @@ type Deps struct {
 	// invoice against it.
 	NodeKey string
 
+	// Network is this node's network as lnd's GetInfo names it (mainnet,
+	// testnet, regtest, ...). The SHA256 node must be on the same one.
+	Network string
+
 	// DecodeInvoice reads a payment request with this node's own decoder
 	// and network parameters.
 	//
