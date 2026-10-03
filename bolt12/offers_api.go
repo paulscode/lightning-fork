@@ -94,10 +94,16 @@ func MerkleRoot(records []tlv.Record) ([32]byte, error) {
 }
 
 // ErrChainNotNamed is returned by the write-side chain checks below when a
-// message names no chain at all. Per BOLT 12 an absent chain means Bitcoin
-// mainnet, so a node on any other chain must never emit one.
-var ErrChainNotNamed = errors.New("message names no chain; an absent chain " +
-	"means Bitcoin mainnet")
+// message names no chain at all. Per BOLT 12 an absent chain means the chain
+// that starts at Bitcoin's genesis block, which the SHA256 and BLAKE2b
+// mainnets share, so a node on any other network (testnet, signet, regtest)
+// must never emit one.
+//
+// The text names the chains by their proof of work rather than calling one
+// of them Bitcoin: which chain that is depends on who is reading.
+var ErrChainNotNamed = errors.New("message names no chain, which BOLT 12 " +
+	"reads as mainnet (the SHA256 and BLAKE2b chains share its genesis " +
+	"block), not this network")
 
 // absentChainIsOurs reports whether a message that names no chain names the
 // active one anyway: when the active chain's hash is Bitcoin mainnet's genesis

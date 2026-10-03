@@ -1,4 +1,4 @@
-From 81fa5e498fd7ce28ca6cb6b1e06635580e092a55 Mon Sep 17 00:00:00 2001
+From d597e99ddade368758b7fee18775dd6efad88b44 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 21:23:59 -0500
 Subject: [PATCH 4/8] offers: serve invoice requests and pay offers over onion
@@ -54,42 +54,42 @@ survives a restore, and how to pay and retry.
 
 (cherry picked from commit 1638b8b817820fd2c8540e8ada4f9f1d809b2d77)
 ---
- README.md                             |   6 +
- bolt12/offers_api.go                  |  63 +-
- bolt12/offers_api_test.go             |  24 +
- cmd/commands/offersrpc_active.go      | 170 +++++
- docs/bolt12-offers.md                 | 137 ++++
- lnrpc/offersrpc/config_active.go      |   8 +-
- lnrpc/offersrpc/deps.go               |  61 ++
- lnrpc/offersrpc/driver.go             |   2 +-
- lnrpc/offersrpc/offers.pb.go          | 677 +++++++++++++++++-
- lnrpc/offersrpc/offers.pb.gw.go       | 255 +++++++
- lnrpc/offersrpc/offers.pb.json.go     |  75 ++
- lnrpc/offersrpc/offers.proto          | 139 +++-
- lnrpc/offersrpc/offers.swagger.json   | 288 +++++++-
- lnrpc/offersrpc/offers.yaml           |   9 +
- lnrpc/offersrpc/offers_grpc.pb.go     | 128 ++++
- lnrpc/offersrpc/offers_server.go      | 382 +++++++++-
- lnrpc/offersrpc/offers_server_test.go | 321 ++++++++-
- log.go                                |   6 +
- offerpay/client.go                    | 520 ++++++++++++++
- offerpay/client_test.go               | 987 ++++++++++++++++++++++++++
- offerpay/intent.go                    | 377 ++++++++++
- offerpay/log.go                       |  32 +
- offers/invoice_store.go               | 276 +++++++
- offers/invoice_store_test.go          |  74 ++
- offers/manager.go                     |  18 +
- offers/requests.go                    | 147 ++++
- offers/requests_test.go               | 147 ++++
- offerserve/log.go                     |  32 +
- offerserve/server.go                  | 681 ++++++++++++++++++
- offerserve/server_test.go             | 802 +++++++++++++++++++++
- onionmsg/messenger.go                 |  61 +-
- onionmsg/messenger_test.go            |   9 +
- rpcserver.go                          |   2 +-
- server.go                             | 222 ++++++
- subrpcserver_config.go                |   7 +-
- 35 files changed, 7022 insertions(+), 123 deletions(-)
+ README.md                             |    6 +
+ bolt12/offers_api.go                  |   63 +-
+ bolt12/offers_api_test.go             |   24 +
+ cmd/commands/offersrpc_active.go      |  170 ++++
+ docs/bolt12-offers.md                 |  137 ++++
+ lnrpc/offersrpc/config_active.go      |    8 +-
+ lnrpc/offersrpc/deps.go               |   61 ++
+ lnrpc/offersrpc/driver.go             |    2 +-
+ lnrpc/offersrpc/offers.pb.go          |  677 +++++++++++++++-
+ lnrpc/offersrpc/offers.pb.gw.go       |  255 ++++++
+ lnrpc/offersrpc/offers.pb.json.go     |   75 ++
+ lnrpc/offersrpc/offers.proto          |  139 +++-
+ lnrpc/offersrpc/offers.swagger.json   |  288 ++++++-
+ lnrpc/offersrpc/offers.yaml           |    9 +
+ lnrpc/offersrpc/offers_grpc.pb.go     |  128 ++++
+ lnrpc/offersrpc/offers_server.go      |  382 ++++++++-
+ lnrpc/offersrpc/offers_server_test.go |  321 +++++++-
+ log.go                                |    6 +
+ offerpay/client.go                    |  520 +++++++++++++
+ offerpay/client_test.go               | 1023 +++++++++++++++++++++++++
+ offerpay/intent.go                    |  377 +++++++++
+ offerpay/log.go                       |   32 +
+ offers/invoice_store.go               |  276 +++++++
+ offers/invoice_store_test.go          |   74 ++
+ offers/manager.go                     |   18 +
+ offers/requests.go                    |  147 ++++
+ offers/requests_test.go               |  147 ++++
+ offerserve/log.go                     |   32 +
+ offerserve/server.go                  |  681 ++++++++++++++++
+ offerserve/server_test.go             |  838 ++++++++++++++++++++
+ onionmsg/messenger.go                 |   61 +-
+ onionmsg/messenger_test.go            |    9 +
+ rpcserver.go                          |    2 +-
+ server.go                             |  222 ++++++
+ subrpcserver_config.go                |    7 +-
+ 35 files changed, 7094 insertions(+), 123 deletions(-)
  create mode 100644 docs/bolt12-offers.md
  create mode 100644 lnrpc/offersrpc/deps.go
  create mode 100644 offerpay/client.go
@@ -122,7 +122,7 @@ index e75f3dd31..8cfa9f9ac 100644
  [Lightning Network](https://lightning.network) node.  `lnd` has several pluggable back-end
  chain services including [`btcd`](https://github.com/btcsuite/btcd) (a
 diff --git a/bolt12/offers_api.go b/bolt12/offers_api.go
-index 2e8e26d53..a90973d9d 100644
+index 060e34574..23846b85d 100644
 --- a/bolt12/offers_api.go
 +++ b/bolt12/offers_api.go
 @@ -1,6 +1,8 @@
@@ -224,7 +224,7 @@ index 2e8e26d53..a90973d9d 100644
  
  // MerkleRoot exposes the BOLT 12 Merkle root of a record set, for callers
 diff --git a/bolt12/offers_api_test.go b/bolt12/offers_api_test.go
-index 2ae9be3e7..547c93d86 100644
+index a10c4db77..9b1b775f2 100644
 --- a/bolt12/offers_api_test.go
 +++ b/bolt12/offers_api_test.go
 @@ -1,6 +1,7 @@
@@ -235,7 +235,7 @@ index 2ae9be3e7..547c93d86 100644
  	"encoding/hex"
  	"testing"
  
-@@ -250,3 +251,26 @@ func TestWriteOnChain(t *testing.T) {
+@@ -296,3 +297,26 @@ func TestWriteOnChain(t *testing.T) {
  	require.ErrorIs(t, ValidateInvoiceWriteOnChain(inv, ours),
  		ErrChainNotNamed)
  }
@@ -3844,10 +3844,10 @@ index 000000000..5e6167d28
 +}
 diff --git a/offerpay/client_test.go b/offerpay/client_test.go
 new file mode 100644
-index 000000000..cea8f53dd
+index 000000000..ae2022ed8
 --- /dev/null
 +++ b/offerpay/client_test.go
-@@ -0,0 +1,987 @@
+@@ -0,0 +1,1023 @@
 +package offerpay
 +
 +import (
@@ -3957,6 +3957,7 @@ index 000000000..cea8f53dd
 +
 +type env struct {
 +	t      *testing.T
++	chain  [32]byte
 +	client *Client
 +	msgr   *fakeMessenger
 +	clock  *clock.TestClock
@@ -3966,19 +3967,27 @@ index 000000000..cea8f53dd
 +func newEnv(t *testing.T) *env {
 +	t.Helper()
 +
++	return newEnvOn(t, testChain)
++}
++
++// newEnvOn is newEnv on a given chain.
++func newEnvOn(t *testing.T, chain [32]byte) *env {
++	t.Helper()
++
 +	nodeKey, err := btcec.NewPrivateKey()
 +	require.NoError(t, err)
 +	issuer, err := btcec.NewPrivateKey()
 +	require.NoError(t, err)
 +	e := &env{
 +		t:      t,
++		chain:  chain,
 +		msgr:   &fakeMessenger{nodeKey: nodeKey},
 +		clock:  clock.NewTestClock(time.Unix(1_800_000_000, 0)),
 +		issuer: issuer,
 +	}
 +	e.client, err = New(Config{
 +		Messenger: e.msgr,
-+		ChainHash: testChain,
++		ChainHash: chain,
 +		Clock:     e.clock,
 +		Timeout:   2 * time.Second,
 +	})
@@ -3996,7 +4005,7 @@ index 000000000..cea8f53dd
 +	o := &bolt12.Offer{
 +		OfferChains: tlv.SomeRecordT(
 +			tlv.NewRecordT[tlv.TlvType2](bolt12.ChainsRecord{
-+				Chains: [][32]byte{testChain},
++				Chains: [][32]byte{e.chain},
 +			}),
 +		),
 +		OfferDescription: tlv.SomeRecordT(
@@ -4200,6 +4209,33 @@ index 000000000..cea8f53dd
 +	// A late duplicate reply is dropped, not delivered anywhere.
 +	_, pathID := e.msgr.lastRequest(t)
 +	e.reply(e.invoiceFor(got.Request, 250_000_000, nil), pathID)
++}
++
++// TestFetchOnBitcoinMainnet: on Bitcoin mainnet the request omits
++// invreq_chain, as BOLT 12 asks, and that has to pass the writer checks
++// rather than be refused as naming no chain. Every other test runs on a
++// made-up chain hash, which is why it went unnoticed.
++func TestFetchOnBitcoinMainnet(t *testing.T) {
++	t.Parallel()
++
++	mainnet := bolt12.BitcoinMainnetChain()
++	e := newEnvOn(t, mainnet)
++	offer := e.offer(0, true, nil)
++	got, err := e.fetch(FetchParams{
++		Offer: offer, AmountMsat: 100_000,
++	}, func(ir *bolt12.InvoiceRequest, pathID []byte) {
++		require.False(t, ir.InvreqChain.IsSome(),
++			"a request for Bitcoin mainnet omits invreq_chain")
++		require.NoError(t, bolt12.ValidateInvoiceRequestRead(
++			ir, mainnet, nil,
++		))
++		e.reply(e.invoiceFor(ir, 100_000, nil), pathID)
++	})
++	require.NoError(t, err)
++	require.Equal(t, uint64(100_000), got.AmountMsat)
++	require.NoError(t, bolt12.ValidateInvoiceWriteOnChain(
++		got.Invoice, mainnet,
++	))
 +}
 +
 +// TestFetchNodeIDAndFallback sends to the node id when the offer has no
@@ -6680,10 +6716,10 @@ index 000000000..087987119
 +}
 diff --git a/offerserve/server_test.go b/offerserve/server_test.go
 new file mode 100644
-index 000000000..02762a2fc
+index 000000000..5dfe39429
 --- /dev/null
 +++ b/offerserve/server_test.go
-@@ -0,0 +1,802 @@
+@@ -0,0 +1,838 @@
 +package offerserve
 +
 +import (
@@ -6756,6 +6792,7 @@ index 000000000..02762a2fc
 +}
 +
 +type env struct {
++	chain    [32]byte
 +	t        *testing.T
 +	server   *Server
 +	manager  *offers.Manager
@@ -6779,6 +6816,13 @@ index 000000000..02762a2fc
 +func newEnv(t *testing.T) *env {
 +	t.Helper()
 +
++	return newEnvOn(t, testChain)
++}
++
++// newEnvOn is newEnv on a given chain.
++func newEnvOn(t *testing.T, chain [32]byte) *env {
++	t.Helper()
++
 +	backend, cleanup, err := kvdb.GetTestBackend(t.TempDir(), "offers")
 +	require.NoError(t, err)
 +	t.Cleanup(cleanup)
@@ -6793,6 +6837,7 @@ index 000000000..02762a2fc
 +	desc := keychain.KeyDescriptor{KeyLocator: loc, PubKey: nodeKey.PubKey()}
 +	e := &env{
 +		t:        t,
++		chain:    chain,
 +		invoices: invStore,
 +		msgr:     &fakeMessenger{},
 +		signer:   &keySigner{key: nodeKey, loc: loc},
@@ -6801,7 +6846,7 @@ index 000000000..02762a2fc
 +		settled:  make(map[[32]byte]bool),
 +	}
 +	e.manager, err = offers.NewManager(offers.Config{
-+		ChainHash:     testChain,
++		ChainHash:     chain,
 +		IssuerKey:     desc,
 +		Secret:        [32]byte{1, 2, 3},
 +		Store:         store,
@@ -6815,7 +6860,7 @@ index 000000000..02762a2fc
 +		Manager:   e.manager,
 +		Invoices:  invStore,
 +		Messenger: e.msgr,
-+		ChainHash: testChain,
++		ChainHash: chain,
 +		NodeKey:   desc,
 +		Signer:    e.signer,
 +		AddInvoice: func(_ context.Context, amount uint64, desc string,
@@ -6914,7 +6959,7 @@ index 000000000..02762a2fc
 +	payer, err := btcec.NewPrivateKey()
 +	require.NoError(e.t, err)
 +	ir, err := bolt12.NewInvoiceRequestFromOffer(
-+		offer, payer.PubKey(), []byte{9, 9, 9, 9}, testChain,
++		offer, payer.PubKey(), []byte{9, 9, 9, 9}, e.chain,
 +	)
 +	require.NoError(e.t, err)
 +	if amount != 0 {
@@ -7133,6 +7178,33 @@ index 000000000..02762a2fc
 +}
 +
 +// TestServeAmountAndQuantity covers amounts from the offer and quantities.
++// TestServeOnBitcoinMainnet: a request for Bitcoin mainnet omits
++// invreq_chain as BOLT 12 asks, the invoice copies that, and serving it must
++// not fail the check that the invoice names our chain.
++func TestServeOnBitcoinMainnet(t *testing.T) {
++	t.Parallel()
++
++	mainnet := bolt12.BitcoinMainnetChain()
++	e := newEnvOn(t, mainnet)
++	ctx := context.Background()
++	rec, _, err := e.manager.CreateOffer(ctx, offers.CreateParams{
++		Description: "test", NoPaths: true,
++	})
++	require.NoError(t, err)
++	offer := e.decodeOffer(rec)
++
++	ir, _ := e.request(offer, 100_000, nil)
++	require.False(t, ir.InvreqChain.IsSome())
++	e.server.Handle(ctx, e.inbound(ir, nil, true))
++
++	require.Len(t, e.msgr.sent, 1, "the request was answered")
++	inv := e.lastInvoice()
++	require.NoError(t, bolt12.ValidateInvoiceRead(
++		inv, mainnet, bolt12.InvoiceFeatureCatalogues{},
++	))
++	require.NoError(t, bolt12.ValidateInvoiceAgainstRequest(inv, ir))
++}
++
 +func TestServeAmountAndQuantity(t *testing.T) {
 +	t.Parallel()
 +

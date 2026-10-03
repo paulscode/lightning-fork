@@ -1,4 +1,4 @@
-From 87d1552208975ee366f24666faf308d377af0874 Mon Sep 17 00:00:00 2001
+From 186285fbbcaaa90f1c00f4d2159e23555def891f Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 03:38:10 -0500
 Subject: [PATCH 5/8] Pay through blinded paths that start at this node, in the
@@ -276,7 +276,7 @@ index 000000000..bdb01b196
 +	require.ErrorIs(t, err, routing.ErrSelfIntro)
 +}
 diff --git a/offerpay/client_test.go b/offerpay/client_test.go
-index cea8f53dd..ca60d540b 100644
+index ae2022ed8..7b3435ef5 100644
 --- a/offerpay/client_test.go
 +++ b/offerpay/client_test.go
 @@ -5,22 +5,17 @@ import (
@@ -302,7 +302,7 @@ index cea8f53dd..ca60d540b 100644
  	"github.com/lightningnetwork/lnd/tlv"
  	"github.com/stretchr/testify/require"
  )
-@@ -747,230 +742,6 @@ func TestPaymentIntent(t *testing.T) {
+@@ -783,230 +778,6 @@ func TestPaymentIntent(t *testing.T) {
  	require.Error(t, err)
  }
  

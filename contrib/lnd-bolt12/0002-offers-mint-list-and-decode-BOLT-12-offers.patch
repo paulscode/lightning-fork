@@ -1,4 +1,4 @@
-From 9598f9811985d63c0546cdc4a3e0f6378184a211 Mon Sep 17 00:00:00 2001
+From 270154cd03726c8cf934472c7ff40127b484c4f9 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 19:48:26 -0500
 Subject: [PATCH 2/8] offers: mint, list and decode BOLT 12 offers
@@ -41,8 +41,8 @@ committed and regenerated with the rest.
 
 (cherry picked from commit e24fc5b668bd0bb7b518728956209fe7dba636a9)
 ---
- bolt12/offers_api.go                  |  146 +++
- bolt12/offers_api_test.go             |  252 ++++++
+ bolt12/offers_api.go                  |  169 ++++
+ bolt12/offers_api_test.go             |  298 +++++++
  cmd/commands/main.go                  |    1 +
  cmd/commands/offersrpc_active.go      |  272 ++++++
  cmd/commands/offersrpc_default.go     |   11 +
@@ -72,7 +72,7 @@ committed and regenerated with the rest.
  rpcserver.go                          |    2 +-
  server.go                             |   29 +
  subrpcserver_config.go                |   16 +-
- 31 files changed, 6906 insertions(+), 7 deletions(-)
+ 31 files changed, 6975 insertions(+), 7 deletions(-)
  create mode 100644 bolt12/offers_api.go
  create mode 100644 bolt12/offers_api_test.go
  create mode 100644 cmd/commands/offersrpc_active.go
@@ -98,10 +98,10 @@ committed and regenerated with the rest.
 
 diff --git a/bolt12/offers_api.go b/bolt12/offers_api.go
 new file mode 100644
-index 000000000..2e8e26d53
+index 000000000..060e34574
 --- /dev/null
 +++ b/bolt12/offers_api.go
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,169 @@
 +package bolt12
 +
 +import (
@@ -182,6 +182,14 @@ index 000000000..2e8e26d53
 +var ErrChainNotNamed = errors.New("message names no chain; an absent chain " +
 +	"means Bitcoin mainnet")
 +
++// absentChainIsOurs reports whether a message that names no chain names the
++// active one anyway: on Bitcoin mainnet an absent chain means exactly that
++// chain, and BOLT 12 asks a writer to omit it there, so only a node on
++// another chain must never write one.
++func absentChainIsOurs(activeChain [32]byte) bool {
++	return activeChain == bitcoinMainnetGenesisHash
++}
++
 +// BitcoinMainnetChain returns the chain hash BOLT 12 assumes when a message
 +// names none. Callers on another chain compare against it to make sure they
 +// never fall back to it by accident.
@@ -190,7 +198,8 @@ index 000000000..2e8e26d53
 +}
 +
 +// ValidateOfferWriteOnChain runs the upstream writer checks and then insists
-+// the offer names activeChain in offer_chains. The upstream validator has
++// the offer names activeChain in offer_chains, or names no chain where that
++// means activeChain (Bitcoin mainnet). The upstream validator has
 +// no chain context, so on its own it lets a node write an offer that a payer
 +// reads as a Bitcoin mainnet offer.
 +func ValidateOfferWriteOnChain(o *Offer, activeChain [32]byte) error {
@@ -198,6 +207,10 @@ index 000000000..2e8e26d53
 +		return err
 +	}
 +	if !o.OfferChains.IsSome() {
++		if absentChainIsOurs(activeChain) {
++			return nil
++		}
++
 +		return ErrChainNotNamed
 +	}
 +	for _, chain := range getOfferChains(o) {
@@ -210,7 +223,8 @@ index 000000000..2e8e26d53
 +}
 +
 +// ValidateInvoiceRequestWriteOnChain runs the upstream writer checks and then
-+// insists the request names activeChain in invreq_chain.
++// insists the request names activeChain in invreq_chain, or names no chain
++// where that means activeChain.
 +func ValidateInvoiceRequestWriteOnChain(ir *InvoiceRequest,
 +	activeChain [32]byte) error {
 +
@@ -218,6 +232,10 @@ index 000000000..2e8e26d53
 +		return err
 +	}
 +	if !ir.InvreqChain.IsSome() {
++		if absentChainIsOurs(activeChain) {
++			return nil
++		}
++
 +		return ErrChainNotNamed
 +	}
 +	if getInvreqChain(ir) != activeChain {
@@ -228,12 +246,17 @@ index 000000000..2e8e26d53
 +}
 +
 +// ValidateInvoiceWriteOnChain runs the upstream writer checks and then
-+// insists the invoice names activeChain in invreq_chain.
++// insists the invoice names activeChain in invreq_chain, or names no chain
++// where that means activeChain.
 +func ValidateInvoiceWriteOnChain(inv *Invoice, activeChain [32]byte) error {
 +	if err := ValidateInvoiceWrite(inv); err != nil {
 +		return err
 +	}
 +	if !inv.InvreqChain.IsSome() {
++		if absentChainIsOurs(activeChain) {
++			return nil
++		}
++
 +		return ErrChainNotNamed
 +	}
 +	var chain [32]byte
@@ -250,10 +273,10 @@ index 000000000..2e8e26d53
 +}
 diff --git a/bolt12/offers_api_test.go b/bolt12/offers_api_test.go
 new file mode 100644
-index 000000000..2ae9be3e7
+index 000000000..a10c4db77
 --- /dev/null
 +++ b/bolt12/offers_api_test.go
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,298 @@
 +package bolt12
 +
 +import (
@@ -365,6 +388,52 @@ index 000000000..2ae9be3e7
 +	require.Equal(t, want, btc[:])
 +	require.Equal(t, [32]byte(*chaincfg.MainNetParams.GenesisHash),
 +		BitcoinMainnetChain())
++}
++
++// TestWriteOnBitcoinMainnet: on Bitcoin mainnet an absent chain means the
++// active chain, and a request for it omits invreq_chain as BOLT 12 asks, so
++// the writer checks accept one there. On any other chain they still refuse
++// it.
++func TestWriteOnBitcoinMainnet(t *testing.T) {
++	t.Parallel()
++
++	issuer, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	payer, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	mainnet := BitcoinMainnetChain()
++
++	offer := &Offer{
++		OfferDescription: tlv.SomeRecordT(
++			tlv.NewPrimitiveRecord[tlv.TlvType10](tlv.Blob("x")),
++		),
++		OfferIssuerID: tlv.SomeRecordT(
++			tlv.NewPrimitiveRecord[tlv.TlvType22](issuer.PubKey()),
++		),
++		OfferChains: tlv.SomeRecordT(
++			tlv.NewRecordT[tlv.TlvType2](ChainsRecord{
++				Chains: [][32]byte{mainnet},
++			}),
++		),
++	}
++	ir, err := NewInvoiceRequestFromOffer(
++		offer, payer.PubKey(), []byte{1}, mainnet,
++	)
++	require.NoError(t, err)
++	ir.InvreqAmount = tlv.SomeRecordT(
++		tlv.NewPrimitiveRecord[tlv.TlvType82](TUint64(100_000)),
++	)
++	require.False(t, ir.InvreqChain.IsSome())
++	require.NoError(t, ValidateInvoiceRequestWriteOnChain(ir, mainnet))
++
++	// The same request on another chain still names none, which there
++	// would read as Bitcoin mainnet: refused.
++	require.ErrorIs(t, ValidateInvoiceRequestWriteOnChain(ir,
++		[32]byte{0xb2, 1}), ErrChainNotNamed)
++
++	// An offer naming no chain at all is a Bitcoin mainnet offer.
++	offer.OfferChains = tlv.OptionalRecordT[tlv.TlvType2, ChainsRecord]{}
++	require.NoError(t, ValidateOfferWriteOnChain(offer, mainnet))
 +}
 +
 +// TestWriteOnChain checks the chain-pinned writer validators: a message that

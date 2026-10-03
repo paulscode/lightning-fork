@@ -1,4 +1,4 @@
-From aa629b1e47cd87f1cfe55c723d347069ea202413 Mon Sep 17 00:00:00 2001
+From 8984895c8f99221045c964372f14a97006e1aa8d Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 20:31:09 -0500
 Subject: [PATCH 3/8] onionmsg: carry BOLT 12 messages over onion messages

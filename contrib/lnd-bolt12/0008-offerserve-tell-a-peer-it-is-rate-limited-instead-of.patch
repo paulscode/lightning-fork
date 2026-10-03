@@ -1,4 +1,4 @@
-From f4767dfc2cc7d0e7db5dab5dcdf2dbf4e80d18e2 Mon Sep 17 00:00:00 2001
+From 2732f308196aa17cc9aee62c95c9f3ea5a351a88 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 15:14:24 -0500
 Subject: [PATCH 8/8] offerserve: tell a peer it is rate limited instead of
@@ -151,10 +151,10 @@ index 087987119..dd5488880 100644
  	}
  
 diff --git a/offerserve/server_test.go b/offerserve/server_test.go
-index 02762a2fc..ed4857222 100644
+index 5dfe39429..f672d3d07 100644
 --- a/offerserve/server_test.go
 +++ b/offerserve/server_test.go
-@@ -800,3 +800,51 @@ func TestNewRequirements(t *testing.T) {
+@@ -836,3 +836,51 @@ func TestNewRequirements(t *testing.T) {
  		s.cfg.RequestsPerSecond)
  	require.Equal(t, DefaultRequestBurst, s.cfg.RequestBurst)
  }
