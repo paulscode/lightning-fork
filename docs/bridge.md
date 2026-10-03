@@ -38,7 +38,12 @@ start the bridge with a combination of settings that would refuse every swap,
 and says which numbers to change.
 
 `lncli bridge status` says whether the bridge can serve swaps right now and,
-if not, why.
+if not, why. If the SHA256 node cannot be reached, or turns out not to be a
+stock lnd on the SHA256 chain on this node's network, the bridge stays down
+and tries again every minute while this node runs as usual. `needs_operator`
+lists swaps that need you: one that ended lost (paid out, and the payment
+coming in could not be claimed), or one the bridge stopped driving because it
+must not decide it alone. Watch that list.
 
 ## The rate
 
