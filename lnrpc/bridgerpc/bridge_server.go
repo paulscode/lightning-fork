@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/paulscode/lightning-fork-bridge/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
 
@@ -61,13 +64,20 @@ var (
 			Entity: "offchain",
 			Action: "read",
 		}},
-		// Changing the rate changes what every later swap costs, so
-		// it takes the same permission as committing liquidity.
-		// Participants' macaroons are scoped to the payer calls by
-		// URI and never reach this.
+		// Changing the rate changes what every later swap costs, and a
+		// wrong one pays out the SHA256 node's funds for next to
+		// nothing. Paying permission is not enough for that: wallets
+		// and apps hold it, and none of them should be able to set the
+		// price this node sells at. Making macaroons is a permission
+		// only the operator's own (admin) macaroon carries.
+		// Participants' macaroons are scoped to the payer calls by URI
+		// and never reach this.
 		"/bridgerpc.Bridge/SetRate": {{
 			Entity: "offchain",
 			Action: "write",
+		}, {
+			Entity: "macaroon",
+			Action: "generate",
 		}},
 	}
 )
@@ -111,6 +121,13 @@ type Server struct {
 	// startErr is why the bridge is enabled and not up, while it keeps
 	// trying. Guarded by mu.
 	startErr error
+
+	// info is the last Info answer and when it was made, shared for
+	// infoFresh. Guarded by infoMu, which also lets one caller at a time
+	// make a new one.
+	infoMu sync.Mutex
+	info   *InfoResponse
+	infoAt time.Time
 
 	// quit ends the retry loop, and wg waits for it.
 	quit chan struct{}
@@ -165,42 +182,50 @@ func (s *Server) Start() error {
 	// misconfigured: taking the operator's own Lightning node offline over
 	// that would be the wrong way round. So try now, and if that fails,
 	// say why in Status and the log and keep trying in the background.
+	//
+	// The first try runs in the background too: reaching a SHA256 node that
+	// does not answer takes the dial timeout and the chain check's, and
+	// the node's own start should not wait on either.
 	s.quit = make(chan struct{})
-	if err := s.connect(); err != nil {
-		s.setStartErr(err)
-		log.Warnf("Bridge did not start, retrying every %v: %v",
-			retryInterval, err)
-
-		s.wg.Add(1)
-		go s.retry()
-	}
+	s.setStartErr(errStarting)
+	s.wg.Add(1)
+	go s.retry()
 
 	return nil
 }
 
+// errStarting is why the bridge is not up before its first try has finished.
+var errStarting = errors.New("still connecting to both nodes")
+
 // retryInterval is how often a bridge that could not start tries again.
 const retryInterval = time.Minute
 
-// retry keeps trying to bring the bridge up until it is, or the node stops.
+// retry brings the bridge up, trying at once and then every retryInterval
+// until it is up or the node stops.
 func (s *Server) retry() {
 	defer s.wg.Done()
 
 	tick := time.NewTicker(retryInterval)
 	defer tick.Stop()
 
-	for {
+	for first := true; ; first = false {
+		err := s.connect()
+		s.setStartErr(err)
+		switch {
+		case err == nil:
+			return
+		case first:
+			log.Warnf("Bridge did not start, retrying every %v: %v",
+				retryInterval, err)
+		default:
+			log.Debugf("Bridge still cannot start: %v", err)
+		}
+
 		select {
 		case <-s.quit:
 			return
 		case <-tick.C:
 		}
-
-		err := s.connect()
-		s.setStartErr(err)
-		if err == nil {
-			return
-		}
-		log.Debugf("Bridge still cannot start: %v", err)
 	}
 }
 
@@ -410,6 +435,19 @@ func errDisabled() error {
 		"not enabled on this node; set bridgerpc.enabled to offer swaps")
 }
 
+// notServing is the answer while the bridge cannot serve: disabled, or
+// enabled and not up yet. The second is temporary, and says so: a payer reads
+// "disabled" as for good.
+func (s *Server) notServing() error {
+	if !s.cfg.Enabled {
+		return errDisabled()
+	}
+
+	return coded(codes.Unavailable, "unavailable", "the bridge is "+
+		"starting, or cannot reach one of its nodes yet and tries "+
+		"again every minute; lncli bridge status says why")
+}
+
 // Quote asks what a swap would cost and creates the hold invoice to pay for it.
 //
 // The swap begins being driven before this returns. That is deliberate: the
@@ -421,7 +459,7 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 
 	svc := s.service()
 	if !s.cfg.Enabled || svc == nil {
-		return nil, errDisabled()
+		return nil, s.notServing()
 	}
 
 	// A quote taken while the node is going down creates a hold invoice
@@ -492,7 +530,7 @@ func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
 
 	svc := s.service()
 	if !s.cfg.Enabled || svc == nil {
-		return nil, errDisabled()
+		return nil, s.notServing()
 	}
 	if len(req.GetHash()) != len(node.Hash{}) {
 		return nil, coded(codes.InvalidArgument, "invalid_request",
@@ -503,14 +541,22 @@ func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
 	var hash node.Hash
 	copy(hash[:], req.GetHash())
 
+	notFound := coded(codes.NotFound, "not_found",
+		fmt.Sprintf("no swap with hash %x", hash))
 	rec, err := svc.journal.Get(ctx, hash)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, coded(codes.NotFound, "not_found",
-				fmt.Sprintf("no swap with hash %x", hash))
+			return nil, notFound
 		}
 
 		return nil, coded(codes.Internal, "internal", err.Error())
+	}
+
+	// A participant sees their own swaps only: another's amounts, and its
+	// preimage, are that participant's proof of payment, not theirs. Told
+	// apart from a hash that was never quoted by nothing at all.
+	if who := participantOf(ctx); who != "" && rec.Participant != who {
+		return nil, notFound
 	}
 
 	out := &Swap{
@@ -565,7 +611,10 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		s.mu.RUnlock()
 
 		msg := "the bridge is enabled but has not started"
-		if why != nil {
+		if errors.Is(why, errStarting) {
+			msg = "the bridge is enabled and still connecting to " +
+				"both nodes"
+		} else if why != nil {
 			msg = fmt.Sprintf("the bridge is enabled but cannot "+
 				"start, and tries again every %v: %v",
 				retryInterval, why)
@@ -622,7 +671,17 @@ func (s *Server) Info(ctx context.Context, _ *InfoRequest) (*InfoResponse,
 
 	svc := s.service()
 	if !s.cfg.Enabled || svc == nil {
-		return nil, errDisabled()
+		return nil, s.notServing()
+	}
+
+	// The answer is the same for every caller and reads balances on both
+	// nodes, so it is shared for a few seconds: however often anyone asks,
+	// the nodes are asked at most that often. Info has no per-participant
+	// limit of its own, and needs none with this.
+	s.infoMu.Lock()
+	defer s.infoMu.Unlock()
+	if s.info != nil && time.Since(s.infoAt) < infoFresh {
+		return proto.Clone(s.info).(*InfoResponse), nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, infoTimeout)
@@ -636,24 +695,42 @@ func (s *Server) Info(ctx context.Context, _ *InfoRequest) (*InfoResponse,
 		resp.Directions = append(resp.Directions,
 			svc.directionInfo(ctx, sd))
 	}
+	s.info, s.infoAt = resp, time.Now()
 
-	return resp, nil
+	return proto.Clone(resp).(*InfoResponse), nil
 }
 
 // infoTimeout bounds Info. It reads balances on both nodes, and a payer is
 // waiting on it to show a price.
 const infoTimeout = 15 * time.Second
 
+// infoFresh is how long one Info answer is given to every caller.
+const infoFresh = 5 * time.Second
+
 // SetRate changes the rate the bridge trades at.
+//
+// It works while the bridge is enabled and not up, too, by writing the rate
+// file the bridge reads when it comes up: an unreadable rate file is one of
+// the things that keeps it down, and setting the rate is the way out.
 func (s *Server) SetRate(_ context.Context, req *SetRateRequest) (
 	*SetRateResponse, error) {
 
-	svc := s.service()
-	if !s.cfg.Enabled || svc == nil {
+	if !s.cfg.Enabled {
 		return nil, errDisabled()
 	}
+	rates := &ratebook{
+		path: filepath.Join(filepath.Dir(s.cfg.Journal), rateFileName),
+		now:  time.Now,
+	}
+	if svc := s.service(); svc != nil {
+		rates = svc.rates
+	} else if err := os.MkdirAll(filepath.Dir(rates.path),
+		0700); err != nil {
 
-	r, at, err := svc.rates.set(req.GetRate(), s.cfg.FixedRate)
+		return nil, coded(codes.Internal, "internal", err.Error())
+	}
+
+	r, at, err := rates.set(req.GetRate(), s.cfg.FixedRate)
 	if err != nil {
 		if errors.Is(err, ErrConfig) {
 			return nil, coded(codes.InvalidArgument,
@@ -662,6 +739,11 @@ func (s *Server) SetRate(_ context.Context, req *SetRateRequest) (
 
 		return nil, coded(codes.Internal, "internal", err.Error())
 	}
+
+	// A new price is news at once, not in a few seconds.
+	s.infoMu.Lock()
+	s.info = nil
+	s.infoMu.Unlock()
 
 	log.Infof("Bridge rate set to %g SHA256 coin per BLAKE2b coin", r)
 

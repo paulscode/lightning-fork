@@ -325,6 +325,35 @@ func TestRouteGoesByTheChainBit(t *testing.T) {
 	}
 }
 
+// TestASHA256NodeThatIsDownIsUnavailable: with the SHA256 node not answering,
+// the other node still reads every invoice, finds no option_blake2b and would
+// call it the wrong chain. A payer takes that as final; it is not.
+func TestASHA256NodeThatIsDownIsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	for _, both := range []bool{true, false} {
+		svc := sidedService(t, 10_000_000)
+		if !both {
+			svc.sides = svc.sides[:1]
+		}
+		for _, sd := range svc.sides {
+			if sd.name == "toSHA256" {
+				sd.out.(*fakeOutDecoder).down = true
+			}
+		}
+
+		_, _, err := svc.route(context.Background(), "sideA-payme")
+		if quote.CodeOf(err) != quote.CodeUnavailable {
+			t.Errorf("both directions %v: code %q (%v), want "+
+				"unavailable", both, quote.CodeOf(err), err)
+		}
+		if status.Code(refusal(err)) != codes.Unavailable {
+			t.Errorf("both directions %v: status %v", both,
+				status.Code(refusal(err)))
+		}
+	}
+}
+
 func TestLocalDecodeReadsTheChainBit(t *testing.T) {
 	t.Parallel()
 
@@ -627,16 +656,26 @@ func TestSetRateChangesWhatInfoReports(t *testing.T) {
 	}
 }
 
-// SetRate changes what every later swap costs, so it needs write, and the
-// payer calls need only what they do.
+// The payer calls need only what they do. SetRate sets the price the SHA256
+// node's funds are sold at, so paying permission, which wallets and apps hold,
+// is not enough: it also needs to be able to make macaroons, which only the
+// operator's admin macaroon can.
 func TestThePayerCallsAndSetRateHaveTheRightPermissions(t *testing.T) {
 	t.Parallel()
+
+	setRate := macPermissions["/bridgerpc.Bridge/SetRate"]
+	if len(setRate) != 2 || setRate[0].Entity != "offchain" ||
+		setRate[0].Action != "write" || setRate[1].Entity != "macaroon" ||
+		setRate[1].Action != "generate" {
+
+		t.Errorf("SetRate requires %+v, want offchain:write and "+
+			"macaroon:generate", setRate)
+	}
 
 	for uri, action := range map[string]string{
 		"/bridgerpc.Bridge/Info":       "read",
 		"/bridgerpc.Bridge/LookupSwap": "read",
 		"/bridgerpc.Bridge/Quote":      "write",
-		"/bridgerpc.Bridge/SetRate":    "write",
 	} {
 		ops := macPermissions[uri]
 		if len(ops) != 1 || ops[0].Entity != "offchain" ||
@@ -716,18 +755,36 @@ func TestTheSHA256NodeIsCheckedForWhatItIs(t *testing.T) {
 func TestABridgeThatCannotStartDoesNotStopTheNode(t *testing.T) {
 	t.Parallel()
 
+	dir := t.TempDir()
 	srv, _, err := New(&Config{
 		Enabled: true, ToSHA256: true, FixedRate: 0.004,
 		SHA256RPCHost:      "127.0.0.1:1",
-		SHA256MacaroonPath: filepath.Join(t.TempDir(), "missing.macaroon"),
+		SHA256MacaroonPath: filepath.Join(dir, "missing.macaroon"),
+		Journal:            filepath.Join(dir, "bridge", "swaps.journal"),
 		Deps:               (&fakeNode{synced: true}).deps(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	began := time.Now()
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed, which would stop the node: %v", err)
+	}
+	if took := time.Since(began); took > time.Second {
+		t.Errorf("Start waited %v on the SHA256 node", took)
+	}
+
+	// The first try runs in the background; wait for its verdict.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		srv.mu.RLock()
+		why := srv.startErr
+		srv.mu.RUnlock()
+		if !errors.Is(why, errStarting) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	st, err := srv.Status(context.Background(), &StatusRequest{})
@@ -746,10 +803,31 @@ func TestABridgeThatCannotStartDoesNotStopTheNode(t *testing.T) {
 		t.Errorf("Status does not say why the bridge is down: %v",
 			st.Refusals)
 	}
-	if _, err := srv.Quote(context.Background(),
-		&QuoteRequest{Invoice: "lnbc1x"}); err == nil {
+	// Enabled and down is temporary, and must not read as "disabled",
+	// which a payer takes as for good.
+	_, err = srv.Quote(context.Background(), &QuoteRequest{Invoice: "lnbc1x"})
+	if status.Code(err) != codes.Unavailable || !strings.HasPrefix(
+		status.Convert(err).Message(), "unavailable: ") {
 
-		t.Error("a bridge that is not up quoted")
+		t.Errorf("a bridge that is not up answered a quote with %v", err)
+	}
+	_, err = srv.Info(context.Background(), &InfoRequest{})
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("Info while not up: %v", err)
+	}
+
+	// The rate can be set while the bridge is down: a rate file it cannot
+	// read is one of the things that keeps it down.
+	set, err := srv.SetRate(context.Background(), &SetRateRequest{Rate: 0.005})
+	if err != nil || set.Rate != 0.005 {
+		t.Fatalf("SetRate while not up: %v %v", set, err)
+	}
+	b, err := openRatebook(filepath.Join(dir, "bridge"), 0.004, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := b.current(); r != 0.005 {
+		t.Errorf("the bridge would come up at %g, not the rate set", r)
 	}
 
 	done := make(chan struct{})
@@ -761,6 +839,39 @@ func TestABridgeThatCannotStartDoesNotStopTheNode(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop did not end the retry loop")
+	}
+}
+
+// TestParticipantsSeeOnlyTheirOwnSwaps: a swap's amounts and preimage are its
+// payer's proof of payment, and no business of another participant.
+func TestParticipantsSeeOnlyTheirOwnSwaps(t *testing.T) {
+	t.Parallel()
+
+	srv, svc := measuredServer(t, 100_000_000_000)
+	now := time.Now()
+	hash := [32]byte{0xcc}
+	err := svc.journal.Put(context.Background(), store.Record{
+		Hash: hash, State: swap.Quoted, OutgoingCLTVLimit: 40,
+		Invoice: "lnbc1mine", IncomingMsat: 1, OutgoingMsat: 1,
+		Participant: "17", Created: now, Updated: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ask := func(ctx context.Context) error {
+		_, err := srv.LookupSwap(ctx, &LookupSwapRequest{Hash: hash[:]})
+
+		return err
+	}
+	if err := ask(macaroonFor(t, "17")); err != nil {
+		t.Errorf("its participant: %v", err)
+	}
+	if err := ask(macaroonFor(t, "0")); err != nil {
+		t.Errorf("the operator: %v", err)
+	}
+	if err := ask(macaroonFor(t, "18")); status.Code(err) != codes.NotFound {
+		t.Errorf("another participant got %v, want NotFound", err)
 	}
 }
 

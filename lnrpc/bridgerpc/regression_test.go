@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -997,10 +998,18 @@ type fakeOutDecoder struct {
 	node.Outgoing
 
 	accepts string
+
+	// down: the node does not answer, as a real Remote reports it.
+	down bool
 }
 
 func (f *fakeOutDecoder) Decode(_ context.Context, inv string) (node.Decoded,
 	error) {
+
+	if f.down {
+		return node.Decoded{}, fmt.Errorf("%w: %w", ErrInvoice,
+			status.Error(codes.Unavailable, "connection refused"))
+	}
 
 	if !strings.HasPrefix(inv, "side") {
 		return node.Decoded{}, errors.New("not a Lightning invoice")

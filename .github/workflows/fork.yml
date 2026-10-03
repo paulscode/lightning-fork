@@ -67,3 +67,13 @@ jobs:
         run: go test -count=1 -tags test_db_sqlite ./graph/db/...
       - name: htlcswitch (dev tag)
         run: go test -count=1 -tags dev ./htlcswitch/...
+      - name: Bridge, and every release-tagged package builds
+        # The bridge and its lncli commands exist only under the bridgerpc
+        # tag, which the steps above do not set. The kvdb_* release tags
+        # need database servers, so the tests leave them out; the build
+        # does not.
+        run: |
+          tags="$(sed -n 's/^RELEASE_TAGS = //p' make/release_flags.mk | head -1)"
+          go build -tags "$tags" ./...
+          go vet -tags "$tags" ./lnrpc/bridgerpc/ ./cmd/commands/
+          go test -count=1 -race -tags "${tags//kvdb_postgres kvdb_etcd kvdb_sqlite/} dev" ./lnrpc/bridgerpc/...

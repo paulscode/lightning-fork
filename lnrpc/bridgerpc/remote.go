@@ -457,7 +457,7 @@ func (r *Remote) Check(ctx context.Context) error {
 	defer cancel()
 
 	if _, err := r.BlockHeight(ctx); err != nil {
-		return fmt.Errorf("bitcoin node: %w", err)
+		return fmt.Errorf("SHA256 node: %w", err)
 	}
 
 	return nil
@@ -477,7 +477,7 @@ func (r *Remote) Reachable(ctx context.Context) (BlockInfo, error) {
 
 	info, err := r.BestBlock(ctx)
 	if err != nil {
-		return BlockInfo{}, fmt.Errorf("bitcoin node: %w", err)
+		return BlockInfo{}, fmt.Errorf("SHA256 node: %w", err)
 	}
 
 	return info, nil
@@ -500,7 +500,7 @@ func (r *Remote) CheckChain(ctx context.Context, network,
 
 	info, err := r.main.GetInfo(ctx, &lnrpc.GetInfoRequest{})
 	if err != nil {
-		return fmt.Errorf("bitcoin node: %w", err)
+		return fmt.Errorf("SHA256 node: %w", err)
 	}
 
 	for _, bit := range node.BLAKE2bFeatureBits {

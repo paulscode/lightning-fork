@@ -238,7 +238,7 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 	if s.shaChain, err = chainrate.New(s.res.shaChain); err != nil {
 		s.close()
 
-		return nil, fmt.Errorf("the Bitcoin chain observer: %w", err)
+		return nil, fmt.Errorf("the SHA256 chain observer: %w", err)
 	}
 
 	// toSHA256 receives here and pays on the SHA256 chain, so it drains the

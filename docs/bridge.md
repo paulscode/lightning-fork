@@ -52,6 +52,10 @@ lncli bridge setrate 0.00490
 ```
 
 takes effect at once, survives restarts and is stamped with when it was set.
+It needs the admin macaroon: setting the price your SHA256 funds are sold at
+takes the permission to make macaroons as well as to pay, so a wallet or app
+macaroon that can pay cannot change it. It also works while the bridge is
+waiting to start, which is how to replace a rate file it cannot read.
 Once it is older than `bridgerpc.ratemaxage` (24 hours by default) the bridge
 stops quoting until you set it again, because a rate nobody has looked at in a
 moving market is a loss waiting to be taken. Changing `bridgerpc.fixedrate` in

@@ -15,6 +15,8 @@ import (
 	"github.com/paulscode/lightning-fork-bridge/node"
 	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/runner"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // pollInterval is how often each chain's tip is sampled.
@@ -196,12 +198,16 @@ func (s *service) resume(ctx context.Context) {
 func (s *service) route(ctx context.Context, invoice string) (*side,
 	node.Decoded, error) {
 
-	var errs []error
+	var errs, unanswered []error
 	readable := false
 	for _, sd := range s.sides {
 		dec, err := sd.out.Decode(ctx, invoice)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", sd.name, err))
+			if notAnswering(err) {
+				unanswered = append(unanswered,
+					fmt.Errorf("%s: %w", sd.name, err))
+			}
 
 			continue
 		}
@@ -215,6 +221,16 @@ func (s *service) route(ctx context.Context, invoice string) (*side,
 		}
 
 		return sd, dec, nil
+	}
+
+	// A paying node that did not answer could be the one this invoice is
+	// for, so nothing about the invoice is known yet: unavailable, which a
+	// payer tries again, rather than a verdict on the invoice that it
+	// would take as final.
+	if len(unanswered) > 0 {
+		return nil, node.Decoded{}, fmt.Errorf("%w: %w: a paying node "+
+			"is not answering: %w", ErrNoDirection, quote.ErrRefused,
+			errors.Join(unanswered...))
 	}
 
 	// Read, but for a chain no enabled direction pays on: that is the
@@ -234,6 +250,22 @@ func (s *service) route(ctx context.Context, invoice string) (*side,
 
 	return nil, node.Decoded{}, fmt.Errorf("%w: %w", ErrNoDirection,
 		errors.Join(errs...))
+}
+
+// notAnswering reports whether a node failed to answer at all, as opposed to
+// answering that it cannot read the invoice.
+func notAnswering(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) {
+
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled:
+		return true
+	}
+
+	return false
 }
 
 // drive runs a swap to completion in the background.

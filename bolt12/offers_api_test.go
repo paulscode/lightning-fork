@@ -156,6 +156,20 @@ func TestWriteOnBitcoinsGenesis(t *testing.T) {
 	// An offer naming no chain at all is Bitcoin's genesis chain too.
 	offer.OfferChains = tlv.OptionalRecordT[tlv.TlvType2, ChainsRecord]{}
 	require.NoError(t, ValidateOfferWriteOnChain(offer, genesis))
+
+	// Every other network's genesis: an absent chain is not theirs.
+	for _, params := range []*chaincfg.Params{
+		&chaincfg.TestNet3Params, &chaincfg.TestNet4Params,
+		&chaincfg.SigNetParams, &chaincfg.RegressionNetParams,
+		&chaincfg.SimNetParams,
+	} {
+		other := [32]byte(*params.GenesisHash)
+		require.NotEqual(t, genesis, other, params.Name)
+		require.ErrorIs(t, ValidateOfferWriteOnChain(offer, other),
+			ErrChainNotNamed, params.Name)
+		require.ErrorIs(t, ValidateInvoiceRequestWriteOnChain(ir,
+			other), ErrChainNotNamed, params.Name)
+	}
 }
 
 // TestWriteOnChain checks the chain-pinned writer validators: a message that

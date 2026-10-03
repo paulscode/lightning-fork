@@ -230,7 +230,7 @@ var bridgeCodeCommand = cli.Command{
 	Description: `
 	Bakes a macaroon that can only ask this bridge for prices and quotes,
 	under a root key of its own, and prints it as a bridge code for the
-	participant to add in their dashboard ("Paying Bitcoin invoices").
+	participant to add in their dashboard ("Paying SHA256 invoices").
 
 	--url is how the participant's node reaches this node's REST port, for
 	example https://abc...xyz.onion:8080. An address that is not an onion
