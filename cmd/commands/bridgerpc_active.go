@@ -4,10 +4,13 @@
 package commands
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -183,10 +186,39 @@ var bridgeParticipantURIs = []string{
 	"/bridgerpc.Bridge/LookupSwap",
 }
 
-// firstParticipantRootKeyID is where participants' root keys start, clear of
-// the node's own (0) and of the small numbers an operator may have used by
-// hand for other macaroons.
+// firstParticipantRootKeyID is the least root key id given to a participant,
+// clear of the node's own (0) and of the small numbers an operator may have
+// used by hand for other macaroons.
 const firstParticipantRootKeyID = 1000
+
+// freshRootKeyID picks a root key id no participant has had.
+//
+// Not the next one after the highest in use: a revoked id is deleted, so it no
+// longer shows as in use, and counting up would hand it to the next
+// participant. The bridge knows a participant by this id, so they would
+// inherit whatever the revoked one left outstanding, and the limits that
+// count it. A random id from a space this large is never reused in practice,
+// and one still in use is skipped.
+func freshRootKeyID(used []uint64) (uint64, error) {
+	taken := make(map[uint64]bool, len(used))
+	for _, id := range used {
+		taken[id] = true
+	}
+	for range 16 {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return 0, err
+		}
+		id := firstParticipantRootKeyID +
+			binary.BigEndian.Uint64(b[:])%(math.MaxInt64-
+				firstParticipantRootKeyID)
+		if !taken[id] {
+			return id, nil
+		}
+	}
+
+	return 0, fmt.Errorf("could not pick an unused root key id")
+}
 
 // certPin matches the pin format the payer API uses: SHA-256 as colon
 // separated hex.
@@ -226,8 +258,8 @@ var bridgeCodeCommand = cli.Command{
 		},
 		cli.Uint64Flag{
 			Name: "root_key_id",
-			Usage: "the root key id to bake under; default is the " +
-				"next unused one from 1000",
+			Usage: "the root key id to bake under; default is a " +
+				"random one no participant has had",
 		},
 	},
 	Action: actionDecorator(bridgeCode),
@@ -270,11 +302,8 @@ func bridgeCode(ctx *cli.Context) error {
 		if err != nil {
 			return err
 		}
-		id = firstParticipantRootKeyID
-		for _, used := range ids.GetRootKeyIds() {
-			if used >= id {
-				id = used + 1
-			}
+		if id, err = freshRootKeyID(ids.GetRootKeyIds()); err != nil {
+			return err
 		}
 	}
 	if id == 0 {
