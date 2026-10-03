@@ -39,6 +39,20 @@ type Deps struct {
 	// CancelInvoice returns a held HTLC to its payer.
 	CancelInvoice func(ctx context.Context, hash [32]byte) error
 
+	// ForgetInvoice deletes a cancelled invoice so its payment hash can
+	// carry a new one. It must refuse an invoice that is not cancelled and
+	// succeed for one the node has never seen.
+	//
+	// A node keeps cancelled invoices and refuses a second invoice for the
+	// same hash, so without this an invoice whose first attempt failed
+	// could never be paid through the bridge again.
+	ForgetInvoice func(ctx context.Context, hash [32]byte) error
+
+	// NodeKey is this node's identity key, compressed and hex-encoded. An
+	// invoice payable to it is refused, and a payer checks every hold
+	// invoice against it.
+	NodeKey string
+
 	// DecodeInvoice reads a payment request with this node's own decoder
 	// and network parameters.
 	//

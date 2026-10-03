@@ -10,6 +10,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/paulscode/lightning-fork-bridge/node"
 )
 
@@ -59,7 +60,8 @@ func (l *Local) ready() error {
 		l.deps.SettleInvoice == nil, l.deps.CancelInvoice == nil,
 		l.deps.DecodeInvoice == nil, l.deps.PayInvoice == nil,
 		l.deps.LookupPayment == nil, l.deps.BestBlock == nil,
-		l.deps.BlockAt == nil, l.deps.ChannelBalance == nil:
+		l.deps.BlockAt == nil, l.deps.ChannelBalance == nil,
+		l.deps.ForgetInvoice == nil:
 
 		return ErrNoDeps
 	}
@@ -205,6 +207,24 @@ func (l *Local) CancelInvoice(ctx context.Context, hash node.Hash) error {
 	return fmt.Errorf("cancelling %x: %w", hash, err)
 }
 
+// ForgetInvoice deletes a cancelled invoice so its hash can carry a new one.
+func (l *Local) ForgetInvoice(ctx context.Context, hash node.Hash) error {
+	if err := l.ready(); err != nil {
+		return err
+	}
+
+	return l.deps.ForgetInvoice(ctx, hash)
+}
+
+// NodeKey is this node's identity key, hex.
+func (l *Local) NodeKey() string {
+	if l == nil || l.deps == nil {
+		return ""
+	}
+
+	return l.deps.NodeKey
+}
+
 // BlockHeight is the tip this node sees.
 func (l *Local) BlockHeight(ctx context.Context) (int32, error) {
 	if err := l.ready(); err != nil {
@@ -297,6 +317,13 @@ func (l *Local) Decode(ctx context.Context, invoice string) (node.Decoded,
 	if pay.Destination != nil {
 		out.Destination = fmt.Sprintf("%x",
 			pay.Destination.SerializeCompressed())
+	}
+
+	// Which chain the invoice is for. Both chains' invoices share a
+	// prefix and this node reads both, so the feature bit is what says.
+	if pay.Features != nil {
+		out.BLAKE2b = pay.Features.IsSet(lnwire.Blake2bRequired) ||
+			pay.Features.IsSet(lnwire.Blake2bOptional)
 	}
 
 	return out, nil

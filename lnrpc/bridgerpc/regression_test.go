@@ -195,6 +195,7 @@ func TestSizeInventoryDerivesFromWhatTheSideHolds(t *testing.T) {
 
 	sd := svc.sides[0]
 	sd.balance = f.deps().ChannelBalance
+	svc.positionOf = f.deps().ChannelBalance
 
 	// The shipped default would refuse this node outright.
 	if sd.inventory.FloorOutgoingMsat <= held {
@@ -235,6 +236,7 @@ func TestSizeInventoryRetriesUntilThereIsABalance(t *testing.T) {
 
 	sd := svc.sides[0]
 	sd.balance = f.deps().ChannelBalance
+	svc.positionOf = f.deps().ChannelBalance
 
 	svc.sizeInventory(context.Background())
 	if sd.sized {
@@ -272,6 +274,7 @@ func TestSizeInventoryLeavesAConfiguredTargetAlone(t *testing.T) {
 
 	sd := svc.sides[0]
 	sd.balance = f.deps().ChannelBalance
+	svc.positionOf = f.deps().ChannelBalance
 
 	svc.sizeInventory(context.Background())
 
@@ -297,7 +300,7 @@ func TestSizeInventoryRefusesToSizeFromDust(t *testing.T) {
 	} {
 		sd.sized = false
 		sd.inventory = before
-		sd.balance = func(context.Context) (uint64, error) {
+		svc.positionOf = func(context.Context) (uint64, error) {
 			return held, nil
 		}
 
@@ -315,7 +318,7 @@ func TestSizeInventoryRefusesToSizeFromDust(t *testing.T) {
 	}
 
 	// And it still sizes once there is enough.
-	sd.balance = func(context.Context) (uint64, error) {
+	svc.positionOf = func(context.Context) (uint64, error) {
 		return svc.res.quote.MinSwapMsat * 10, nil
 	}
 	svc.sizeInventory(context.Background())
@@ -841,6 +844,7 @@ func TestQuotingWhileSizingIsNotARace(t *testing.T) {
 
 	sd := svc.sides[0]
 	sd.balance = f.deps().ChannelBalance
+	svc.positionOf = f.deps().ChannelBalance
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -985,13 +989,10 @@ func sidedService(t *testing.T, balance uint64) *service {
 	return svc
 }
 
-// fakeOutDecoder decodes only invoices carrying its marker.
-//
-// The marker is a test discriminator and nothing more. It used to be the
-// chain's BOLT 11 prefix, which genuinely did tell the two chains apart; that
-// prefix was withdrawn, and both chains now mint "lnbc". The real decoder
-// therefore does not refuse an invoice for the other chain, and these markers
-// must not be read as if it did.
+// fakeOutDecoder reads every test invoice, as a real node reads every
+// Lightning invoice now that both chains mint "lnbc", and reports the chain
+// the way a real decoder does: by whether option_blake2b is set. The "sideB-"
+// marker stands for that bit; "sideA-" invoices are for the SHA256 chain.
 type fakeOutDecoder struct {
 	node.Outgoing
 
@@ -1001,12 +1002,13 @@ type fakeOutDecoder struct {
 func (f *fakeOutDecoder) Decode(_ context.Context, inv string) (node.Decoded,
 	error) {
 
-	if !strings.HasPrefix(inv, f.accepts) {
-		return node.Decoded{}, errors.New("not an invoice this node " +
-			"can pay")
+	if !strings.HasPrefix(inv, "side") {
+		return node.Decoded{}, errors.New("not a Lightning invoice")
 	}
 
-	return node.Decoded{AmountMsat: 1}, nil
+	return node.Decoded{
+		AmountMsat: 1, BLAKE2b: strings.HasPrefix(inv, "sideB-"),
+	}, nil
 }
 
 func TestHeadroomCountsOnlyItsOwnSide(t *testing.T) {

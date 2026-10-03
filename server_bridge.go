@@ -2,6 +2,7 @@ package lnd
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -58,6 +59,12 @@ func (s *server) bridgeDeps(
 			return s.invoices.CancelInvoice(ctx, lntypes.Hash(hash))
 		},
 
+		ForgetInvoice: s.forgetBridgeInvoice,
+
+		NodeKey: hex.EncodeToString(
+			s.identityECDH.PubKey().SerializeCompressed(),
+		),
+
 		DecodeInvoice: func(_ context.Context,
 			invoice string) (*zpay32.Invoice, error) {
 
@@ -80,6 +87,30 @@ func (s *server) bridgeDeps(
 
 		ChannelBalance: s.bridgeChannelBalance,
 	}
+}
+
+// forgetBridgeInvoice deletes a cancelled invoice, the same way the
+// DeleteCanceledInvoice RPC does, so the bridge can quote its hash again.
+//
+// Anything but a cancelled invoice is refused: deleting one that is held or
+// was paid would erase the record of real money. A hash the node has never
+// seen is already forgotten, which is what makes a retry after a crash safe.
+func (s *server) forgetBridgeInvoice(ctx context.Context, hash [32]byte) error {
+	inv, err := s.invoices.LookupInvoice(ctx, lntypes.Hash(hash))
+	switch {
+	case errors.Is(err, invoices.ErrInvoiceNotFound):
+		return nil
+	case err != nil:
+		return err
+	case inv.State != invoices.ContractCanceled:
+		return fmt.Errorf("bridge invoice %x is %v, and only a "+
+			"cancelled invoice may be forgotten", hash, inv.State)
+	}
+
+	return s.invoicesDB.DeleteInvoice(ctx, []invoices.InvoiceDeleteRef{{
+		PayHash:  lntypes.Hash(hash),
+		AddIndex: inv.AddIndex,
+	}})
 }
 
 // addBridgeHoldInvoice creates a hold invoice on this node.

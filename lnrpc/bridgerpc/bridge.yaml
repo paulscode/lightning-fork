@@ -11,3 +11,8 @@ http:
       body: "*"
     - selector: bridgerpc.Bridge.Status
       get: "/v2/bridge/status"
+    - selector: bridgerpc.Bridge.Info
+      get: "/v2/bridge/info"
+    - selector: bridgerpc.Bridge.SetRate
+      post: "/v2/bridge/rate"
+      body: "*"

@@ -119,10 +119,9 @@ func TestTheReciprocalDirectionInvertsTheRate(t *testing.T) {
 		}
 	}
 
-	// Both price against the local fake's balance so the inventory half is
-	// the same and only the inversion differs.
-	forward.balance = f.deps().ChannelBalance
-	reverse.balance = f.deps().ChannelBalance
+	// Both price against one position, so the inventory half is the same
+	// and only the inversion differs.
+	svc.positionOf = f.deps().ChannelBalance
 
 	fwd, err := svc.pricer(forward)(context.Background())
 	if err != nil {
@@ -167,7 +166,7 @@ func TestADrainedSideIsQuotedWider(t *testing.T) {
 			if sd.invert {
 				continue
 			}
-			sd.balance = f.deps().ChannelBalance
+			svc.positionOf = f.deps().ChannelBalance
 
 			r, err := svc.pricer(sd)(context.Background())
 			if err != nil {
@@ -304,5 +303,63 @@ func TestHeadroomFailsRatherThanGuessing(t *testing.T) {
 
 	if _, err := svc.headroom(sd)(context.Background()); err == nil {
 		t.Fatal("an unreadable balance should refuse, not read as zero")
+	}
+}
+
+// TestBothDirectionsPriceAgainstTheSHA256Position: the inventory policy
+// describes what the bridge holds on the SHA256 chain. toSHA256 spends it and
+// pays more as it empties; toBLAKE2b puts it back and is offered more of a
+// discount as it empties. Pricing toBLAKE2b against its own BTCB2 balance
+// instead gave the biggest discount when the BTCB2 side was nearly empty.
+func TestBothDirectionsPriceAgainstTheSHA256Position(t *testing.T) {
+	t.Parallel()
+
+	cfg := usable()
+
+	spreads := func(position uint64, b2b uint64) (fwd, rev float64) {
+		t.Helper()
+
+		f := &fakeNode{synced: true, balance: b2b}
+		svc := serviceFor(t, cfg, f, remote(nil, nil, nil))
+		svc.positionOf = func(context.Context) (uint64, error) {
+			return position, nil
+		}
+		for _, sd := range svc.sides {
+			sd.balance = f.deps().ChannelBalance
+			r, err := svc.pricer(sd)(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sd.invert {
+				rev = r.Spread
+			} else {
+				fwd = r.Spread
+			}
+		}
+
+		return fwd, rev
+	}
+
+	target := inventory.DefaultPolicy.TargetOutgoingMsat
+	floor := inventory.DefaultPolicy.FloorOutgoingMsat
+
+	fwdFull, revFull := spreads(target, target)
+	fwdLow, revLow := spreads(floor+1, target)
+
+	if fwdLow <= fwdFull {
+		t.Errorf("toSHA256 at a low SHA256 position %g should be wider "+
+			"than at a full one %g", fwdLow, fwdFull)
+	}
+	if revLow > revFull {
+		t.Errorf("toBLAKE2b refills a low SHA256 position, so it should "+
+			"not cost more then: %g against %g", revLow, revFull)
+	}
+
+	// The BTCB2 balance has no say in the price.
+	_, revDrainedB2B := spreads(target, 1)
+	if revDrainedB2B != revFull {
+		t.Errorf("toBLAKE2b's spread moved with the BTCB2 balance (%g "+
+			"against %g); it must follow the SHA256 position",
+			revDrainedB2B, revFull)
 	}
 }

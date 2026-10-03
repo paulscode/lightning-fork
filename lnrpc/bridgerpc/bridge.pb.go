@@ -369,6 +369,13 @@ type StatusResponse struct {
 	Refusals []string `protobuf:"bytes,3,rep,name=refusals,proto3" json:"refusals,omitempty"`
 	// How many swaps are being driven right now.
 	SwapsInFlight uint32 `protobuf:"varint,4,opt,name=swaps_in_flight,json=swapsInFlight,proto3" json:"swaps_in_flight,omitempty"`
+	// The rate in force, as SHA256 coin per BLAKE2b coin.
+	Rate float64 `protobuf:"fixed64,5,opt,name=rate,proto3" json:"rate,omitempty"`
+	// When it was set, as a Unix timestamp in seconds.
+	RateSetAt int64 `protobuf:"varint,6,opt,name=rate_set_at,json=rateSetAt,proto3" json:"rate_set_at,omitempty"`
+	// When it stops being used, as a Unix timestamp in seconds, or zero if the
+	// bridge allows a rate of any age.
+	RateExpiresAt int64 `protobuf:"varint,7,opt,name=rate_expires_at,json=rateExpiresAt,proto3" json:"rate_expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -431,6 +438,342 @@ func (x *StatusResponse) GetSwapsInFlight() uint32 {
 	return 0
 }
 
+func (x *StatusResponse) GetRate() float64 {
+	if x != nil {
+		return x.Rate
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetRateSetAt() int64 {
+	if x != nil {
+		return x.RateSetAt
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetRateExpiresAt() int64 {
+	if x != nil {
+		return x.RateExpiresAt
+	}
+	return 0
+}
+
+type InfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InfoRequest) Reset() {
+	*x = InfoRequest{}
+	mi := &file_bridgerpc_bridge_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InfoRequest) ProtoMessage() {}
+
+func (x *InfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bridgerpc_bridge_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InfoRequest.ProtoReflect.Descriptor instead.
+func (*InfoRequest) Descriptor() ([]byte, []int) {
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{6}
+}
+
+type DirectionInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// toSHA256 or toBLAKE2b.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Whether a quote in this direction could succeed right now.
+	Open bool `protobuf:"varint,2,opt,name=open,proto3" json:"open,omitempty"`
+	// Why not, when it could not: a stable code and a sentence.
+	RefusalCode string `protobuf:"bytes,3,opt,name=refusal_code,json=refusalCode,proto3" json:"refusal_code,omitempty"`
+	Refusal     string `protobuf:"bytes,4,opt,name=refusal,proto3" json:"refusal,omitempty"`
+	// Outgoing units per incoming unit. For toSHA256, SHA256 coin per BLAKE2b
+	// coin.
+	Rate float64 `protobuf:"fixed64,5,opt,name=rate,proto3" json:"rate,omitempty"`
+	// When the rate was set, as a Unix timestamp in seconds.
+	RateSetAt int64 `protobuf:"varint,6,opt,name=rate_set_at,json=rateSetAt,proto3" json:"rate_set_at,omitempty"`
+	// The fraction charged on top of the rate at the bridge's current position.
+	// It can move between this call and a quote.
+	Spread float64 `protobuf:"fixed64,7,opt,name=spread,proto3" json:"spread,omitempty"`
+	// Bounds on the invoice to be paid, in the outgoing chain's millisatoshis.
+	MinMsat       uint64 `protobuf:"varint,8,opt,name=min_msat,json=minMsat,proto3" json:"min_msat,omitempty"`
+	MaxMsat       uint64 `protobuf:"varint,9,opt,name=max_msat,json=maxMsat,proto3" json:"max_msat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DirectionInfo) Reset() {
+	*x = DirectionInfo{}
+	mi := &file_bridgerpc_bridge_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DirectionInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DirectionInfo) ProtoMessage() {}
+
+func (x *DirectionInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_bridgerpc_bridge_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DirectionInfo.ProtoReflect.Descriptor instead.
+func (*DirectionInfo) Descriptor() ([]byte, []int) {
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DirectionInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DirectionInfo) GetOpen() bool {
+	if x != nil {
+		return x.Open
+	}
+	return false
+}
+
+func (x *DirectionInfo) GetRefusalCode() string {
+	if x != nil {
+		return x.RefusalCode
+	}
+	return ""
+}
+
+func (x *DirectionInfo) GetRefusal() string {
+	if x != nil {
+		return x.Refusal
+	}
+	return ""
+}
+
+func (x *DirectionInfo) GetRate() float64 {
+	if x != nil {
+		return x.Rate
+	}
+	return 0
+}
+
+func (x *DirectionInfo) GetRateSetAt() int64 {
+	if x != nil {
+		return x.RateSetAt
+	}
+	return 0
+}
+
+func (x *DirectionInfo) GetSpread() float64 {
+	if x != nil {
+		return x.Spread
+	}
+	return 0
+}
+
+func (x *DirectionInfo) GetMinMsat() uint64 {
+	if x != nil {
+		return x.MinMsat
+	}
+	return 0
+}
+
+func (x *DirectionInfo) GetMaxMsat() uint64 {
+	if x != nil {
+		return x.MaxMsat
+	}
+	return 0
+}
+
+type InfoResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The version of the payer API this bridge speaks.
+	Version uint32 `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	// This node's key. Every hold invoice the bridge issues on this chain is
+	// payable to exactly this key.
+	Node string `protobuf:"bytes,2,opt,name=node,proto3" json:"node,omitempty"`
+	// One entry per enabled direction.
+	Directions    []*DirectionInfo `protobuf:"bytes,3,rep,name=directions,proto3" json:"directions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InfoResponse) Reset() {
+	*x = InfoResponse{}
+	mi := &file_bridgerpc_bridge_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InfoResponse) ProtoMessage() {}
+
+func (x *InfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bridgerpc_bridge_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InfoResponse.ProtoReflect.Descriptor instead.
+func (*InfoResponse) Descriptor() ([]byte, []int) {
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *InfoResponse) GetVersion() uint32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *InfoResponse) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *InfoResponse) GetDirections() []*DirectionInfo {
+	if x != nil {
+		return x.Directions
+	}
+	return nil
+}
+
+type SetRateRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The new rate, as SHA256 coin per BLAKE2b coin.
+	Rate          float64 `protobuf:"fixed64,1,opt,name=rate,proto3" json:"rate,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetRateRequest) Reset() {
+	*x = SetRateRequest{}
+	mi := &file_bridgerpc_bridge_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetRateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetRateRequest) ProtoMessage() {}
+
+func (x *SetRateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bridgerpc_bridge_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetRateRequest.ProtoReflect.Descriptor instead.
+func (*SetRateRequest) Descriptor() ([]byte, []int) {
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *SetRateRequest) GetRate() float64 {
+	if x != nil {
+		return x.Rate
+	}
+	return 0
+}
+
+type SetRateResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The rate now in force and when it was set, as a Unix timestamp.
+	Rate          float64 `protobuf:"fixed64,1,opt,name=rate,proto3" json:"rate,omitempty"`
+	RateSetAt     int64   `protobuf:"varint,2,opt,name=rate_set_at,json=rateSetAt,proto3" json:"rate_set_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetRateResponse) Reset() {
+	*x = SetRateResponse{}
+	mi := &file_bridgerpc_bridge_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetRateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetRateResponse) ProtoMessage() {}
+
+func (x *SetRateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bridgerpc_bridge_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetRateResponse.ProtoReflect.Descriptor instead.
+func (*SetRateResponse) Descriptor() ([]byte, []int) {
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SetRateResponse) GetRate() float64 {
+	if x != nil {
+		return x.Rate
+	}
+	return 0
+}
+
+func (x *SetRateResponse) GetRateSetAt() int64 {
+	if x != nil {
+		return x.RateSetAt
+	}
+	return 0
+}
+
 var File_bridgerpc_bridge_proto protoreflect.FileDescriptor
 
 const file_bridgerpc_bridge_proto_rawDesc = "" +
@@ -458,19 +801,46 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\rincoming_msat\x18\x03 \x01(\x04R\fincomingMsat\x12#\n" +
 	"\routgoing_msat\x18\x04 \x01(\x04R\foutgoingMsat\x12\x1a\n" +
 	"\bpreimage\x18\x05 \x01(\fR\bpreimage\"\x0f\n" +
-	"\rStatusRequest\"\x8e\x01\n" +
+	"\rStatusRequest\"\xea\x01\n" +
 	"\x0eStatusResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1e\n" +
 	"\n" +
 	"directions\x18\x02 \x03(\tR\n" +
 	"directions\x12\x1a\n" +
 	"\brefusals\x18\x03 \x03(\tR\brefusals\x12&\n" +
-	"\x0fswaps_in_flight\x18\x04 \x01(\rR\rswapsInFlight2\xc0\x01\n" +
+	"\x0fswaps_in_flight\x18\x04 \x01(\rR\rswapsInFlight\x12\x12\n" +
+	"\x04rate\x18\x05 \x01(\x01R\x04rate\x12\x1e\n" +
+	"\vrate_set_at\x18\x06 \x01(\x03R\trateSetAt\x12&\n" +
+	"\x0frate_expires_at\x18\a \x01(\x03R\rrateExpiresAt\"\r\n" +
+	"\vInfoRequest\"\xf6\x01\n" +
+	"\rDirectionInfo\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04open\x18\x02 \x01(\bR\x04open\x12!\n" +
+	"\frefusal_code\x18\x03 \x01(\tR\vrefusalCode\x12\x18\n" +
+	"\arefusal\x18\x04 \x01(\tR\arefusal\x12\x12\n" +
+	"\x04rate\x18\x05 \x01(\x01R\x04rate\x12\x1e\n" +
+	"\vrate_set_at\x18\x06 \x01(\x03R\trateSetAt\x12\x16\n" +
+	"\x06spread\x18\a \x01(\x01R\x06spread\x12\x19\n" +
+	"\bmin_msat\x18\b \x01(\x04R\aminMsat\x12\x19\n" +
+	"\bmax_msat\x18\t \x01(\x04R\amaxMsat\"v\n" +
+	"\fInfoResponse\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\rR\aversion\x12\x12\n" +
+	"\x04node\x18\x02 \x01(\tR\x04node\x128\n" +
+	"\n" +
+	"directions\x18\x03 \x03(\v2\x18.bridgerpc.DirectionInfoR\n" +
+	"directions\"$\n" +
+	"\x0eSetRateRequest\x12\x12\n" +
+	"\x04rate\x18\x01 \x01(\x01R\x04rate\"E\n" +
+	"\x0fSetRateResponse\x12\x12\n" +
+	"\x04rate\x18\x01 \x01(\x01R\x04rate\x12\x1e\n" +
+	"\vrate_set_at\x18\x02 \x01(\x03R\trateSetAt2\xbb\x02\n" +
 	"\x06Bridge\x12:\n" +
 	"\x05Quote\x12\x17.bridgerpc.QuoteRequest\x1a\x18.bridgerpc.QuoteResponse\x12;\n" +
 	"\n" +
 	"LookupSwap\x12\x1c.bridgerpc.LookupSwapRequest\x1a\x0f.bridgerpc.Swap\x12=\n" +
-	"\x06Status\x12\x18.bridgerpc.StatusRequest\x1a\x19.bridgerpc.StatusResponseB1Z/github.com/lightningnetwork/lnd/lnrpc/bridgerpcb\x06proto3"
+	"\x06Status\x12\x18.bridgerpc.StatusRequest\x1a\x19.bridgerpc.StatusResponse\x127\n" +
+	"\x04Info\x12\x16.bridgerpc.InfoRequest\x1a\x17.bridgerpc.InfoResponse\x12@\n" +
+	"\aSetRate\x12\x19.bridgerpc.SetRateRequest\x1a\x1a.bridgerpc.SetRateResponseB1Z/github.com/lightningnetwork/lnd/lnrpc/bridgerpcb\x06proto3"
 
 var (
 	file_bridgerpc_bridge_proto_rawDescOnce sync.Once
@@ -484,7 +854,7 @@ func file_bridgerpc_bridge_proto_rawDescGZIP() []byte {
 	return file_bridgerpc_bridge_proto_rawDescData
 }
 
-var file_bridgerpc_bridge_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_bridgerpc_bridge_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_bridgerpc_bridge_proto_goTypes = []any{
 	(*QuoteRequest)(nil),      // 0: bridgerpc.QuoteRequest
 	(*QuoteResponse)(nil),     // 1: bridgerpc.QuoteResponse
@@ -492,19 +862,29 @@ var file_bridgerpc_bridge_proto_goTypes = []any{
 	(*Swap)(nil),              // 3: bridgerpc.Swap
 	(*StatusRequest)(nil),     // 4: bridgerpc.StatusRequest
 	(*StatusResponse)(nil),    // 5: bridgerpc.StatusResponse
+	(*InfoRequest)(nil),       // 6: bridgerpc.InfoRequest
+	(*DirectionInfo)(nil),     // 7: bridgerpc.DirectionInfo
+	(*InfoResponse)(nil),      // 8: bridgerpc.InfoResponse
+	(*SetRateRequest)(nil),    // 9: bridgerpc.SetRateRequest
+	(*SetRateResponse)(nil),   // 10: bridgerpc.SetRateResponse
 }
 var file_bridgerpc_bridge_proto_depIdxs = []int32{
-	0, // 0: bridgerpc.Bridge.Quote:input_type -> bridgerpc.QuoteRequest
-	2, // 1: bridgerpc.Bridge.LookupSwap:input_type -> bridgerpc.LookupSwapRequest
-	4, // 2: bridgerpc.Bridge.Status:input_type -> bridgerpc.StatusRequest
-	1, // 3: bridgerpc.Bridge.Quote:output_type -> bridgerpc.QuoteResponse
-	3, // 4: bridgerpc.Bridge.LookupSwap:output_type -> bridgerpc.Swap
-	5, // 5: bridgerpc.Bridge.Status:output_type -> bridgerpc.StatusResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	7,  // 0: bridgerpc.InfoResponse.directions:type_name -> bridgerpc.DirectionInfo
+	0,  // 1: bridgerpc.Bridge.Quote:input_type -> bridgerpc.QuoteRequest
+	2,  // 2: bridgerpc.Bridge.LookupSwap:input_type -> bridgerpc.LookupSwapRequest
+	4,  // 3: bridgerpc.Bridge.Status:input_type -> bridgerpc.StatusRequest
+	6,  // 4: bridgerpc.Bridge.Info:input_type -> bridgerpc.InfoRequest
+	9,  // 5: bridgerpc.Bridge.SetRate:input_type -> bridgerpc.SetRateRequest
+	1,  // 6: bridgerpc.Bridge.Quote:output_type -> bridgerpc.QuoteResponse
+	3,  // 7: bridgerpc.Bridge.LookupSwap:output_type -> bridgerpc.Swap
+	5,  // 8: bridgerpc.Bridge.Status:output_type -> bridgerpc.StatusResponse
+	8,  // 9: bridgerpc.Bridge.Info:output_type -> bridgerpc.InfoResponse
+	10, // 10: bridgerpc.Bridge.SetRate:output_type -> bridgerpc.SetRateResponse
+	6,  // [6:11] is the sub-list for method output_type
+	1,  // [1:6] is the sub-list for method input_type
+	1,  // [1:1] is the sub-list for extension type_name
+	1,  // [1:1] is the sub-list for extension extendee
+	0,  // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_bridgerpc_bridge_proto_init() }
@@ -518,7 +898,7 @@ func file_bridgerpc_bridge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bridgerpc_bridge_proto_rawDesc), len(file_bridgerpc_bridge_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

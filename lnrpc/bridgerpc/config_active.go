@@ -13,6 +13,7 @@ import (
 	"github.com/paulscode/lightning-fork-bridge/margin"
 	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/rate"
+	"github.com/paulscode/lightning-fork-bridge/runner"
 )
 
 // ErrConfig is returned for a configuration that cannot be used. It is
@@ -123,9 +124,32 @@ type Config struct {
 	// already in flight. Zero derives it alongside the target.
 	InventoryFloorMsat uint64 `long:"inventoryfloormsat" description:"How much of the working balance is reserved for swaps already in flight. Zero derives it from the target."`
 
+	// RateMaxAge is how long a rate is used after it was set.
+	//
+	// A posted rate on a market this thin is the price, and the market
+	// moves; one nobody has looked at for a day prices swaps against a
+	// world that has gone. Past this the bridge refuses to quote until the
+	// rate is set again.
+	RateMaxAge time.Duration `long:"ratemaxage" description:"How long a rate is used after it was set; after that the bridge refuses to quote until the rate is set again. Default 24h."`
+
+	// FundedGrace is how long a funded swap may wait to be paid past its
+	// quote's expiry before it is given back.
+	FundedGrace time.Duration `long:"fundedgrace" description:"How long a paid-for swap may wait to be delivered past its quote's expiry before the payer's funds are returned instead. Default 10m."`
+
+	// MaxUnpaid, MaxInProgress and PerMinute limit each participant: a
+	// caller whose macaroon has a root key of its own. The operator's own
+	// macaroons are not limited.
+	MaxUnpaid     int `long:"participant.maxunpaid" description:"How many quotes one participant may have unpaid at once. Default 2."`
+	MaxInProgress int `long:"participant.maxinprogress" description:"How many swaps one participant may have unfinished at once. Default 4."`
+	PerMinute     int `long:"participant.perminute" description:"How many quotes one participant may ask for per minute. Default 6."`
+
 	// Deps is what the node provides.
 	Deps *Deps
 }
+
+// DefaultRateMaxAge is how long a rate is used when the operator names no
+// limit.
+const DefaultRateMaxAge = 24 * time.Hour
 
 // DefaultFloorFraction is the share of the working balance held back for swaps
 // already in flight, when the bounds are derived rather than configured. It is
@@ -158,12 +182,15 @@ const DefaultJournalName = "bridge/swaps.journal"
 // place, rather than at each use where one could be forgotten. Nothing reads
 // the policies off Config directly.
 type resolved struct {
-	quote     quote.Policy
-	margin    margin.Policy
-	inventory inventory.Policy
-	rate      rate.Policy
-	b2bChain  chainrate.Params
-	shaChain  chainrate.Params
+	quote       quote.Policy
+	margin      margin.Policy
+	inventory   inventory.Policy
+	rate        rate.Policy
+	b2bChain    chainrate.Params
+	shaChain    chainrate.Params
+	limits      quote.Limits
+	rateMaxAge  time.Duration
+	fundedGrace time.Duration
 }
 
 // resolve applies the defaults and the operator's overrides.
@@ -175,6 +202,26 @@ func (c *Config) resolve() resolved {
 		rate:      rate.DefaultPolicy,
 		b2bChain:  chainrate.BlakeParams,
 		shaChain:  chainrate.BitcoinParams,
+	}
+
+	r.limits = quote.DefaultLimits
+	if c.MaxUnpaid > 0 {
+		r.limits.MaxUnpaid = c.MaxUnpaid
+	}
+	if c.MaxInProgress > 0 {
+		r.limits.MaxInProgress = c.MaxInProgress
+	}
+	if c.PerMinute > 0 {
+		r.limits.PerMinute = c.PerMinute
+	}
+
+	r.rateMaxAge = DefaultRateMaxAge
+	if c.RateMaxAge > 0 {
+		r.rateMaxAge = c.RateMaxAge
+	}
+	r.fundedGrace = runner.DefaultFundedGrace
+	if c.FundedGrace > 0 {
+		r.fundedGrace = c.FundedGrace
 	}
 
 	r.quote.OutgoingCLTVLimit = DefaultOutgoingCLTVLimit
@@ -261,6 +308,12 @@ func (c *Config) Validate() error {
 			"what you will trade at, in SHA256 coin per BLAKE2b "+
 			"coin. There is no default because a wrong one loses "+
 			"money on every swap and does it quietly", ErrConfig)
+	}
+	if c.RateMaxAge < 0 || c.FundedGrace < 0 || c.MaxUnpaid < 0 ||
+		c.MaxInProgress < 0 || c.PerMinute < 0 {
+
+		return fmt.Errorf("%w: a negative limit means nothing; leave "+
+			"it out for the default", ErrConfig)
 	}
 	if c.Spread < 0 {
 		return fmt.Errorf("%w: a negative spread (%g) pays people to "+

@@ -56,6 +56,22 @@ service Bridge {
     exists for.
     */
     rpc Status (StatusRequest) returns (StatusResponse);
+
+    /* lncli: `bridge info`
+    Info reports what the bridge would charge now, per direction, without
+    creating or reserving anything. It is the call a payer makes to show a
+    price before the user commits, so it is safe to hand to participants.
+    */
+    rpc Info (InfoRequest) returns (InfoResponse);
+
+    /* lncli: `bridge setrate`
+    SetRate changes the rate the bridge trades at, without a restart. The rate
+    is kept across restarts and stamped with when it was set; once it is older
+    than the configured limit the bridge refuses to quote until it is set
+    again, because a rate nobody has looked at in a moving market is a loss
+    waiting to be taken.
+    */
+    rpc SetRate (SetRateRequest) returns (SetRateResponse);
 }
 
 message QuoteRequest {
@@ -158,4 +174,73 @@ message StatusResponse {
 
     // How many swaps are being driven right now.
     uint32 swaps_in_flight = 4;
+
+    // The rate in force, as SHA256 coin per BLAKE2b coin.
+    double rate = 5;
+
+    // When it was set, as a Unix timestamp in seconds.
+    int64 rate_set_at = 6;
+
+    /*
+    When it stops being used, as a Unix timestamp in seconds, or zero if the
+    bridge allows a rate of any age.
+    */
+    int64 rate_expires_at = 7;
+}
+
+message InfoRequest {
+}
+
+message DirectionInfo {
+    // toSHA256 or toBLAKE2b.
+    string name = 1;
+
+    // Whether a quote in this direction could succeed right now.
+    bool open = 2;
+
+    // Why not, when it could not: a stable code and a sentence.
+    string refusal_code = 3;
+    string refusal = 4;
+
+    // Outgoing units per incoming unit. For toSHA256, SHA256 coin per BLAKE2b
+    // coin.
+    double rate = 5;
+
+    // When the rate was set, as a Unix timestamp in seconds.
+    int64 rate_set_at = 6;
+
+    /*
+    The fraction charged on top of the rate at the bridge's current position.
+    It can move between this call and a quote.
+    */
+    double spread = 7;
+
+    // Bounds on the invoice to be paid, in the outgoing chain's millisatoshis.
+    uint64 min_msat = 8;
+    uint64 max_msat = 9;
+}
+
+message InfoResponse {
+    // The version of the payer API this bridge speaks.
+    uint32 version = 1;
+
+    /*
+    This node's key. Every hold invoice the bridge issues on this chain is
+    payable to exactly this key.
+    */
+    string node = 2;
+
+    // One entry per enabled direction.
+    repeated DirectionInfo directions = 3;
+}
+
+message SetRateRequest {
+    // The new rate, as SHA256 coin per BLAKE2b coin.
+    double rate = 1;
+}
+
+message SetRateResponse {
+    // The rate now in force and when it was set, as a Unix timestamp.
+    double rate = 1;
+    int64 rate_set_at = 2;
 }

@@ -16,6 +16,29 @@
     "application/json"
   ],
   "paths": {
+    "/v2/bridge/info": {
+      "get": {
+        "summary": "lncli: `bridge info`\nInfo reports what the bridge would charge now, per direction, without\ncreating or reserving anything. It is the call a payer makes to show a\nprice before the user commits, so it is safe to hand to participants.",
+        "operationId": "Bridge_Info",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/bridgerpcInfoResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Bridge"
+        ]
+      }
+    },
     "/v2/bridge/quote": {
       "post": {
         "summary": "lncli: `bridge quote`\nQuote asks what a swap would cost and creates the hold invoice to pay for\nit. Which direction the swap runs is worked out by asking both nodes to\ndecode the invoice, not by reading its prefix here.",
@@ -42,6 +65,39 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/bridgerpcQuoteRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Bridge"
+        ]
+      }
+    },
+    "/v2/bridge/rate": {
+      "post": {
+        "summary": "lncli: `bridge setrate`\nSetRate changes the rate the bridge trades at, without a restart. The rate\nis kept across restarts and stamped with when it was set; once it is older\nthan the configured limit the bridge refuses to quote until it is set\nagain, because a rate nobody has looked at in a moving market is a loss\nwaiting to be taken.",
+        "operationId": "Bridge_SetRate",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/bridgerpcSetRateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/bridgerpcSetRateRequest"
             }
           }
         ],
@@ -109,6 +165,72 @@
     }
   },
   "definitions": {
+    "bridgerpcDirectionInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "toSHA256 or toBLAKE2b."
+        },
+        "open": {
+          "type": "boolean",
+          "description": "Whether a quote in this direction could succeed right now."
+        },
+        "refusal_code": {
+          "type": "string",
+          "description": "Why not, when it could not: a stable code and a sentence."
+        },
+        "refusal": {
+          "type": "string"
+        },
+        "rate": {
+          "type": "number",
+          "format": "double",
+          "description": "Outgoing units per incoming unit. For toSHA256, SHA256 coin per BLAKE2b\ncoin."
+        },
+        "rate_set_at": {
+          "type": "string",
+          "format": "int64",
+          "description": "When the rate was set, as a Unix timestamp in seconds."
+        },
+        "spread": {
+          "type": "number",
+          "format": "double",
+          "description": "The fraction charged on top of the rate at the bridge's current position.\nIt can move between this call and a quote."
+        },
+        "min_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Bounds on the invoice to be paid, in the outgoing chain's millisatoshis."
+        },
+        "max_msat": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
+    "bridgerpcInfoResponse": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The version of the payer API this bridge speaks."
+        },
+        "node": {
+          "type": "string",
+          "description": "This node's key. Every hold invoice the bridge issues on this chain is\npayable to exactly this key."
+        },
+        "directions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/bridgerpcDirectionInfo"
+          },
+          "description": "One entry per enabled direction."
+        }
+      }
+    },
     "bridgerpcLookupSwapRequest": {
       "type": "object",
       "properties": {
@@ -176,6 +298,30 @@
         }
       }
     },
+    "bridgerpcSetRateRequest": {
+      "type": "object",
+      "properties": {
+        "rate": {
+          "type": "number",
+          "format": "double",
+          "description": "The new rate, as SHA256 coin per BLAKE2b coin."
+        }
+      }
+    },
+    "bridgerpcSetRateResponse": {
+      "type": "object",
+      "properties": {
+        "rate": {
+          "type": "number",
+          "format": "double",
+          "description": "The rate now in force and when it was set, as a Unix timestamp."
+        },
+        "rate_set_at": {
+          "type": "string",
+          "format": "int64"
+        }
+      }
+    },
     "bridgerpcStatusResponse": {
       "type": "object",
       "properties": {
@@ -201,6 +347,21 @@
           "type": "integer",
           "format": "int64",
           "description": "How many swaps are being driven right now."
+        },
+        "rate": {
+          "type": "number",
+          "format": "double",
+          "description": "The rate in force, as SHA256 coin per BLAKE2b coin."
+        },
+        "rate_set_at": {
+          "type": "string",
+          "format": "int64",
+          "description": "When it was set, as a Unix timestamp in seconds."
+        },
+        "rate_expires_at": {
+          "type": "string",
+          "format": "int64",
+          "description": "When it stops being used, as a Unix timestamp in seconds, or zero if the\nbridge allows a rate of any age."
         }
       }
     },

@@ -259,7 +259,60 @@ func (r *Remote) Decode(ctx context.Context, invoice string) (node.Decoded,
 	out.Destination = req.GetDestination()
 	out.Description = req.GetDescription()
 
+	// A stock lnd lists the bits an invoice sets even when it does not
+	// know them, marked unknown, and that is the case here: the SHA256
+	// node must still be able to tell an invoice is for the other chain.
+	for _, bit := range node.BLAKE2bFeatureBits {
+		if _, ok := req.GetFeatures()[bit]; ok {
+			out.BLAKE2b = true
+		}
+	}
+
 	return out, nil
+}
+
+// ForgetInvoice deletes a cancelled invoice on the SHA256 node so its hash can
+// carry a new one.
+//
+// The state is read first rather than left to the node to refuse, so that
+// nothing but a cancelled invoice is ever deleted, and a hash the node has
+// never seen counts as already forgotten.
+func (r *Remote) ForgetInvoice(ctx context.Context, hash node.Hash) error {
+	inv, err := r.LookupInvoice(ctx, hash)
+	switch {
+	case errors.Is(err, node.ErrUnknownHash):
+		return nil
+	case err != nil:
+		return fmt.Errorf("reading %x before forgetting it: %w", hash, err)
+	case inv.State != node.InvoiceCancelled:
+		return fmt.Errorf("%x is %v, and only a cancelled invoice may be "+
+			"forgotten", hash, inv.State)
+	}
+
+	_, err = r.main.DeleteCanceledInvoice(ctx, &lnrpc.DelCanceledInvoiceReq{
+		InvoiceHash: hex.EncodeToString(hash[:]),
+	})
+	if err == nil {
+		return nil
+	}
+	if _, lookupErr := r.LookupInvoice(ctx, hash); errors.Is(lookupErr,
+		node.ErrUnknownHash) {
+
+		return nil
+	}
+
+	return fmt.Errorf("forgetting %x: %w", hash, err)
+}
+
+// NodeKey is the SHA256 node's identity key, hex.
+func (r *Remote) NodeKey(ctx context.Context) (string, error) {
+	info, err := r.main.GetInfo(ctx, &lnrpc.GetInfoRequest{})
+	if err != nil {
+		return "", fmt.Errorf("reading the SHA256 node's identity: %w",
+			err)
+	}
+
+	return info.GetIdentityPubkey(), nil
 }
 
 // Pay sends a payment and waits for it to resolve.

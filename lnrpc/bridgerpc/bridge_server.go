@@ -14,11 +14,9 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/paulscode/lightning-fork-bridge/node"
-	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
 
@@ -58,6 +56,18 @@ var (
 		"/bridgerpc.Bridge/Status": {{
 			Entity: "offchain",
 			Action: "read",
+		}},
+		"/bridgerpc.Bridge/Info": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
+		// Changing the rate changes what every later swap costs, so
+		// it takes the same permission as committing liquidity.
+		// Participants' macaroons are scoped to the payer calls by
+		// URI and never reach this.
+		"/bridgerpc.Bridge/SetRate": {{
+			Entity: "offchain",
+			Action: "write",
 		}},
 	}
 )
@@ -304,8 +314,8 @@ func (r *ServerShell) CreateSubServer(
 // to whoever is calling: Unimplemented says "this build cannot do that", and
 // this build can.
 func errDisabled() error {
-	return status.Error(codes.FailedPrecondition, "the bridge is not "+
-		"enabled on this node; set bridgerpc.enabled to offer swaps")
+	return coded(codes.FailedPrecondition, "disabled", "the bridge is "+
+		"not enabled on this node; set bridgerpc.enabled to offer swaps")
 }
 
 // Quote asks what a swap would cost and creates the hold invoice to pay for it.
@@ -327,13 +337,16 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 	// is picked up rather than lost, but promising a swap on the way out
 	// is still worse than declining one.
 	if atomic.LoadInt32(&s.shutdown) != 0 {
-		return nil, status.Error(codes.Unavailable, "the bridge is "+
-			"shutting down and is not taking new swaps")
+		return nil, coded(codes.Unavailable, "unavailable", "the "+
+			"bridge is shutting down and is not taking new swaps")
 	}
 	if req.GetInvoice() == "" {
-		return nil, status.Error(codes.InvalidArgument, "no invoice "+
-			"to pay")
+		return nil, coded(codes.InvalidArgument, "invalid_request",
+			"no invoice to pay")
 	}
+
+	// Read from the caller's context before it is replaced below.
+	who := participantOf(ctx)
 
 	// Deliberately not the caller's context.
 	//
@@ -345,24 +358,25 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 	ctx, cancel := context.WithTimeout(svc.ctx, quoteTimeout)
 	defer cancel()
 
-	sd, _, err := svc.route(ctx, req.GetInvoice())
+	sd, dec, err := svc.route(ctx, req.GetInvoice())
 	if err != nil {
-		return nil, status.Error(codes.FailedPrecondition, err.Error())
+		return nil, refusal(err)
 	}
 
-	q, err := sd.quoter.Quote(ctx, req.GetInvoice())
+	q, err := sd.quoter.QuoteFor(ctx, who, req.GetInvoice())
 	if err != nil {
+		// The record exists and the hold invoice may: drive it, so it
+		// either catches up or expires instead of holding its amount
+		// against the headroom until a restart.
+		if isUntracked(err) {
+			svc.drive(sd, dec.Hash)
+		}
+
 		// A refusal is the bridge declining to promise something, not
 		// a fault: too large, too small, not enough left on the paying
 		// side, or a chain it cannot currently measure. The caller
-		// gets the reason.
-		if errors.Is(err, quote.ErrRefused) {
-			return nil, status.Error(
-				codes.FailedPrecondition, err.Error(),
-			)
-		}
-
-		return nil, status.Error(codes.Internal, err.Error())
+		// gets the reason, with a code to branch on.
+		return nil, refusal(err)
 	}
 
 	svc.drive(sd, q.Hash)
@@ -389,9 +403,9 @@ func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
 		return nil, errDisabled()
 	}
 	if len(req.GetHash()) != len(node.Hash{}) {
-		return nil, status.Errorf(codes.InvalidArgument, "the hash "+
-			"must be %d bytes, got %d", len(node.Hash{}),
-			len(req.GetHash()))
+		return nil, coded(codes.InvalidArgument, "invalid_request",
+			fmt.Sprintf("the hash must be %d bytes, got %d",
+				len(node.Hash{}), len(req.GetHash())))
 	}
 
 	var hash node.Hash
@@ -400,11 +414,11 @@ func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
 	rec, err := svc.journal.Get(ctx, hash)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, status.Errorf(codes.NotFound, "no swap "+
-				"with hash %x", hash)
+			return nil, coded(codes.NotFound, "not_found",
+				fmt.Sprintf("no swap with hash %x", hash))
 		}
 
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, coded(codes.Internal, "internal", err.Error())
 	}
 
 	out := &Swap{
@@ -469,6 +483,16 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	}
 	resp.SwapsInFlight = uint32(svc.active())
 
+	rate, setAt := svc.rates.current()
+	resp.Rate = rate
+	resp.RateSetAt = setAt.Unix()
+	if exp := svc.rates.expiresAt(); !exp.IsZero() {
+		resp.RateExpiresAt = exp.Unix()
+	}
+	if _, _, err := svc.rates.usable(); err != nil {
+		resp.Refusals = append(resp.Refusals, err.Error())
+	}
+
 	// A chain the bridge cannot currently measure is a chain it cannot
 	// size an HTLC against, so every swap touching it is refused. That
 	// takes a few blocks from each chain after a restart, which looks
@@ -482,4 +506,62 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	resp.Refusals = append(resp.Refusals, svc.liquidityRefusals(ctx)...)
 
 	return resp, nil
+}
+
+// Info reports what the bridge would charge now, per direction, without
+// creating or reserving anything.
+//
+// It runs every check a quote would, short of creating one, so that "open"
+// means what a payer needs it to: a quote asked for now could succeed. A
+// direction that is shut says why, with the code a quote would have failed
+// with.
+func (s *Server) Info(ctx context.Context, _ *InfoRequest) (*InfoResponse,
+	error) {
+
+	svc := s.service()
+	if !s.cfg.Enabled || svc == nil {
+		return nil, errDisabled()
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, infoTimeout)
+	defer cancel()
+
+	resp := &InfoResponse{
+		Version: PayerAPIVersion,
+		Node:    s.local.NodeKey(),
+	}
+	for _, sd := range svc.sides {
+		resp.Directions = append(resp.Directions,
+			svc.directionInfo(ctx, sd))
+	}
+
+	return resp, nil
+}
+
+// infoTimeout bounds Info. It reads balances on both nodes, and a payer is
+// waiting on it to show a price.
+const infoTimeout = 15 * time.Second
+
+// SetRate changes the rate the bridge trades at.
+func (s *Server) SetRate(_ context.Context, req *SetRateRequest) (
+	*SetRateResponse, error) {
+
+	svc := s.service()
+	if !s.cfg.Enabled || svc == nil {
+		return nil, errDisabled()
+	}
+
+	r, at, err := svc.rates.set(req.GetRate(), s.cfg.FixedRate)
+	if err != nil {
+		if errors.Is(err, ErrConfig) {
+			return nil, coded(codes.InvalidArgument,
+				"invalid_request", err.Error())
+		}
+
+		return nil, coded(codes.Internal, "internal", err.Error())
+	}
+
+	log.Infof("Bridge rate set to %g SHA256 coin per BLAKE2b coin", r)
+
+	return &SetRateResponse{Rate: r, RateSetAt: at.Unix()}, nil
 }

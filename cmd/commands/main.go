@@ -531,6 +531,7 @@ func Main() {
 	app.Commands = append(app.Commands, devCommands()...)
 	app.Commands = append(app.Commands, peersCommands()...)
 	app.Commands = append(app.Commands, offersCommands()...)
+	app.Commands = append(app.Commands, bridgeCommands()...)
 	app.Commands = append(app.Commands, chainCommands()...)
 
 	if err := app.Run(os.Args); err != nil {

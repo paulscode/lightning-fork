@@ -39,6 +39,18 @@ type BridgeClient interface {
 	// It answers while the bridge is refusing everything, which is the case it
 	// exists for.
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	// lncli: `bridge info`
+	// Info reports what the bridge would charge now, per direction, without
+	// creating or reserving anything. It is the call a payer makes to show a
+	// price before the user commits, so it is safe to hand to participants.
+	Info(ctx context.Context, in *InfoRequest, opts ...grpc.CallOption) (*InfoResponse, error)
+	// lncli: `bridge setrate`
+	// SetRate changes the rate the bridge trades at, without a restart. The rate
+	// is kept across restarts and stamped with when it was set; once it is older
+	// than the configured limit the bridge refuses to quote until it is set
+	// again, because a rate nobody has looked at in a moving market is a loss
+	// waiting to be taken.
+	SetRate(ctx context.Context, in *SetRateRequest, opts ...grpc.CallOption) (*SetRateResponse, error)
 }
 
 type bridgeClient struct {
@@ -76,6 +88,24 @@ func (c *bridgeClient) Status(ctx context.Context, in *StatusRequest, opts ...gr
 	return out, nil
 }
 
+func (c *bridgeClient) Info(ctx context.Context, in *InfoRequest, opts ...grpc.CallOption) (*InfoResponse, error) {
+	out := new(InfoResponse)
+	err := c.cc.Invoke(ctx, "/bridgerpc.Bridge/Info", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *bridgeClient) SetRate(ctx context.Context, in *SetRateRequest, opts ...grpc.CallOption) (*SetRateResponse, error) {
+	out := new(SetRateResponse)
+	err := c.cc.Invoke(ctx, "/bridgerpc.Bridge/SetRate", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BridgeServer is the server API for Bridge service.
 // All implementations must embed UnimplementedBridgeServer
 // for forward compatibility
@@ -101,6 +131,18 @@ type BridgeServer interface {
 	// It answers while the bridge is refusing everything, which is the case it
 	// exists for.
 	Status(context.Context, *StatusRequest) (*StatusResponse, error)
+	// lncli: `bridge info`
+	// Info reports what the bridge would charge now, per direction, without
+	// creating or reserving anything. It is the call a payer makes to show a
+	// price before the user commits, so it is safe to hand to participants.
+	Info(context.Context, *InfoRequest) (*InfoResponse, error)
+	// lncli: `bridge setrate`
+	// SetRate changes the rate the bridge trades at, without a restart. The rate
+	// is kept across restarts and stamped with when it was set; once it is older
+	// than the configured limit the bridge refuses to quote until it is set
+	// again, because a rate nobody has looked at in a moving market is a loss
+	// waiting to be taken.
+	SetRate(context.Context, *SetRateRequest) (*SetRateResponse, error)
 	mustEmbedUnimplementedBridgeServer()
 }
 
@@ -116,6 +158,12 @@ func (UnimplementedBridgeServer) LookupSwap(context.Context, *LookupSwapRequest)
 }
 func (UnimplementedBridgeServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
+}
+func (UnimplementedBridgeServer) Info(context.Context, *InfoRequest) (*InfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Info not implemented")
+}
+func (UnimplementedBridgeServer) SetRate(context.Context, *SetRateRequest) (*SetRateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetRate not implemented")
 }
 func (UnimplementedBridgeServer) mustEmbedUnimplementedBridgeServer() {}
 
@@ -184,6 +232,42 @@ func _Bridge_Status_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Bridge_Info_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BridgeServer).Info(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/bridgerpc.Bridge/Info",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BridgeServer).Info(ctx, req.(*InfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Bridge_SetRate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetRateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BridgeServer).SetRate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/bridgerpc.Bridge/SetRate",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BridgeServer).SetRate(ctx, req.(*SetRateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Bridge_ServiceDesc is the grpc.ServiceDesc for Bridge service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -202,6 +286,14 @@ var Bridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _Bridge_Status_Handler,
+		},
+		{
+			MethodName: "Info",
+			Handler:    _Bridge_Info_Handler,
+		},
+		{
+			MethodName: "SetRate",
+			Handler:    _Bridge_SetRate_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

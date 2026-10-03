@@ -34,6 +34,8 @@ type fakeNode struct {
 	balance    uint64
 	balanceErr error
 
+	forgets int
+
 	payStatus PaymentStatus
 	payErr    error
 
@@ -65,6 +67,13 @@ func (f *fakeNode) deps() *Deps {
 
 			return f.cancelErr
 		},
+		ForgetInvoice: func(_ context.Context, hash [32]byte) error {
+			f.forgets++
+			delete(f.invoices, hash)
+
+			return nil
+		},
+		NodeKey: "02" + strings.Repeat("11", 32),
 		// Always present so that ready() passes; the tests that care
 		// about decoding replace it.
 		DecodeInvoice: func(context.Context, string) (*zpay32.Invoice,

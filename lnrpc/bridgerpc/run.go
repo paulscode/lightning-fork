@@ -12,6 +12,7 @@ import (
 
 	"github.com/paulscode/lightning-fork-bridge/chainrate"
 	"github.com/paulscode/lightning-fork-bridge/node"
+	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/runner"
 )
 
@@ -195,12 +196,32 @@ func (s *service) route(ctx context.Context, invoice string) (*side,
 	node.Decoded, error) {
 
 	var errs []error
+	readable := false
 	for _, sd := range s.sides {
 		dec, err := sd.out.Decode(ctx, invoice)
-		if err == nil {
-			return sd, dec, nil
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", sd.name, err))
+
+			continue
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", sd.name, err))
+		readable = true
+
+		// Both chains' invoices share a prefix and both nodes read
+		// every one, so being able to decode it says nothing about the
+		// chain. option_blake2b does.
+		if dec.BLAKE2b != sd.paysBLAKE2b {
+			continue
+		}
+
+		return sd, dec, nil
+	}
+
+	// Read, but for a chain no enabled direction pays on: that is the
+	// reason, rather than whatever the nodes said about other invoices.
+	if readable {
+		errs = []error{quote.ErrWrongChain}
+	} else {
+		errs = append([]error{quote.ErrInvalidInvoice}, errs...)
 	}
 
 	// Naming the directions that are configured but off sends an operator

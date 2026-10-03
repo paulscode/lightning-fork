@@ -73,6 +73,10 @@ type side struct {
 	// sized is set once the inventory bounds have been derived from a
 	// real balance, so it is done once rather than tracking the balance.
 	sized bool
+
+	// paysBLAKE2b is whether this direction pays out on the BLAKE2b chain,
+	// which is how an invoice is matched to its direction.
+	paysBLAKE2b bool
 }
 
 // policy is this side's inventory policy, copied under the lock.
@@ -116,6 +120,19 @@ type service struct {
 	remote *Remote
 
 	journal *store.Journal
+
+	// rates is the rate in force, which the operator can change while the
+	// bridge runs.
+	rates *ratebook
+
+	// own is both nodes' identity keys, so neither can be paid through the
+	// bridge.
+	own []string
+
+	// positionOf reads what the bridge holds on the SHA256 chain, which is
+	// what both directions are priced against. A field so it can be
+	// replaced in tests, like each side's balance.
+	positionOf func(context.Context) (uint64, error)
 
 	// sides holds whichever directions are enabled, in the order a quote
 	// request tries them.
@@ -182,6 +199,30 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 		return nil, fmt.Errorf("opening the swap journal %s: %w",
 			cfg.Journal, err)
 	}
+	if s.rates, err = openRatebook(filepath.Dir(cfg.Journal),
+		cfg.FixedRate, s.res.rateMaxAge, nil); err != nil {
+
+		s.close()
+
+		return nil, err
+	}
+
+	s.own = []string{local.NodeKey()}
+	if remote != nil {
+		s.positionOf = remote.Balance
+
+		ctx, cancel := context.WithTimeout(context.Background(),
+			dialTimeout)
+		key, err := remote.NodeKey(ctx)
+		cancel()
+		if err != nil {
+			s.close()
+
+			return nil, err
+		}
+		s.own = append(s.own, key)
+	}
+
 	if s.b2bChain, err = chainrate.New(s.res.b2bChain); err != nil {
 		s.close()
 
@@ -225,6 +266,9 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 	sd := &side{
 		name: name, in: in, out: out, balance: balance, dir: dir,
 		invert: invert, inventory: s.res.inventory,
+		// The direction that inverts the rate is the one paying in
+		// BTCB2.
+		paysBLAKE2b: invert,
 	}
 
 	// The swap bounds are configured in SHA256 millisatoshis and applied
@@ -238,20 +282,24 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 
 	sd.quoter = &quote.Quoter{
 		In: sd.in, Out: sd.out, Store: s.journal,
-		Price:   s.pricer(sd),
-		Spacing: quote.Rates(s.spacing(invert)),
-		Room:    s.headroom(sd),
-		Margin:  s.res.margin,
-		Policy:  policy,
+		Price:       s.pricer(sd),
+		Spacing:     quote.Rates(s.spacing(invert)),
+		Room:        s.headroom(sd),
+		Margin:      s.res.margin,
+		Policy:      policy,
+		PaysBLAKE2b: sd.paysBLAKE2b,
+		Own:         s.own,
+		Limits:      s.res.limits,
 	}
 	sd.runner = &runner.Runner{
 		Driver: &driver.Driver{
 			In: sd.in, Out: sd.out, Store: s.journal,
 			Policy: s.res.margin,
 		},
-		Store: s.journal,
-		Rates: runner.Rates(s.spacing(invert)),
-		Log:   bridgeLogger(name),
+		Store:       s.journal,
+		Rates:       runner.Rates(s.spacing(invert)),
+		Log:         bridgeLogger(name),
+		FundedGrace: s.res.fundedGrace,
 	}
 
 	return sd
@@ -264,11 +312,15 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 // would refuse everything, and one that wrapped to a huge number would cap
 // nothing at all, which is the worse of the two.
 func (s *service) inBLAKE2bMsat(btcMsat uint64) uint64 {
-	if btcMsat == 0 || s.cfg.FixedRate <= 0 {
+	// The rate in force when the bridge started. The bounds are caps, set
+	// once; a rate changed later moves what they are worth in BTCB2, but
+	// re-deriving them under quotes in flight would race those quotes.
+	rate, _ := s.rates.current()
+	if btcMsat == 0 || rate <= 0 {
 		return btcMsat
 	}
 
-	converted := float64(btcMsat) / s.cfg.FixedRate
+	converted := float64(btcMsat) / rate
 	if converted >= math.MaxUint64 {
 		return math.MaxUint64
 	}
@@ -288,9 +340,15 @@ func (s *service) inBLAKE2bMsat(btcMsat uint64) uint64 {
 // why the inventory half matters more here than it does with a live feed.
 func (s *service) pricer(sd *side) quote.Pricer {
 	return func(ctx context.Context) (rate.Reading, error) {
+		posted, at, err := s.rates.usable()
+		if err != nil {
+			return rate.Reading{}, fmt.Errorf("%w: %w", quote.ErrRefused,
+				err)
+		}
+
 		r := rate.Reading{
-			OutgoingPerIncoming: s.cfg.FixedRate,
-			At:                  time.Now(),
+			OutgoingPerIncoming: posted,
+			At:                  at,
 
 			// One source, and it is the operator. Worth carrying
 			// honestly rather than inflating: nothing
@@ -308,9 +366,16 @@ func (s *service) pricer(sd *side) quote.Pricer {
 			r.OutgoingPerIncoming = 1 / r.OutgoingPerIncoming
 		}
 
-		held, err := sd.balance(ctx)
+		// Both directions price against what the bridge holds on the
+		// SHA256 chain. That is the position the inventory policy
+		// describes: toSHA256 spends it and toBLAKE2b puts it back.
+		// Pricing toBLAKE2b against its own BTCB2 balance instead would
+		// offer its biggest discount when the BTCB2 side was nearly
+		// empty, the opposite of what that side needs.
+		held, err := s.position(ctx)
 		if err != nil {
-			return rate.Reading{}, err
+			return rate.Reading{}, fmt.Errorf("%w: %w", quote.ErrRefused,
+				err)
 		}
 
 		pos, err := sd.policy().Spread(inventory.State{
@@ -325,6 +390,16 @@ func (s *service) pricer(sd *side) quote.Pricer {
 
 		return r, nil
 	}
+}
+
+// position is what the bridge holds on the SHA256 chain: the outgoing
+// balance of the side that pays there.
+func (s *service) position(ctx context.Context) (uint64, error) {
+	if s.positionOf == nil {
+		return 0, errors.New("no SHA256 node to read the position from")
+	}
+
+	return s.positionOf(ctx)
 }
 
 // spacing reports both chains' current block rates, incoming first.
@@ -531,11 +606,13 @@ func (s *service) sizeInventory(ctx context.Context) {
 			continue
 		}
 
-		held, err := sd.balance(ctx)
+		// The position, not this side's own paying balance: both
+		// directions price against what is held on the SHA256 chain.
+		held, err := s.position(ctx)
 		if err != nil {
-			log.Warnf("Bridge could not read the %s paying "+
-				"balance to size its inventory, so it keeps "+
-				"the default: %v", sd.name, err)
+			log.Warnf("Bridge could not read the SHA256 balance to "+
+				"size %s inventory, so it keeps the default: %v",
+				sd.name, err)
 
 			continue
 		}
@@ -550,11 +627,9 @@ func (s *service) sizeInventory(ctx context.Context) {
 		// peer whose link was not up at startup reads as zero, and
 		// treating that as the answer for the life of the process
 		// would refuse the direction thereafter.
-		// The side's own minimum, not the configured one: held is in
-		// the units of the chain this side pays on, and the configured
-		// bound is in Bitcoin. Comparing them raw asks whether a BLAKE2b
-		// balance clears a Bitcoin floor, which is not a question.
-		floor := sd.quoter.Policy.MinSwapMsat
+		// The configured minimum, which is in SHA256 millisatoshis like
+		// the position it is compared with.
+		floor := s.res.quote.MinSwapMsat
 		if held < floor {
 			log.Debugf("Bridge cannot pay a swap on %s yet (%d "+
 				"msat against a %d msat minimum), so it will "+
@@ -631,6 +706,63 @@ func (s *service) liquidityRefusals(ctx context.Context) []string {
 				"paying node has more", sd.name, held, floor))
 		}
 	}
+
+	return out
+}
+
+// directionInfo is what one direction would charge now, and whether a quote
+// could succeed, without creating or reserving anything.
+//
+// The checks are the ones a quote runs, in the same order, through the same
+// functions: the price (which includes the rate's age and how drained the
+// position is), the chains' block rates, and what is left to commit. A second
+// set of rules here that drifted from the quote's would report a direction as
+// open that then refuses, or the other way round.
+func (s *service) directionInfo(ctx context.Context, sd *side) *DirectionInfo {
+	policy := sd.quoter.Policy
+	out := &DirectionInfo{
+		Name:    sd.name,
+		MinMsat: policy.MinSwapMsat,
+		MaxMsat: policy.MaxSwapMsat,
+	}
+	_, setAt := s.rates.current()
+	out.RateSetAt = setAt.Unix()
+
+	shut := func(err error) *DirectionInfo {
+		out.Open = false
+		out.RefusalCode = string(quote.CodeOf(err))
+		out.Refusal = err.Error()
+
+		return out
+	}
+
+	reading, err := sd.quoter.Price(ctx)
+	if err != nil {
+		return shut(err)
+	}
+	out.Rate = reading.OutgoingPerIncoming
+	out.Spread = reading.Spread
+
+	if _, err := sd.quoter.Spacing(ctx); err != nil {
+		return shut(fmt.Errorf("%w: %w", quote.ErrRefused, err))
+	}
+
+	room, err := sd.quoter.Room(ctx)
+	if err != nil {
+		return shut(fmt.Errorf("%w: %w", quote.ErrRefused, err))
+	}
+	// What can be quoted now is also bounded by what is left: a payer
+	// shown the policy's maximum would be refused anything above this.
+	if room < out.MaxMsat {
+		out.MaxMsat = room
+	}
+	if room < policy.MinSwapMsat {
+		return shut(fmt.Errorf("%w: %w: %d msat left against a %d msat "+
+			"minimum", quote.ErrRefused, quote.ErrNoLiquidity, room,
+			policy.MinSwapMsat))
+	}
+
+	out.Open = true
 
 	return out
 }
