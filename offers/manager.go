@@ -728,15 +728,16 @@ type Decoded struct {
 	// has one.
 	OfferID *OfferID
 
-	// ForThisChain is whether the message names this node's chain. It is
-	// read off the message's chain fields alone: a message that names no
-	// chain is for Bitcoin mainnet by the spec's default, so it is never
-	// for this chain. A message for another chain still decodes, so the
-	// caller can say which chain it names.
+	// ForThisChain is whether the message is for this node's chain. It is
+	// read off the message's chain fields, with the spec's default: a
+	// message that names no chain is for the chain whose genesis is
+	// Bitcoin's, which on mainnet is this chain's too. A message for
+	// another chain still decodes, so the caller can say which chain it
+	// names.
 	ForThisChain bool
 
 	// Chains lists the chains an offer names, or the chain a request or
-	// invoice names. Empty means the message names none.
+	// invoice names, with the spec's default applied where it names none.
 	Chains [][32]byte
 
 	// ValidationError is why an offer does not pass the reader checks
@@ -783,9 +784,7 @@ func (m *Manager) DecodeBolt12(s string) (*Decoded, error) {
 			return nil, fmt.Errorf("decode invoice request: %w", err)
 		}
 		out.InvoiceRequest = ir
-		if chain, ok := requestChain(ir); ok {
-			out.Chains = [][32]byte{chain}
-		}
+		out.Chains = [][32]byte{requestChain(ir)}
 		out.ForThisChain = namesChain(out.Chains, m.cfg.ChainHash)
 		if id, err := bolt12.RequestOfferID(ir); err == nil {
 			oid := OfferID(id)
@@ -798,9 +797,7 @@ func (m *Manager) DecodeBolt12(s string) (*Decoded, error) {
 			return nil, fmt.Errorf("decode invoice: %w", err)
 		}
 		out.Invoice = inv
-		if chain, ok := invoiceChain(inv); ok {
-			out.Chains = [][32]byte{chain}
-		}
+		out.Chains = [][32]byte{invoiceChain(inv)}
 		out.ForThisChain = namesChain(out.Chains, m.cfg.ChainHash)
 		if id, err := bolt12.InvoiceOfferID(inv); err == nil {
 			oid := OfferID(id)
@@ -861,30 +858,29 @@ func offerChains(o *bolt12.Offer) [][32]byte {
 	return bolt12.OfferChains(o)
 }
 
-// requestChain returns the chain a request names, if it names one.
-func requestChain(ir *bolt12.InvoiceRequest) ([32]byte, bool) {
-	var (
-		chain [32]byte
-		ok    bool
-	)
+// requestChain returns the chain a request is for: the one it names, or,
+// when it names none, the chain whose genesis is Bitcoin's, as for an offer
+// (see offerChains). A payer leaves invreq_chain out for exactly that chain,
+// so on mainnet every request from a node following the spec is chain-less.
+func requestChain(ir *bolt12.InvoiceRequest) [32]byte {
+	chain := bolt12.BitcoinMainnetChain()
 	ir.InvreqChain.WhenSome(func(r tlv.RecordT[tlv.TlvType80, [32]byte]) {
-		chain, ok = r.Val, true
+		chain = r.Val
 	})
 
-	return chain, ok
+	return chain
 }
 
-// invoiceChain returns the chain an invoice names, if it names one.
-func invoiceChain(inv *bolt12.Invoice) ([32]byte, bool) {
-	var (
-		chain [32]byte
-		ok    bool
-	)
+// invoiceChain returns the chain an invoice is for, by the same rule: an
+// invoice mirrors its request's invreq_chain, so it is chain-less whenever
+// the request was.
+func invoiceChain(inv *bolt12.Invoice) [32]byte {
+	chain := bolt12.BitcoinMainnetChain()
 	inv.InvreqChain.WhenSome(func(r tlv.RecordT[tlv.TlvType80, [32]byte]) {
-		chain, ok = r.Val, true
+		chain = r.Val
 	})
 
-	return chain, ok
+	return chain
 }
 
 // IssuerID returns the issuer id of an offer, if it names one.

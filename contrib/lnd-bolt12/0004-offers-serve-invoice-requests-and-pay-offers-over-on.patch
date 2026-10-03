@@ -1,4 +1,4 @@
-From d597e99ddade368758b7fee18775dd6efad88b44 Mon Sep 17 00:00:00 2001
+From 06579a940e864e206db812c31f3a9a0cac8b05e9 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 21:23:59 -0500
 Subject: [PATCH 4/8] offers: serve invoice requests and pay offers over onion
@@ -2930,7 +2930,7 @@ index 7aff75ff7..e315c7a43 100644
 +	}
 +}
 diff --git a/lnrpc/offersrpc/offers_server_test.go b/lnrpc/offersrpc/offers_server_test.go
-index 79ac11b90..e71fa6d0b 100644
+index 31bba3e31..cf5c95142 100644
 --- a/lnrpc/offersrpc/offers_server_test.go
 +++ b/lnrpc/offersrpc/offers_server_test.go
 @@ -5,6 +5,7 @@ package offersrpc
@@ -2983,7 +2983,7 @@ index 79ac11b90..e71fa6d0b 100644
  	require.NoError(t, server.Start())
  	t.Cleanup(func() { require.NoError(t, server.Stop()) })
  
-@@ -454,3 +467,307 @@ func TestDecodeBolt12(t *testing.T) {
+@@ -456,3 +469,307 @@ func TestDecodeBolt12(t *testing.T) {
  		requireCode(t, err, codes.InvalidArgument)
  	}
  }
@@ -5655,10 +5655,10 @@ index 000000000..15ae71e57
 +	require.Error(t, err)
 +}
 diff --git a/offers/manager.go b/offers/manager.go
-index df5929546..65ac3d169 100644
+index a75fed2e4..e8d7b688e 100644
 --- a/offers/manager.go
 +++ b/offers/manager.go
-@@ -747,6 +747,24 @@ func (m *Manager) DecodeBolt12(s string) (*Decoded, error) {
+@@ -743,6 +743,24 @@ func (m *Manager) DecodeBolt12(s string) (*Decoded, error) {
  	return out, nil
  }
  

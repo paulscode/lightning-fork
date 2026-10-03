@@ -1,4 +1,4 @@
-From 270154cd03726c8cf934472c7ff40127b484c4f9 Mon Sep 17 00:00:00 2001
+From 9d297a4fc239bb4b59bd29a1daf884f928c4bac9 Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Sun, 13 Sep 2026 19:48:26 -0500
 Subject: [PATCH 2/8] offers: mint, list and decode BOLT 12 offers
@@ -59,20 +59,20 @@ committed and regenerated with the rest.
  lnrpc/offersrpc/offers.yaml           |   19 +
  lnrpc/offersrpc/offers_grpc.pb.go     |  273 ++++++
  lnrpc/offersrpc/offers_server.go      |  504 +++++++++++
- lnrpc/offersrpc/offers_server_test.go |  456 ++++++++++
+ lnrpc/offersrpc/offers_server_test.go |  458 ++++++++++
  log.go                                |    4 +
  make/release_flags.mk                 |    4 +-
  make/testing_flags.mk                 |    2 +-
  mobile/gen_bindings.sh                |    2 +-
  offers/log.go                         |   32 +
- offers/manager.go                     |  807 +++++++++++++++++
- offers/manager_test.go                |  763 ++++++++++++++++
+ offers/manager.go                     |  805 +++++++++++++++++
+ offers/manager_test.go                |  832 ++++++++++++++++++
  offers/store.go                       |  379 ++++++++
  offers/store_test.go                  |  197 +++++
  rpcserver.go                          |    2 +-
  server.go                             |   29 +
  subrpcserver_config.go                |   16 +-
- 31 files changed, 6975 insertions(+), 7 deletions(-)
+ 31 files changed, 7044 insertions(+), 7 deletions(-)
  create mode 100644 bolt12/offers_api.go
  create mode 100644 bolt12/offers_api_test.go
  create mode 100644 cmd/commands/offersrpc_active.go
@@ -4505,10 +4505,10 @@ index 000000000..7aff75ff7
 +}
 diff --git a/lnrpc/offersrpc/offers_server_test.go b/lnrpc/offersrpc/offers_server_test.go
 new file mode 100644
-index 000000000..79ac11b90
+index 000000000..31bba3e31
 --- /dev/null
 +++ b/lnrpc/offersrpc/offers_server_test.go
-@@ -0,0 +1,456 @@
+@@ -0,0 +1,458 @@
 +//go:build offersrpc
 +// +build offersrpc
 +
@@ -4929,7 +4929,9 @@ index 000000000..79ac11b90
 +	require.False(t, dec.Ours)
 +	require.False(t, dec.Valid)
 +	require.Contains(t, dec.ValidationError, "chain")
-+	require.Empty(t, dec.Chains)
++	// Bitcoin mainnet's, by the spec's default, which this test chain is
++	// not.
++	require.Len(t, dec.Chains, 1)
 +
 +	// A chain-less offer with a defect the validator reports before the
 +	// chain is still not for this chain.
@@ -5074,10 +5076,10 @@ index 000000000..f782daab4
 +}
 diff --git a/offers/manager.go b/offers/manager.go
 new file mode 100644
-index 000000000..df5929546
+index 000000000..a75fed2e4
 --- /dev/null
 +++ b/offers/manager.go
-@@ -0,0 +1,807 @@
+@@ -0,0 +1,805 @@
 +package offers
 +
 +import (
@@ -5742,15 +5744,15 @@ index 000000000..df5929546
 +	// has one.
 +	OfferID *OfferID
 +
-+	// ForThisChain is whether the message names this node's chain. It is
-+	// read off the message's chain fields alone: a message that names no
-+	// chain is for Bitcoin mainnet by the spec's default, so it is never
-+	// for this chain. A message for another chain still decodes, so the
-+	// caller can say which chain it names.
++	// ForThisChain is whether the message is for this node's chain. It is
++	// read off the message's chain fields, with the spec's default: a
++	// message that names no chain is for Bitcoin mainnet. A message for
++	// another chain still decodes, so the caller can say which chain it
++	// names.
 +	ForThisChain bool
 +
 +	// Chains lists the chains an offer names, or the chain a request or
-+	// invoice names. Empty means the message names none.
++	// invoice names, with the spec's default applied where it names none.
 +	Chains [][32]byte
 +
 +	// ValidationError is why an offer does not pass the reader checks
@@ -5796,9 +5798,7 @@ index 000000000..df5929546
 +			return nil, fmt.Errorf("decode invoice request: %w", err)
 +		}
 +		out.InvoiceRequest = ir
-+		if chain, ok := requestChain(ir); ok {
-+			out.Chains = [][32]byte{chain}
-+		}
++		out.Chains = [][32]byte{requestChain(ir)}
 +		out.ForThisChain = namesChain(out.Chains, m.cfg.ChainHash)
 +		if id, err := bolt12.RequestOfferID(ir); err == nil {
 +			oid := OfferID(id)
@@ -5811,9 +5811,7 @@ index 000000000..df5929546
 +			return nil, fmt.Errorf("decode invoice: %w", err)
 +		}
 +		out.Invoice = inv
-+		if chain, ok := invoiceChain(inv); ok {
-+			out.Chains = [][32]byte{chain}
-+		}
++		out.Chains = [][32]byte{invoiceChain(inv)}
 +		out.ForThisChain = namesChain(out.Chains, m.cfg.ChainHash)
 +		if id, err := bolt12.InvoiceOfferID(inv); err == nil {
 +			oid := OfferID(id)
@@ -5839,41 +5837,43 @@ index 000000000..df5929546
 +	return false
 +}
 +
-+// offerChains lists the chains an offer names; an offer that names none is
-+// for Bitcoin mainnet by the spec's default, which is not this chain.
++// offerChains lists the chains an offer is for: the ones it names, or, when
++// it names none, the chain whose genesis is Bitcoin mainnet's, by the spec's
++// default. Most offers name none, so reading the absence as "no chain" would
++// refuse nearly every mainnet offer.
 +func offerChains(o *bolt12.Offer) [][32]byte {
 +	var chains [][32]byte
 +	o.OfferChains.WhenSome(func(r tlv.RecordT[tlv.TlvType2, bolt12.ChainsRecord]) {
 +		chains = append(chains, r.Val.Chains...)
 +	})
++	if len(chains) == 0 {
++		chains = [][32]byte{bolt12.BitcoinMainnetChain()}
++	}
 +
 +	return chains
 +}
 +
-+// requestChain returns the chain a request names, if it names one.
-+func requestChain(ir *bolt12.InvoiceRequest) ([32]byte, bool) {
-+	var (
-+		chain [32]byte
-+		ok    bool
-+	)
++// requestChain returns the chain a request is for: the one it names, or
++// Bitcoin mainnet's when it names none. A payer leaves invreq_chain out for
++// exactly that chain.
++func requestChain(ir *bolt12.InvoiceRequest) [32]byte {
++	chain := bolt12.BitcoinMainnetChain()
 +	ir.InvreqChain.WhenSome(func(r tlv.RecordT[tlv.TlvType80, [32]byte]) {
-+		chain, ok = r.Val, true
++		chain = r.Val
 +	})
 +
-+	return chain, ok
++	return chain
 +}
 +
-+// invoiceChain returns the chain an invoice names, if it names one.
-+func invoiceChain(inv *bolt12.Invoice) ([32]byte, bool) {
-+	var (
-+		chain [32]byte
-+		ok    bool
-+	)
++// invoiceChain returns the chain an invoice is for, by the same rule: an
++// invoice mirrors its request's invreq_chain.
++func invoiceChain(inv *bolt12.Invoice) [32]byte {
++	chain := bolt12.BitcoinMainnetChain()
 +	inv.InvreqChain.WhenSome(func(r tlv.RecordT[tlv.TlvType80, [32]byte]) {
-+		chain, ok = r.Val, true
++		chain = r.Val
 +	})
 +
-+	return chain, ok
++	return chain
 +}
 +
 +// IssuerID returns the issuer id of an offer, if it names one.
@@ -5887,13 +5887,14 @@ index 000000000..df5929546
 +}
 diff --git a/offers/manager_test.go b/offers/manager_test.go
 new file mode 100644
-index 000000000..f3ff4122b
+index 000000000..4fc9f3efb
 --- /dev/null
 +++ b/offers/manager_test.go
-@@ -0,0 +1,763 @@
+@@ -0,0 +1,832 @@
 +package offers
 +
 +import (
++	"bytes"
 +	"context"
 +	"crypto/sha256"
 +	"errors"
@@ -5960,6 +5961,13 @@ index 000000000..f3ff4122b
 +func newTestEnvWithSecret(t *testing.T, secret [32]byte) *testEnv {
 +	t.Helper()
 +
++	return newTestEnvOn(t, secret, testChain)
++}
++
++// newTestEnvOn is a manager on a given chain.
++func newTestEnvOn(t *testing.T, secret, chain [32]byte) *testEnv {
++	t.Helper()
++
 +	issuer, err := btcec.NewPrivateKey()
 +	require.NoError(t, err)
 +	env := &testEnv{
@@ -5970,7 +5978,7 @@ index 000000000..f3ff4122b
 +		reach:  true,
 +	}
 +	env.manager, err = NewManager(Config{
-+		ChainHash: testChain,
++		ChainHash: chain,
 +		Secret:    secret,
 +		IssuerKey: keychain.KeyDescriptor{
 +			KeyLocator: keychain.KeyLocator{
@@ -6462,7 +6470,8 @@ index 000000000..f3ff4122b
 +	d, err = env.manager.DecodeBolt12(bitcoinStr)
 +	require.NoError(t, err)
 +	require.False(t, d.ForThisChain)
-+	require.Empty(t, d.Chains)
++	require.Equal(t, [][32]byte{bolt12.BitcoinMainnetChain()}, d.Chains,
++		"a chain-less offer is for Bitcoin mainnet, which this is not")
 +	require.ErrorIs(t, d.ValidationError, bolt12.ErrUnsupportedChain)
 +
 +	// A chain-less offer that also fails a check that runs before the
@@ -6559,13 +6568,73 @@ index 000000000..f3ff4122b
 +	d, err = env.manager.DecodeBolt12(irStr)
 +	require.NoError(t, err)
 +	require.False(t, d.ForThisChain)
-+	require.Empty(t, d.Chains, "the spec default is not written out")
++	require.Equal(t, [][32]byte{bolt12.BitcoinMainnetChain()}, d.Chains,
++		"a chain-less request is for Bitcoin mainnet, as an offer is")
 +
 +	// Junk and unknown prefixes are refused.
 +	_, err = env.manager.DecodeBolt12("lnbc1notbolt12")
 +	require.Error(t, err)
 +	_, err = env.manager.DecodeBolt12("")
 +	require.Error(t, err)
++}
++
++// TestDecodeOnBitcoinMainnet: on mainnet, an offer, a request and an invoice
++// that name no chain are for this node's chain, by the spec's default, and
++// nearly all of them name none. The same strings are for no other chain.
++func TestDecodeOnBitcoinMainnet(t *testing.T) {
++	t.Parallel()
++
++	mainnet := bolt12.BitcoinMainnetChain()
++	env := newTestEnvOn(t, testSecret, mainnet)
++
++	offer := &bolt12.Offer{
++		OfferDescription: tlv.SomeRecordT(
++			tlv.NewPrimitiveRecord[tlv.TlvType10](tlv.Blob("x")),
++		),
++		OfferIssuerID: tlv.SomeRecordT(
++			tlv.NewPrimitiveRecord[tlv.TlvType22](env.issuer.PubKey()),
++		),
++	}
++	offerBytes, err := offer.Encode()
++	require.NoError(t, err)
++	offerStr, err := bolt12.Encode(OfferHRP, offerBytes)
++	require.NoError(t, err)
++
++	payer, err := btcec.NewPrivateKey()
++	require.NoError(t, err)
++	ir, err := bolt12.NewInvoiceRequestFromOffer(
++		offer, payer.PubKey(), []byte{1}, mainnet,
++	)
++	require.NoError(t, err)
++	ir.InvreqAmount = tlv.SomeRecordT(
++		tlv.NewPrimitiveRecord[tlv.TlvType82](bolt12.TUint64(100_000)),
++	)
++	require.False(t, ir.InvreqChain.IsSome(), "the spec leaves it out")
++	irBytes, err := ir.Encode()
++	require.NoError(t, err)
++	irStr, err := bolt12.Encode(InvoiceRequestHRP, irBytes)
++	require.NoError(t, err)
++
++	// Only its chain matters here, so the invoice is encoded as it is,
++	// without the fields a writer must also fill in.
++	var buf bytes.Buffer
++	require.NoError(t, lnwire.EncodePureTLVMessage(
++		bolt12.NewInvoiceFromRequest(ir), &buf,
++	))
++	invStr, err := bolt12.Encode(InvoiceHRP, buf.Bytes())
++	require.NoError(t, err)
++
++	other := newTestEnv(t)
++	for _, str := range []string{offerStr, irStr, invStr} {
++		d, err := env.manager.DecodeBolt12(str)
++		require.NoError(t, err)
++		require.True(t, d.ForThisChain, d.HRP)
++		require.Equal(t, [][32]byte{mainnet}, d.Chains, d.HRP)
++
++		d, err = other.manager.DecodeBolt12(str)
++		require.NoError(t, err)
++		require.False(t, d.ForThisChain, d.HRP)
++	}
 +}
 +
 +// TestNewManagerRequirements covers the configuration checks.

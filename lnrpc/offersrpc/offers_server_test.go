@@ -42,6 +42,13 @@ type testServer struct {
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 
+	return newTestServerOn(t, testChain)
+}
+
+// newTestServerOn is a server whose node is on the given chain.
+func newTestServerOn(t *testing.T, chain [32]byte) *testServer {
+	t.Helper()
+
 	backend, cleanup, err := kvdb.GetTestBackend(t.TempDir(), "offers")
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
@@ -54,7 +61,7 @@ func newTestServer(t *testing.T) *testServer {
 	require.NoError(t, err)
 	testClock := clock.NewTestClock(time.Unix(1_800_000_000, 0))
 	manager, err := offers.NewManager(offers.Config{
-		ChainHash: testChain,
+		ChainHash: chain,
 		Secret:    [32]byte{0x5e, 0xc7},
 		IssuerKey: keychain.KeyDescriptor{
 			PubKey: issuer.PubKey(),
@@ -431,7 +438,8 @@ func TestDecodeBolt12(t *testing.T) {
 	require.False(t, dec.Ours)
 	require.False(t, dec.Valid)
 	require.Contains(t, dec.ValidationError, "chain")
-	require.Empty(t, dec.Chains)
+	// The spec's default, which this test chain is not.
+	require.Len(t, dec.Chains, 1)
 
 	// A chain-less offer with a defect the validator reports before the
 	// chain is still not for this chain.
@@ -500,10 +508,17 @@ func (a *answeringMessenger) BuildReplyPath(_ context.Context,
 func (a *answeringMessenger) OnInvoice(h onionmsg.Handler)      { a.invoice = h }
 func (a *answeringMessenger) OnInvoiceError(h onionmsg.Handler) { a.errs = h }
 
-func (a *answeringMessenger) Send(_ context.Context, _ onionmsg.Destination,
+func (a *answeringMessenger) Send(ctx context.Context, _ onionmsg.Destination,
 	payload []*lnwire.FinalHopTLV, _ *lnwire.BlindedPath,
-	_ ...onionmsg.SendOption) error {
+	opts ...onionmsg.SendOption) error {
 
+	// The client passes its reply path's id as an option and lets the
+	// messenger build the path, as the real one does.
+	if id := onionmsg.ReplyPathIDFromOptions(opts); id != nil {
+		if _, err := a.BuildReplyPath(ctx, id); err != nil {
+			return err
+		}
+	}
 	a.sent++
 	require.Len(a.t, payload, 1)
 	ir, err := bolt12.DecodeInvoiceRequest(payload[0].Value)
@@ -552,7 +567,7 @@ func (a *answeringMessenger) Send(_ context.Context, _ onionmsg.Destination,
 	)
 	inv.InvoiceFeatures = tlv.SomeRecordT(
 		tlv.NewRecordT[tlv.TlvType174](
-			*lnwire.NewRawFeatureVector(lnwire.MPPOptional),
+			*bolt12.Blake2bVector(lnwire.MPPOptional),
 		),
 	)
 	inv.InvoiceNodeID = tlv.SomeRecordT(
@@ -579,13 +594,29 @@ func (a *answeringMessenger) Send(_ context.Context, _ onionmsg.Destination,
 func TestFetchPayAndList(t *testing.T) {
 	t.Parallel()
 
-	s := newTestServer(t)
+	fetchPayAndList(t, testChain)
+}
+
+// TestFetchPayAndListOnBitcoinsGenesis is the same on mainnet, where this
+// chain's genesis is Bitcoin's: the offer, the request and the invoice all
+// leave the chain out, as the spec has them do for that genesis. Paying an
+// invoice fetched first, by its string, is how the dashboard pays an offer,
+// and it was refused as "not for this chain" until the decoder applied the
+// spec's default to requests and invoices as well as to offers.
+func TestFetchPayAndListOnBitcoinsGenesis(t *testing.T) {
+	t.Parallel()
+
+	fetchPayAndList(t, bolt12.BitcoinMainnetChain())
+}
+
+func fetchPayAndList(t *testing.T, chain [32]byte) {
+	s := newTestServerOn(t, chain)
 	ctx := context.Background()
 	node, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 	msgr := &answeringMessenger{t: t, issuer: s.issuer, node: node}
 	client, err := offerpay.New(offerpay.Config{
-		Messenger: msgr, ChainHash: testChain, Timeout: 5 * time.Second,
+		Messenger: msgr, ChainHash: chain, Timeout: 5 * time.Second,
 	})
 	require.NoError(t, err)
 	s.cfg.Deps.Client = client

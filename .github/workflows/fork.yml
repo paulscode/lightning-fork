@@ -67,6 +67,10 @@ jobs:
         run: go test -count=1 -tags test_db_sqlite ./graph/db/...
       - name: htlcswitch (dev tag)
         run: go test -count=1 -tags dev ./htlcswitch/...
+      - name: Offers RPC (offersrpc tag)
+        # Behind its build tag, like the bridge: the steps above never
+        # compile these tests, which is how they once fell out of date.
+        run: go test -count=1 -tags offersrpc ./lnrpc/offersrpc/...
       - name: Bridge, and every release-tagged package builds
         # The bridge and its lncli commands exist only under the bridgerpc
         # tag, which the steps above do not set. The kvdb_* release tags

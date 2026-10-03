@@ -1,4 +1,4 @@
-From 2732f308196aa17cc9aee62c95c9f3ea5a351a88 Mon Sep 17 00:00:00 2001
+From f8a39bbcd7fdfbb92c10af07fdc9ce759669e2df Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Tue, 15 Sep 2026 15:14:24 -0500
 Subject: [PATCH 8/8] offerserve: tell a peer it is rate limited instead of

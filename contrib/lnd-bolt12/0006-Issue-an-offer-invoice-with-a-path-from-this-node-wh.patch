@@ -1,4 +1,4 @@
-From 8c3f3f0e45bfe3fc0f39602d022d8a87e698f472 Mon Sep 17 00:00:00 2001
+From 39085b2920c4f344ada49838db92c59feab4780a Mon Sep 17 00:00:00 2001
 From: Paul Lamb <paul@paulscode.com>
 Date: Mon, 14 Sep 2026 04:36:09 -0500
 Subject: [PATCH 6/8] Issue an offer invoice with a path from this node when no

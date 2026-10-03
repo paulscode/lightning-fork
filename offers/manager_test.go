@@ -1,6 +1,7 @@
 package offers
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -69,6 +70,13 @@ func newTestEnv(t *testing.T) *testEnv {
 func newTestEnvWithSecret(t *testing.T, secret [32]byte) *testEnv {
 	t.Helper()
 
+	return newTestEnvOn(t, secret, testChain)
+}
+
+// newTestEnvOn is a manager on a given chain.
+func newTestEnvOn(t *testing.T, secret, chain [32]byte) *testEnv {
+	t.Helper()
+
 	issuer, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 	env := &testEnv{
@@ -79,7 +87,7 @@ func newTestEnvWithSecret(t *testing.T, secret [32]byte) *testEnv {
 		reach:  true,
 	}
 	env.manager, err = NewManager(Config{
-		ChainHash: testChain,
+		ChainHash: chain,
 		Secret:    secret,
 		IssuerKey: keychain.KeyDescriptor{
 			KeyLocator: keychain.KeyLocator{
@@ -672,13 +680,76 @@ func TestDecodeBolt12(t *testing.T) {
 	d, err = env.manager.DecodeBolt12(irStr)
 	require.NoError(t, err)
 	require.False(t, d.ForThisChain)
-	require.Empty(t, d.Chains, "the spec default is not written out")
+	require.Equal(t, [][32]byte{bitcoinMainnetGenesis()}, d.Chains,
+		"a chain-less request is for mainnet's genesis, as an offer is")
 
 	// Junk and unknown prefixes are refused.
 	_, err = env.manager.DecodeBolt12("lnbc1notbolt12")
 	require.Error(t, err)
 	_, err = env.manager.DecodeBolt12("")
 	require.Error(t, err)
+}
+
+// TestDecodeOnBitcoinsGenesis: on mainnet this chain's genesis is Bitcoin's,
+// and a payer following the spec leaves the chain out of its request for
+// exactly that genesis, so the request and the invoice that mirrors it name
+// none. Both are for this chain. Reading a chain-less request or invoice as
+// for no chain refused every offer payment on mainnet whose invoice was paid
+// by its string, which is how the dashboard pays one it fetched first.
+func TestDecodeOnBitcoinsGenesis(t *testing.T) {
+	t.Parallel()
+
+	genesis := bolt12.BitcoinMainnetChain()
+	env := newTestEnvOn(t, testSecret, genesis)
+
+	offer := &bolt12.Offer{
+		OfferDescription: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType10](tlv.Blob("x")),
+		),
+		OfferIssuerID: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType22](env.issuer.PubKey()),
+		),
+	}
+	payer, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	ir, err := bolt12.NewInvoiceRequestFromOffer(
+		offer, payer.PubKey(), []byte{1}, genesis,
+	)
+	require.NoError(t, err)
+	ir.InvreqAmount = tlv.SomeRecordT(
+		tlv.NewPrimitiveRecord[tlv.TlvType82](bolt12.TUint64(100_000)),
+	)
+	require.False(t, ir.InvreqChain.IsSome(), "the spec leaves it out")
+
+	irBytes, err := ir.Encode()
+	require.NoError(t, err)
+	irStr, err := bolt12.Encode(InvoiceRequestHRP, irBytes)
+	require.NoError(t, err)
+	d, err := env.manager.DecodeBolt12(irStr)
+	require.NoError(t, err)
+	require.True(t, d.ForThisChain, "a chain-less request on mainnet")
+	require.Equal(t, [][32]byte{genesis}, d.Chains)
+
+	// Only its chain matters here, so the invoice is encoded as it is,
+	// without the fields a writer must also fill in.
+	inv := bolt12.NewInvoiceFromRequest(ir)
+	var buf bytes.Buffer
+	require.NoError(t, lnwire.EncodePureTLVMessage(inv, &buf))
+	invBytes := buf.Bytes()
+	invStr, err := bolt12.Encode(InvoiceHRP, invBytes)
+	require.NoError(t, err)
+	d, err = env.manager.DecodeBolt12(invStr)
+	require.NoError(t, err)
+	require.True(t, d.ForThisChain, "a chain-less invoice on mainnet")
+	require.Equal(t, [][32]byte{genesis}, d.Chains)
+
+	// The same strings on any other chain are not for it.
+	other := newTestEnv(t)
+	for _, str := range []string{irStr, invStr} {
+		d, err = other.manager.DecodeBolt12(str)
+		require.NoError(t, err)
+		require.False(t, d.ForThisChain)
+	}
 }
 
 // TestNewManagerRequirements covers the configuration checks.
