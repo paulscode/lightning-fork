@@ -112,6 +112,7 @@ func (f *fakeMessenger) lastRequest(t *testing.T) (*bolt12.InvoiceRequest,
 
 type env struct {
 	t      *testing.T
+	chain  [32]byte
 	client *Client
 	msgr   *fakeMessenger
 	clock  *clock.TestClock
@@ -121,19 +122,27 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 
+	return newEnvOn(t, testChain)
+}
+
+// newEnvOn is newEnv on a given chain.
+func newEnvOn(t *testing.T, chain [32]byte) *env {
+	t.Helper()
+
 	nodeKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 	issuer, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 	e := &env{
 		t:      t,
+		chain:  chain,
 		msgr:   &fakeMessenger{nodeKey: nodeKey},
 		clock:  clock.NewTestClock(time.Unix(1_800_000_000, 0)),
 		issuer: issuer,
 	}
 	e.client, err = New(Config{
 		Messenger: e.msgr,
-		ChainHash: testChain,
+		ChainHash: chain,
 		Clock:     e.clock,
 		Timeout:   2 * time.Second,
 	})
@@ -151,7 +160,7 @@ func (e *env) offer(amount uint64, withPath bool,
 	o := &bolt12.Offer{
 		OfferChains: tlv.SomeRecordT(
 			tlv.NewRecordT[tlv.TlvType2](bolt12.ChainsRecord{
-				Chains: [][32]byte{testChain},
+				Chains: [][32]byte{e.chain},
 			}),
 		),
 		OfferDescription: tlv.SomeRecordT(
@@ -364,6 +373,35 @@ func TestFetchPayout(t *testing.T) {
 	// A late duplicate reply is dropped, not delivered anywhere.
 	_, pathID := e.msgr.lastRequest(t)
 	e.reply(e.invoiceFor(got.Request, 250_000_000, nil), pathID)
+}
+
+// TestFetchOnBitcoinsGenesis is the mainnet case. Lightning Fork's mainnet
+// shares Bitcoin's genesis block, so its chain hash is the one an absent chain
+// means: the request omits invreq_chain, as BOLT 12 asks of a request for that
+// chain, and that has to pass our own checks rather than be refused as naming
+// no chain. Every offer payment on mainnet failed that way, and no test ran on
+// this chain hash.
+func TestFetchOnBitcoinsGenesis(t *testing.T) {
+	t.Parallel()
+
+	genesis := bolt12.BitcoinMainnetChain()
+	e := newEnvOn(t, genesis)
+	offer := e.offer(0, true, nil)
+	got, err := e.fetch(FetchParams{
+		Offer: offer, AmountMsat: 100_000,
+	}, func(ir *bolt12.InvoiceRequest, pathID []byte) {
+		require.False(t, ir.InvreqChain.IsSome(),
+			"a request for Bitcoin's genesis chain omits it")
+		require.NoError(t, bolt12.ValidateInvoiceRequestRead(
+			ir, genesis, bolt12.Blake2bFeatures,
+		))
+		e.reply(e.invoiceFor(ir, 100_000, nil), pathID)
+	})
+	require.NoError(t, err)
+	require.Equal(t, uint64(100_000), got.AmountMsat)
+	require.NoError(t, bolt12.ValidateInvoiceWriteOnChain(
+		got.Invoice, genesis,
+	), "the invoice for it, likewise naming no chain, is ours")
 }
 
 // TestFetchNodeIDAndFallback sends to the node id when the offer has no

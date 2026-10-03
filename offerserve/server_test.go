@@ -70,6 +70,7 @@ func (k *keySigner) SignMessageSchnorr(loc keychain.KeyLocator, msg []byte,
 }
 
 type env struct {
+	chain    [32]byte
 	t        *testing.T
 	server   *Server
 	manager  *offers.Manager
@@ -93,6 +94,13 @@ type addCall struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 
+	return newEnvOn(t, testChain)
+}
+
+// newEnvOn is newEnv on a given chain.
+func newEnvOn(t *testing.T, chain [32]byte) *env {
+	t.Helper()
+
 	backend, cleanup, err := kvdb.GetTestBackend(t.TempDir(), "offers")
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
@@ -107,6 +115,7 @@ func newEnv(t *testing.T) *env {
 	desc := keychain.KeyDescriptor{KeyLocator: loc, PubKey: nodeKey.PubKey()}
 	e := &env{
 		t:        t,
+		chain:    chain,
 		invoices: invStore,
 		msgr:     &fakeMessenger{},
 		signer:   &keySigner{key: nodeKey, loc: loc},
@@ -115,7 +124,7 @@ func newEnv(t *testing.T) *env {
 		settled:  make(map[[32]byte]bool),
 	}
 	e.manager, err = offers.NewManager(offers.Config{
-		ChainHash:     testChain,
+		ChainHash:     chain,
 		IssuerKey:     desc,
 		Secret:        [32]byte{1, 2, 3},
 		Store:         store,
@@ -129,7 +138,7 @@ func newEnv(t *testing.T) *env {
 		Manager:   e.manager,
 		Invoices:  invStore,
 		Messenger: e.msgr,
-		ChainHash: testChain,
+		ChainHash: chain,
 		NodeKey:   desc,
 		Signer:    e.signer,
 		AddInvoice: func(_ context.Context, amount uint64, desc string,
@@ -228,7 +237,7 @@ func (e *env) request(offer *bolt12.Offer, amount uint64,
 	payer, err := btcec.NewPrivateKey()
 	require.NoError(e.t, err)
 	ir, err := bolt12.NewInvoiceRequestFromOffer(
-		offer, payer.PubKey(), []byte{9, 9, 9, 9}, testChain,
+		offer, payer.PubKey(), []byte{9, 9, 9, 9}, e.chain,
 	)
 	require.NoError(e.t, err)
 	if amount != 0 {
@@ -450,6 +459,36 @@ func TestServePayoutRequest(t *testing.T) {
 }
 
 // TestServeAmountAndQuantity covers amounts from the offer and quantities.
+// TestServeOnBitcoinsGenesis is the mainnet case. Lightning Fork's mainnet
+// shares Bitcoin's genesis block, so a request for it omits invreq_chain as
+// BOLT 12 asks, the invoice copies that, and serving it must not fail our own
+// check that the invoice names our chain: an absent chain names it.
+func TestServeOnBitcoinsGenesis(t *testing.T) {
+	t.Parallel()
+
+	genesis := bolt12.BitcoinMainnetChain()
+	e := newEnvOn(t, genesis)
+	ctx := context.Background()
+	rec, _, err := e.manager.CreateOffer(ctx, offers.CreateParams{
+		Description: "test", NoPaths: true,
+	})
+	require.NoError(t, err)
+	offer := e.decodeOffer(rec)
+
+	ir, _ := e.request(offer, 100_000, nil)
+	require.False(t, ir.InvreqChain.IsSome())
+	e.server.Handle(ctx, e.inbound(ir, nil, true))
+
+	require.Len(t, e.msgr.sent, 1, "the request was answered")
+	inv := e.lastInvoice()
+	require.NoError(t, bolt12.ValidateInvoiceRead(
+		inv, genesis, bolt12.InvoiceFeatureCatalogues{
+			Invoice: bolt12.Blake2bFeatures,
+		},
+	))
+	require.NoError(t, bolt12.ValidateInvoiceAgainstRequest(inv, ir))
+}
+
 func TestServeAmountAndQuantity(t *testing.T) {
 	t.Parallel()
 

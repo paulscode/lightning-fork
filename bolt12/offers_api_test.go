@@ -112,6 +112,52 @@ func TestBitcoinDefaultChainPinned(t *testing.T) {
 		BitcoinMainnetChain())
 }
 
+// TestWriteOnBitcoinsGenesis: where the active chain's hash is Bitcoin
+// mainnet's genesis, which Lightning Fork's mainnet shares, an absent chain
+// means the active chain, so the writer checks accept one. Anywhere else they
+// still refuse it.
+func TestWriteOnBitcoinsGenesis(t *testing.T) {
+	t.Parallel()
+
+	issuer, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	payer, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	genesis := BitcoinMainnetChain()
+
+	offer := &Offer{
+		OfferDescription: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType10](tlv.Blob("x")),
+		),
+		OfferIssuerID: tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType22](issuer.PubKey()),
+		),
+		OfferChains: tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType2](ChainsRecord{
+				Chains: [][32]byte{genesis},
+			}),
+		),
+	}
+	ir, err := NewInvoiceRequestFromOffer(
+		offer, payer.PubKey(), []byte{1}, genesis,
+	)
+	require.NoError(t, err)
+	ir.InvreqAmount = tlv.SomeRecordT(
+		tlv.NewPrimitiveRecord[tlv.TlvType82](TUint64(100_000)),
+	)
+	require.False(t, ir.InvreqChain.IsSome())
+	require.NoError(t, ValidateInvoiceRequestWriteOnChain(ir, genesis))
+
+	// The same request on another chain still names none, which there
+	// would read as Bitcoin's: refused.
+	require.ErrorIs(t, ValidateInvoiceRequestWriteOnChain(ir,
+		[32]byte{0xb2, 1}), ErrChainNotNamed)
+
+	// An offer naming no chain at all is Bitcoin's genesis chain too.
+	offer.OfferChains = tlv.OptionalRecordT[tlv.TlvType2, ChainsRecord]{}
+	require.NoError(t, ValidateOfferWriteOnChain(offer, genesis))
+}
+
 // TestWriteOnChain checks the chain-pinned writer validators: a message that
 // names no chain, or another chain, is refused; one naming the active chain
 // passes.

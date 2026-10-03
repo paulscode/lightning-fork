@@ -99,6 +99,15 @@ func MerkleRoot(records []tlv.Record) ([32]byte, error) {
 var ErrChainNotNamed = errors.New("message names no chain; an absent chain " +
 	"means Bitcoin mainnet")
 
+// absentChainIsOurs reports whether a message that names no chain names the
+// active one anyway: when the active chain's hash is Bitcoin mainnet's genesis
+// hash, which is what an absent chain means. Lightning Fork's mainnet shares
+// that genesis block, so there an absent chain is exactly right, and BOLT 12
+// asks writers to omit it.
+func absentChainIsOurs(activeChain [32]byte) bool {
+	return activeChain == bitcoinMainnetGenesisHash
+}
+
 // BitcoinMainnetChain returns the chain hash BOLT 12 assumes when a message
 // names none. Callers on another chain compare against it to make sure they
 // never fall back to it by accident.
@@ -107,7 +116,8 @@ func BitcoinMainnetChain() [32]byte {
 }
 
 // ValidateOfferWriteOnChain runs the upstream writer checks and then insists
-// the offer names activeChain in offer_chains. The upstream validator has
+// the offer names activeChain in offer_chains, or names no chain where that
+// means activeChain (see absentChainIsOurs). The upstream validator has
 // no chain context, so on its own it lets a node write an offer that a payer
 // reads as a Bitcoin mainnet offer.
 func ValidateOfferWriteOnChain(o *Offer, activeChain [32]byte) error {
@@ -115,6 +125,10 @@ func ValidateOfferWriteOnChain(o *Offer, activeChain [32]byte) error {
 		return err
 	}
 	if !o.OfferChains.IsSome() {
+		if absentChainIsOurs(activeChain) {
+			return nil
+		}
+
 		return ErrChainNotNamed
 	}
 	for _, chain := range getOfferChains(o) {
@@ -127,7 +141,8 @@ func ValidateOfferWriteOnChain(o *Offer, activeChain [32]byte) error {
 }
 
 // ValidateInvoiceRequestWriteOnChain runs the upstream writer checks and then
-// insists the request names activeChain in invreq_chain.
+// insists the request names activeChain in invreq_chain, or names no chain
+// where that means activeChain.
 func ValidateInvoiceRequestWriteOnChain(ir *InvoiceRequest,
 	activeChain [32]byte) error {
 
@@ -135,6 +150,10 @@ func ValidateInvoiceRequestWriteOnChain(ir *InvoiceRequest,
 		return err
 	}
 	if !ir.InvreqChain.IsSome() {
+		if absentChainIsOurs(activeChain) {
+			return nil
+		}
+
 		return ErrChainNotNamed
 	}
 	if getInvreqChain(ir) != activeChain {
@@ -145,12 +164,17 @@ func ValidateInvoiceRequestWriteOnChain(ir *InvoiceRequest,
 }
 
 // ValidateInvoiceWriteOnChain runs the upstream writer checks and then
-// insists the invoice names activeChain in invreq_chain.
+// insists the invoice names activeChain in invreq_chain, or names no chain
+// where that means activeChain.
 func ValidateInvoiceWriteOnChain(inv *Invoice, activeChain [32]byte) error {
 	if err := ValidateInvoiceWrite(inv); err != nil {
 		return err
 	}
 	if !inv.InvreqChain.IsSome() {
+		if absentChainIsOurs(activeChain) {
+			return nil
+		}
+
 		return ErrChainNotNamed
 	}
 	var chain [32]byte
