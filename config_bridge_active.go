@@ -95,6 +95,9 @@ func superviseSha256Node(cfg *Config, sub *bridgerpc.Config,
 	sub.SHA256MacaroonPath = filepath.Join(
 		secrets, bridgerpc.Sha256MacaroonName,
 	)
+	sub.SHA256OperatorMacaroonPath = filepath.Join(
+		secrets, bridgerpc.Sha256OperatorMacaroonName,
+	)
 
 	// The stock node keeps its macaroons under its own network directory,
 	// named as lnd names networks, which is the same naming this node's

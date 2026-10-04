@@ -5,6 +5,8 @@ package bridgerpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -141,6 +143,14 @@ type Server struct {
 	// (bridgerpc.sha256.supervised), and is nil otherwise.
 	sup *supervisor
 
+	// draining is set by Start when the bridge is off with swaps
+	// unfinished; drained once they are done. drainStuck is how many were
+	// unfinished when there was no SHA256 node to finish them through.
+	// draining is written before any goroutine starts; drained under mu.
+	draining   bool
+	drained    bool
+	drainStuck int
+
 	// rateMu serialises SetRate with the service coming up; see connect.
 	rateMu sync.Mutex
 
@@ -178,7 +188,9 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 		cfg:   cfg,
 		local: NewLocal(cfg.Deps),
 	}
-	if cfg.Enabled && cfg.Supervised {
+	// Also while off: a bridge turned off with swaps unfinished drains
+	// them through the same node (see Start).
+	if cfg.Supervised {
 		s.sup = newSupervisor(cfg)
 	}
 
@@ -194,13 +206,44 @@ func (s *Server) Start() error {
 	}
 
 	if !s.cfg.Enabled {
-		// Registered but not serving. The methods refuse with a
-		// reason, which is a better answer than an unimplemented
-		// error: an operator who has not turned this on should be told
-		// so, not left wondering whether their build has it.
-		log.Infof("Bridge is compiled in but not enabled")
+		// Turned off with swaps unfinished: they are finished, through
+		// the SHA256 node they started on, and nothing new is quoted.
+		// A swap cut off after paying out and before claiming the
+		// payer's HTLC would cost the operator what was paid. The
+		// platforms refuse to turn the bridge off while one is in
+		// flight; this covers the one that starts in between, and a
+		// configuration edited by hand.
+		n, err := unfinishedInJournal(s.cfg.Journal)
+		switch {
+		case err != nil:
+			log.Errorf("Bridge is off and could not read its swap "+
+				"journal to see whether anything is unfinished: %v",
+				err)
 
-		return nil
+			return nil
+
+		case n == 0:
+			// Registered but not serving. The methods refuse with
+			// a reason, which is a better answer than an
+			// unimplemented error: an operator who has not turned
+			// this on should be told so, not left wondering
+			// whether their build has it.
+			log.Infof("Bridge is compiled in but not enabled")
+
+			return nil
+
+		case !s.cfg.canReachSha256Node():
+			s.drainStuck = n
+			log.Errorf("Bridge is off with %d swap(s) unfinished, "+
+				"and no SHA256 node is configured to finish "+
+				"them through: turn the bridge back on", n)
+
+			return nil
+		}
+
+		log.Warnf("Bridge is off but %d swap(s) are unfinished: "+
+			"finishing them, and quoting nothing", n)
+		s.draining = true
 	}
 
 	// A bridge that cannot come up must not keep the node from coming up.
@@ -217,8 +260,77 @@ func (s *Server) Start() error {
 	s.setStartErr(errStarting)
 	s.wg.Add(1)
 	go s.retry()
+	if s.draining {
+		s.wg.Add(1)
+		go s.watchDrain()
+	}
 
 	return nil
+}
+
+// unfinishedInJournal is how many swaps the journal at path has not finished,
+// without starting anything. No journal is none.
+func unfinishedInJournal(path string) (int, error) {
+	if path == "" {
+		return 0, nil
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	j, err := store.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer j.Close()
+
+	pending, err := j.Pending(context.Background())
+
+	return len(pending), err
+}
+
+// drainCheckInterval is how often a draining bridge looks for its last swap
+// to have finished.
+var drainCheckInterval = 30 * time.Second
+
+// watchDrain stops a draining bridge once nothing in its journal is
+// unfinished and nothing is being driven.
+func (s *Server) watchDrain() {
+	defer s.wg.Done()
+
+	for {
+		select {
+		case <-s.quit:
+			return
+		case <-time.After(drainCheckInterval):
+		}
+
+		svc := s.service()
+		if svc == nil {
+			continue
+		}
+		pending, err := svc.journal.Pending(context.Background())
+		if err != nil || len(pending) > 0 || svc.active() > 0 {
+			continue
+		}
+
+		s.mu.Lock()
+		if s.svc != svc {
+			s.mu.Unlock()
+			continue
+		}
+		conn := s.conn
+		s.svc, s.remote, s.conn = nil, nil, nil
+		s.drained = true
+		s.mu.Unlock()
+
+		svc.stop()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		log.Infof("Bridge finished the swaps it had; it is off")
+
+		return
+	}
 }
 
 // errStarting is why the bridge is not up before its first try has finished.
@@ -359,26 +471,11 @@ func (s *Server) connect() error {
 		return fmt.Errorf("the bridge will not use the SHA256 node at "+
 			"%s: %w", s.cfg.SHA256RPCHost, err)
 	}
-	if s.cfg.Deps != nil && s.cfg.Deps.Blake2bActivation != nil {
-		height, hash, strict, err := s.cfg.Deps.Blake2bActivation(ctx)
-		if err == nil {
-			err = remoteNode.CheckNotBlake2b(
-				ctx, height, hash, strict,
-			)
-		}
-		if err != nil {
-			_ = conn.Close()
+	if err := s.checkChainThenRestore(ctx, remoteNode); err != nil {
+		_ = conn.Close()
 
-			return fmt.Errorf("the bridge will not use the SHA256 "+
-				"node at %s: %w", s.cfg.SHA256RPCHost, err)
-		}
-	}
-	// Channels a restored node left in its channel backup come back now
-	// that it is known to follow the SHA256 chain. In the background:
-	// a peer that cannot be reached only delays its own channel, and is
-	// no reason to keep the bridge down.
-	if s.sup != nil {
-		s.sup.startRestore(s.quit)
+		return fmt.Errorf("the bridge will not use the SHA256 node at "+
+			"%s: %w", s.cfg.SHA256RPCHost, err)
 	}
 	if !local.SyncedToChain || !remote.SyncedToChain {
 		log.Infof("Bridge will refuse to quote until both nodes catch "+
@@ -391,7 +488,15 @@ func (s *Server) connect() error {
 	// read it is published, so a rate set in between cannot be written to
 	// the file after it was read and then be lost to the running service.
 	s.rateMu.Lock()
-	svc, err := newService(s.cfg, s.local, remoteNode)
+	cfg := s.cfg
+	if s.draining {
+		// Every journaled swap needs its direction to be driven,
+		// whichever were enabled when the bridge was on.
+		c := *s.cfg
+		c.ToSHA256, c.ToBLAKE2b = true, true
+		cfg = &c
+	}
+	svc, err := newService(cfg, s.local, remoteNode)
 	if err != nil {
 		s.rateMu.Unlock()
 		_ = conn.Close()
@@ -412,7 +517,7 @@ func (s *Server) connect() error {
 		"node at %s", len(svc.sides), s.cfg.SHA256RPCHost)
 
 	s.wg.Add(1)
-	go s.watchChain(svc, remoteNode)
+	go s.watchChain(svc, remoteNode, certFingerprint(s.cfg.SHA256TLSCertPath))
 
 	return nil
 }
@@ -458,6 +563,31 @@ func (s *Server) rebuild(svc *service, why string) {
 	}()
 }
 
+// checkChainThenRestore checks which chain the SHA256 node follows and, only
+// once that has passed, starts restoring any channels a restored supervised
+// node left in its channel backup: restoring asks each channel's peer to close
+// it, which on the wrong chain would be answered from the wrong chain. In the
+// background: a peer that cannot be reached only delays its own channel, and
+// is no reason to keep the bridge down.
+func (s *Server) checkChainThenRestore(ctx context.Context,
+	remoteNode *Remote) error {
+
+	if s.cfg.Deps != nil && s.cfg.Deps.Blake2bActivation != nil {
+		height, hash, strict, err := s.cfg.Deps.Blake2bActivation(ctx)
+		if err == nil {
+			err = remoteNode.CheckNotBlake2b(ctx, height, hash, strict)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if s.sup != nil {
+		s.sup.startRestore(s.quit)
+	}
+
+	return nil
+}
+
 // recheckChain asks the SHA256 node which chain it follows, as connect does.
 // ErrConfig means it is not on the SHA256 chain; anything else is no answer.
 func (s *Server) recheckChain(remoteNode *Remote) error {
@@ -475,9 +605,24 @@ func (s *Server) recheckChain(remoteNode *Remote) error {
 	return remoteNode.CheckNotBlake2b(ctx, height, hash, strict)
 }
 
+// certFingerprint is the SHA-256 of the file at path, or "" if it cannot be
+// read.
+func certFingerprint(path string) string {
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+
+	return hex.EncodeToString(sum[:])
+}
+
 // chainRecheckInterval is how often the running bridge asks again which chain
 // its SHA256 node follows.
-const chainRecheckInterval = 10 * time.Minute
+var chainRecheckInterval = 10 * time.Minute
 
 // watchChain asks the SHA256 node which chain it follows, again, every
 // chainRecheckInterval while svc is the bridge running. Its chain backend can
@@ -487,7 +632,11 @@ const chainRecheckInterval = 10 * time.Minute
 // from the wrong coins. A refusal takes the bridge down; it stays down, saying
 // why, until the node is back on the SHA256 chain. A node that merely does not
 // answer is left to the bridge's own handling.
-func (s *Server) watchChain(svc *service, remoteNode *Remote) {
+//
+// It also notices the node's TLS certificate changing on disk (lnd renews it
+// on expiry): the connection trusts the one it was dialled with, so every
+// call would fail until the bridge dialled again, which it then does.
+func (s *Server) watchChain(svc *service, remoteNode *Remote, cert string) {
 	defer s.wg.Done()
 
 	for {
@@ -497,6 +646,15 @@ func (s *Server) watchChain(svc *service, remoteNode *Remote) {
 		case <-time.After(chainRecheckInterval):
 		}
 		if s.service() != svc {
+			return
+		}
+		if now := certFingerprint(s.cfg.SHA256TLSCertPath); cert != "" &&
+			now != "" && now != cert {
+
+			log.Infof("Bridge's SHA256 node has a new TLS certificate")
+			s.rebuild(svc, "to dial its SHA256 node with its new "+
+				"TLS certificate")
+
 			return
 		}
 
@@ -715,8 +873,10 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
 	*Swap, error) {
 
+	// Answered while draining too: a payer may be waiting on a swap the
+	// bridge is finishing.
 	svc := s.service()
-	if !s.cfg.Enabled || svc == nil {
+	if (!s.cfg.Enabled && !s.draining) || svc == nil {
 		return nil, s.notServing()
 	}
 	if len(req.GetHash()) != len(node.Hash{}) {
@@ -775,6 +935,24 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	if !s.cfg.Enabled {
 		resp.Refusals = append(resp.Refusals, "the bridge is not "+
 			"enabled on this node")
+		s.mu.RLock()
+		draining, drained, stuck := s.draining, s.drained, s.drainStuck
+		s.mu.RUnlock()
+		switch {
+		case stuck > 0:
+			resp.Refusals = append(resp.Refusals, fmt.Sprintf("%d "+
+				"swap(s) are unfinished and no SHA256 node is "+
+				"configured to finish them through: turn the "+
+				"bridge back on", stuck))
+
+		case draining && !drained:
+			resp.Refusals = append(resp.Refusals, "finishing the "+
+				"swaps already under way; quoting nothing")
+			if svc := s.service(); svc != nil {
+				resp.SwapsInFlight = uint32(svc.active())
+			}
+			resp.Sha256Node = s.sha256Summary(ctx)
+		}
 
 		return resp, nil
 	}

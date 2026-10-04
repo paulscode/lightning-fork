@@ -276,6 +276,7 @@ func (s *supervisor) prepare(ctx context.Context) error {
 	if err := s.checkIdentity(ctx, entropy); err != nil {
 		return err
 	}
+	s.ensureOperatorMacaroon(ctx)
 	s.record(sha256Ready, "ready")
 
 	return nil
@@ -723,9 +724,87 @@ func (s *supervisor) waitActive(ctx context.Context, conn unlockerClients,
 // permissionsFingerprint identifies the permission list a macaroon was baked
 // with, so a release that changes the list re-bakes it.
 func permissionsFingerprint() string {
-	h := sha256.Sum256([]byte(strings.Join(bridgeMacaroonPermissions, "\n")))
+	return fingerprintOf(bridgeMacaroonPermissions)
+}
+
+func fingerprintOf(perms []string) string {
+	h := sha256.Sum256([]byte(strings.Join(perms, "\n")))
 
 	return hex.EncodeToString(h[:])
+}
+
+// operatorMacaroonPermissions is what the operator's console (the dashboard)
+// does with the SHA256 node, and nothing more: read its balances and
+// channels, give a deposit address, connect a peer and open a channel, close
+// one, send its coins on chain, and take its channel backup. The console used
+// to hold the node's admin macaroon for this, which also signs, changes fees
+// and policy, and bakes macaroons.
+var operatorMacaroonPermissions = []string{
+	"/lnrpc.Lightning/GetInfo",
+	"/lnrpc.Lightning/WalletBalance",
+	"/lnrpc.Lightning/ChannelBalance",
+	"/lnrpc.Lightning/ListChannels",
+	"/lnrpc.Lightning/PendingChannels",
+	"/lnrpc.Lightning/ListPeers",
+	"/lnrpc.Lightning/NewAddress",
+	"/lnrpc.Lightning/ConnectPeer",
+	"/lnrpc.Lightning/OpenChannelSync",
+	"/lnrpc.Lightning/CloseChannel",
+	"/lnrpc.Lightning/EstimateFee",
+	"/lnrpc.Lightning/SendCoins",
+	"/lnrpc.Lightning/ExportAllChannelBackups",
+}
+
+// ensureOperatorMacaroon bakes the console's macaroon (see
+// operatorMacaroonPermissions) beside the bridge's, unless a current one is
+// there. The bridge does not need it, so failing here only says so.
+func (s *supervisor) ensureOperatorMacaroon(ctx context.Context) {
+	path := s.cfg.SHA256OperatorMacaroonPath
+	if path == "" {
+		return
+	}
+	if cur, _ := os.ReadFile(path + ".perms"); string(cur) ==
+		fingerprintOf(operatorMacaroonPermissions) {
+
+		if mac, err := os.ReadFile(path); err == nil &&
+			(&macaroon.Macaroon{}).UnmarshalBinary(mac) == nil {
+
+			conn, err := s.dialAdmin(s.cfg, mac)
+			if err == nil {
+				_, err = conn.IdentityPubkey(ctx)
+				conn.Close()
+				if err == nil || !macaroonRefused(err) {
+					return
+				}
+			}
+		}
+	}
+
+	admin, err := os.ReadFile(s.cfg.SHA256AdminMacaroonPath)
+	if err != nil {
+		return
+	}
+	conn, err := s.dialAdmin(s.cfg, admin)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	baked, err := conn.BakeMacaroon(ctx, operatorMacaroonPermissions)
+	if err == nil {
+		err = writeFileAtomic(path, baked)
+	}
+	if err == nil {
+		err = writeFileAtomic(path+".perms",
+			[]byte(fingerprintOf(operatorMacaroonPermissions)))
+	}
+	if err != nil {
+		log.Warnf("Bridge could not bake the console's macaroon for the "+
+			"SHA256 node: %v", err)
+
+		return
+	}
+	log.Infof("Bridge baked the console's macaroon for the SHA256 node")
 }
 
 // ensureMacaroon bakes the bridge's macaroon from the node's admin one, unless

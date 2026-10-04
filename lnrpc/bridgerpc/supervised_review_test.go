@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/stretchr/testify/require"
@@ -519,4 +520,100 @@ func TestSupervisorGivesUpOnAnUnreadableBackup(t *testing.T) {
 	require.Greater(t, fake.restoreCalls, 1, "a peer may come back")
 	fake.mu.Unlock()
 	require.Contains(t, s.restoreStatus(), "trying again")
+}
+
+// Channels are restored after the chain check passes, and never when it fails.
+func TestRestoreOnlyAfterTheChainCheck(t *testing.T) {
+	setup := func(t *testing.T, blake2bID []byte) (*Server, *fakeSha256Node,
+		*Remote) {
+
+		fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
+		fake.identity = testIdentity(t)
+		sup, cfg := newTestSupervisor(t, fake)
+		scb := sup.nodeChannelBackup()
+		require.NoError(t, os.MkdirAll(filepath.Dir(scb), 0700))
+		require.NoError(t, os.WriteFile(scb, []byte("backup"), 0600))
+		require.ErrorIs(t, sup.prepare(context.Background()),
+			errSha256Pending)
+		startNode(t, cfg)
+		require.NoError(t, sup.prepare(context.Background()))
+
+		var ours chainhash.Hash
+		copy(ours[:], blake2bID)
+		cfg.Deps = &Deps{Blake2bActivation: func(context.Context) (
+			int32, [32]byte, bool, error) {
+
+			return 300, ours, false, nil
+		}}
+		srv := &Server{cfg: cfg, sup: sup, quit: make(chan struct{})}
+		t.Cleanup(func() { close(srv.quit) })
+
+		header, id := sha256Block(9)
+		r := remote(nil, nil, nil)
+		r.chain = &headerChain{hash: id, header: header}
+
+		return srv, fake, r
+	}
+
+	// The SHA256 node has the BLAKE2b block: refused, nothing restored.
+	_, sameID := sha256Block(9)
+	srv, fake, r := setup(t, sameID)
+	require.ErrorIs(t, srv.checkChainThenRestore(context.Background(), r),
+		ErrConfig)
+	time.Sleep(50 * time.Millisecond)
+	fake.mu.Lock()
+	require.Zero(t, fake.restoreCalls)
+	fake.mu.Unlock()
+
+	// Another chain's block: passed, restored.
+	srv, fake, r = setup(t, []byte("blake2b activation block id 32b!"))
+	require.NoError(t, srv.checkChainThenRestore(context.Background(), r))
+	require.Eventually(t, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+
+		return len(fake.restored) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+// The console gets a macaroon of its own, with only what it does with the node:
+// nothing that signs, changes policy or bakes. Baked once, again only when its
+// permission list changes.
+func TestTheConsoleGetsANarrowMacaroon(t *testing.T) {
+	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
+	fake.identity = testIdentity(t)
+	s, cfg := newTestSupervisor(t, fake)
+	cfg.SHA256OperatorMacaroonPath = filepath.Join(
+		filepath.Dir(cfg.SHA256MacaroonPath), Sha256OperatorMacaroonName,
+	)
+	ctx := context.Background()
+
+	require.ErrorIs(t, s.prepare(ctx), errSha256Pending)
+	startNode(t, cfg)
+	require.NoError(t, s.prepare(ctx))
+
+	require.Len(t, fake.allBaked, 2)
+	require.Equal(t, bridgeMacaroonPermissions, fake.allBaked[0])
+	require.Equal(t, operatorMacaroonPermissions, fake.allBaked[1])
+	for _, uri := range operatorMacaroonPermissions {
+		for _, never := range []string{"Sign", "BakeMacaroon",
+			"UpdateChannelPolicy", "SendPayment", "AddInvoice"} {
+
+			require.NotContains(t, uri, never)
+		}
+	}
+	info, err := os.Stat(cfg.SHA256OperatorMacaroonPath)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+
+	// Again, as after a restart: not baked twice.
+	require.NoError(t, s.prepare(ctx))
+	require.Len(t, fake.allBaked, 2)
+
+	// A list that has changed is baked again.
+	require.NoError(t, os.WriteFile(
+		cfg.SHA256OperatorMacaroonPath+".perms", []byte("old"), 0600,
+	))
+	require.NoError(t, s.prepare(ctx))
+	require.Len(t, fake.allBaked, 3)
 }

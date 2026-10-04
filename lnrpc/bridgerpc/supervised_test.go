@@ -36,6 +36,7 @@ type fakeSha256Node struct {
 	password     []byte // what UnlockWallet accepts
 	identity     string
 	bakedPerms   []string
+	allBaked     [][]string
 	bakes        int
 	rejectBaked  bool // the baked macaroon no longer works
 	adminMac     []byte
@@ -108,6 +109,7 @@ func (f fakeAdmin) BakeMacaroon(_ context.Context,
 	}
 	f.n.bakes++
 	f.n.bakedPerms = perms
+	f.n.allBaked = append(f.n.allBaked, perms)
 	f.n.rejectBaked = false
 
 	return testMacaroon(f.n.bakes), nil

@@ -85,6 +85,10 @@ type Config struct {
 	SHA256PasswordFile      string
 	SHA256AdminMacaroonPath string
 
+	// SHA256OperatorMacaroonPath is the console's macaroon for the
+	// supervised node, beside the bridge's. Derived, never set.
+	SHA256OperatorMacaroonPath string
+
 	// Journal is where swaps are recorded.
 	//
 	// It holds preimages and the state of anything in flight, so it must be
@@ -222,6 +226,11 @@ const (
 	// with only what the bridge calls (see bridgeMacaroonPermissions).
 	Sha256MacaroonName = "bridge.macaroon"
 
+	// Sha256OperatorMacaroonName is the macaroon for the operator's
+	// console (the dashboard), baked beside the bridge's with only what
+	// the console does with the node.
+	Sha256OperatorMacaroonName = "operator.macaroon"
+
 	// DefaultSupervisedRPCHost is where the supervised node's gRPC listens
 	// when it shares this node's network namespace, as the StartOS package
 	// runs it; a platform that cannot (Umbrel) names its address with
@@ -336,6 +345,16 @@ func (c *Config) resolve() resolved {
 //
 // Called before anything is served, so that an operator learns at startup
 // rather than from a swap that silently never happens.
+// canReachSha256Node is whether there is a SHA256 node configured to dial,
+// enabled or not: a supervised one, or an address with a macaroon.
+func (c *Config) canReachSha256Node() bool {
+	if c.Supervised {
+		return c.SHA256PasswordFile != "" && c.SHA256RPCHost != ""
+	}
+
+	return c.SHA256RPCHost != "" && c.SHA256MacaroonPath != ""
+}
+
 func (c *Config) Validate() error {
 	if !c.Enabled {
 		return nil
