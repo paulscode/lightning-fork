@@ -362,6 +362,13 @@ func (s *Server) connect() error {
 				"node at %s: %w", s.cfg.SHA256RPCHost, err)
 		}
 	}
+	// Channels a restored node left in its channel backup come back now
+	// that it is known to follow the SHA256 chain. In the background:
+	// a peer that cannot be reached only delays its own channel, and is
+	// no reason to keep the bridge down.
+	if s.sup != nil {
+		s.sup.startRestore(s.quit)
+	}
 	if !local.SyncedToChain || !remote.SyncedToChain {
 		log.Infof("Bridge will refuse to quote until both nodes catch "+
 			"up (this node synced=%v at height %d, SHA256 node "+

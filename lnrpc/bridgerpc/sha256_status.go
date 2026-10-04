@@ -138,6 +138,11 @@ func (s *Server) sha256Summary(ctx context.Context) *Sha256Node {
 		out.State = sha256Ready
 		out.Detail = "ready"
 	}
+	if s.sup != nil {
+		if note := s.sup.restoreStatus(); note != "" {
+			out.Detail += "; " + note
+		}
+	}
 
 	return out
 }

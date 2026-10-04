@@ -114,6 +114,13 @@ func (s *server) bridgeBlake2bActivation(_ context.Context) (int32, [32]byte,
 		return int32(height), *params.Blake2bActivationHash, strict, nil
 	}
 
+	// A test network this node has not taken past the activation yet:
+	// there is no BLAKE2b block to compare with, so nothing to check.
+	_, best, err := s.cc.ChainIO.GetBestBlock()
+	if err == nil && best < int32(height) && !strict {
+		return 0, [32]byte{}, strict, nil
+	}
+
 	hash, err := s.cc.ChainIO.GetBlockHash(int64(height))
 	if err != nil {
 		return 0, [32]byte{}, strict, fmt.Errorf("this node's own "+

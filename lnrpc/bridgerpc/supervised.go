@@ -68,12 +68,16 @@ var errSha256Pending = errors.New("the SHA256 Lightning node is not ready yet")
 // that case find its on-chain coins, at the cost of a rescan from the fixed
 // birthday, which is days of blocks rather than years. Channels are another
 // matter: those come back only from that node's channel backup, which
-// createWallet hands over when the node left one (see channelBackup).
+// is restored from once the node runs (see stageRestore).
 const sha256RecoveryWindow = 2500
 
 // sha256RestoredBackupName is the copy of the SHA256 node's channel backup
 // kept beside its wallet password when its wallet is recreated from it.
 const sha256RestoredBackupName = "channel.backup.restored"
+
+// sha256RestoreRetry is how often a restore that has not worked is tried
+// again.
+const sha256RestoreRetry = time.Minute
 
 // sha256ReadyWait bounds how long one attempt waits for a wallet it has just
 // created to come up, before handing back to the retry loop.
@@ -127,6 +131,7 @@ type unlockerClients interface {
 type adminClients interface {
 	BakeMacaroon(ctx context.Context, perms []string) ([]byte, error)
 	IdentityPubkey(ctx context.Context) (string, error)
+	RestoreChannelBackups(ctx context.Context, multi []byte) error
 	Close() error
 }
 
@@ -155,6 +160,11 @@ type supervisor struct {
 	mu     sync.Mutex
 	state  string
 	detail string
+
+	// restoreNote says why channels staged for restoring are not restored
+	// yet, or is empty.
+	restoreNote string
+	restoring   bool
 }
 
 // newSupervisor is a supervisor for cfg, which must be supervised.
@@ -410,10 +420,10 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 			"be encoded", err)
 	}
 
-	backup, err := s.channelBackup()
+	staged, err := s.stageRestore()
 	if err != nil {
 		return s.fail(sha256Error, "the SHA256 node's channel backup "+
-			"could not be read", err)
+			"could not be kept for restoring", err)
 	}
 
 	req := &lnrpc.InitWalletRequest{
@@ -421,15 +431,10 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 		CipherSeedMnemonic: mnemonic[:],
 		RecoveryWindow:     sha256RecoveryWindow,
 	}
-	if backup != nil {
+	if staged {
 		s.record(sha256CreatingWallet, "recreating the SHA256 node's "+
-			"wallet from its derived seed and restoring its "+
-			"channels from the channel backup it left")
-		req.ChannelBackups = &lnrpc.ChanBackupSnapshot{
-			MultiChanBackup: &lnrpc.MultiChanBackup{
-				MultiChanBackup: backup,
-			},
-		}
+			"wallet from its derived seed; its channels are "+
+			"restored from the channel backup it left once it runs")
 	} else {
 		s.record(sha256CreatingWallet, "creating the SHA256 node's "+
 			"wallet from a seed derived from this node's own; "+
@@ -442,12 +447,10 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 			"its wallet", err)
 	}
 
-	if backup != nil {
-		log.Infof("Bridge recreated the supervised SHA256 node's "+
-			"wallet from the derived seed and asked it to restore "+
-			"its channels from %d bytes of channel backup; its "+
-			"peers close them and the funds return to its wallet",
-			len(backup))
+	if staged {
+		log.Infof("Bridge recreated the supervised SHA256 node's " +
+			"wallet from the derived seed; its channels are " +
+			"restored once it runs")
 	} else {
 		log.Infof("Bridge created the supervised SHA256 node's " +
 			"wallet from the derived seed")
@@ -456,8 +459,8 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 	return nil
 }
 
-// channelBackup is the channel backup a SHA256 node left behind when its
-// wallet is being created again, or nil when there is none.
+// stageRestore keeps the channel backup a SHA256 node left behind when its
+// wallet is being created again, and reports whether there was one.
 //
 // That is a restore: a platform backup carries this file and leaves out the
 // wallet and channel database (a channel database from the past can broadcast
@@ -465,33 +468,168 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 // derived seed and its channels come back the way any lnd's come back from a
 // channel backup. A first run has no such file.
 //
-// A copy is kept beside the wallet password before anything is attempted. The
-// node rewrites its channel.backup from the channels it knows as soon as it
-// starts, so a restore that failed would otherwise leave nothing to try again
-// with.
-func (s *supervisor) channelBackup() ([]byte, error) {
-	path := filepath.Join(
-		filepath.Dir(s.cfg.SHA256AdminMacaroonPath), "channel.backup",
-	)
-	data, err := os.ReadFile(path)
+// The copy is what restoreChannels restores from, after the bridge has
+// checked which chain the node follows. The node rewrites its own
+// channel.backup from the channels it knows as soon as it starts, so the copy
+// is all there is until the restore is done. A copy whose restore has not
+// finished is never replaced.
+func (s *supervisor) stageRestore() (bool, error) {
+	data, err := os.ReadFile(s.nodeChannelBackup())
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return nil, nil
+		return false, nil
 	case err != nil:
-		return nil, err
+		return false, err
 	case len(data) == 0:
-		return nil, nil
+		return false, nil
 	}
 
+	kept, done := s.restoredBackup()
+	if _, err := os.Stat(kept); err == nil {
+		if _, err := os.Stat(done); err != nil {
+			// An earlier restore that has not finished: its copy
+			// stands.
+			return true, nil
+		}
+		if err := os.Remove(done); err != nil {
+			return false, err
+		}
+	}
+	if err := writeFileAtomic(kept, data); err != nil {
+		return false, fmt.Errorf("keeping a copy at %s: %w", kept, err)
+	}
+
+	return true, nil
+}
+
+// nodeChannelBackup is the stock node's own channel.backup.
+func (s *supervisor) nodeChannelBackup() string {
+	return filepath.Join(
+		filepath.Dir(s.cfg.SHA256AdminMacaroonPath), "channel.backup",
+	)
+}
+
+// restoredBackup is the kept copy, and the marker written once its restore
+// has finished.
+func (s *supervisor) restoredBackup() (string, string) {
 	kept := filepath.Join(
 		filepath.Dir(s.cfg.SHA256PasswordFile),
 		sha256RestoredBackupName,
 	)
-	if err := writeFileAtomic(kept, data); err != nil {
-		return nil, fmt.Errorf("keeping a copy at %s: %w", kept, err)
+
+	return kept, kept + ".done"
+}
+
+// restoreChannels restores the channels staged by stageRestore, if any are
+// waiting, and marks them done. lnd skips a channel it already has, so this
+// is safe to repeat until it has worked; a peer that cannot be reached fails
+// it, and it is tried again.
+//
+// Called only once the node is known to follow the SHA256 chain: restoring a
+// channel asks its peer to close it, which on the wrong chain would be
+// answered from the wrong chain.
+func (s *supervisor) restoreChannels(ctx context.Context) error {
+	kept, done := s.restoredBackup()
+	if _, err := os.Stat(done); err == nil {
+		return nil
+	}
+	data, err := os.ReadFile(kept)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return s.noteRestore(fmt.Errorf("reading %s: %w", kept, err))
 	}
 
-	return data, nil
+	admin, err := os.ReadFile(s.cfg.SHA256AdminMacaroonPath)
+	if err != nil {
+		return s.noteRestore(err)
+	}
+	conn, err := s.dialAdmin(s.cfg, admin)
+	if err != nil {
+		return s.noteRestore(err)
+	}
+	defer conn.Close()
+
+	if err := conn.RestoreChannelBackups(ctx, data); err != nil {
+		return s.noteRestore(err)
+	}
+	if err := writeFileAtomic(done, []byte(s.now().UTC().Format(
+		time.RFC3339)+"\n")); err != nil {
+
+		return s.noteRestore(err)
+	}
+
+	s.mu.Lock()
+	s.restoreNote = ""
+	s.mu.Unlock()
+	log.Infof("Bridge restored the supervised SHA256 node's channels " +
+		"from its channel backup; their peers close them and the " +
+		"funds return to its wallet")
+
+	return nil
+}
+
+func (s *supervisor) noteRestore(err error) error {
+	s.mu.Lock()
+	s.restoreNote = "restoring its channels from its channel backup " +
+		"has not worked yet (" + err.Error() + "); trying again"
+	s.mu.Unlock()
+	log.Warnf("Bridge could not restore the SHA256 node's channels yet: "+
+		"%v", err)
+
+	return err
+}
+
+// restoreStatus is restoreNote, for the status.
+func (s *supervisor) restoreStatus() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.restoreNote
+}
+
+// startRestore runs restoreUntilDone once, in the background, until quit.
+func (s *supervisor) startRestore(quit <-chan struct{}) {
+	s.mu.Lock()
+	if s.restoring {
+		s.mu.Unlock()
+		return
+	}
+	s.restoring = true
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-quit:
+		case <-ctx.Done():
+		}
+		cancel()
+	}()
+	go func() {
+		defer cancel()
+		s.restoreUntilDone(ctx, sha256RestoreRetry)
+		s.mu.Lock()
+		s.restoring = false
+		s.mu.Unlock()
+	}()
+}
+
+// restoreUntilDone keeps restoring until it has worked or ctx ends.
+func (s *supervisor) restoreUntilDone(ctx context.Context,
+	every time.Duration) {
+
+	for {
+		if s.restoreChannels(ctx) == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(every):
+		}
+	}
 }
 
 // waitActive waits for the node to finish starting after creation or unlock.
@@ -856,6 +994,22 @@ func (g *grpcAdmin) BakeMacaroon(ctx context.Context,
 	}
 
 	return hex.DecodeString(resp.GetMacaroon())
+}
+
+func (g *grpcAdmin) RestoreChannelBackups(ctx context.Context,
+	multi []byte) error {
+
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	_, err := g.main.RestoreChannelBackups(ctx,
+		&lnrpc.RestoreChanBackupRequest{
+			Backup: &lnrpc.RestoreChanBackupRequest_MultiChanBackup{
+				MultiChanBackup: multi,
+			},
+		})
+
+	return err
 }
 
 func (g *grpcAdmin) IdentityPubkey(ctx context.Context) (string, error) {

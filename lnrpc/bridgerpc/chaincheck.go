@@ -35,10 +35,11 @@ const sha256HeaderSize = 80
 // addresses and opens channels on the wrong chain, and the bridge would pay
 // SHA256 invoices from nothing.
 //
-// The block at the activation height tells them apart. On the SHA256 chain it
-// is not this node's block there, and its header is the 80 bytes whose double
-// SHA256 is the block's id. Both are asked, so a node that answers with
-// BLAKE2b data either way is refused.
+// The block at the activation height tells them apart: on the SHA256 chain it
+// is not this node's block there. That comparison is the check that matters;
+// a stock lnd re-serialises every header it reads as 80 bytes, so the header
+// test below (80 bytes, hashing to the reported id) only catches a node that
+// reports BLAKE2b data some other way, and costs one call.
 //
 // height and blake2bHash are this node's activation block. A height of zero
 // means this network has none (a local test network), and nothing is checked.

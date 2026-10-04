@@ -407,3 +407,39 @@ func TestSummarySaysWhatItCannotRead(t *testing.T) {
 	require.Contains(t, out.Detail, "coins and no channel",
 		"5 sat on chain and no channel")
 }
+
+// The background restore runs once at a time, finishes the restore, and
+// stops at quit.
+func TestSupervisorRestoreRunsOnceAndStops(t *testing.T) {
+	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
+	fake.identity = testIdentity(t)
+	s, cfg := newTestSupervisor(t, fake)
+	ctx := context.Background()
+
+	scb := s.nodeChannelBackup()
+	require.NoError(t, os.MkdirAll(filepath.Dir(scb), 0700))
+	require.NoError(t, os.WriteFile(scb, []byte("backup"), 0600))
+	require.ErrorIs(t, s.prepare(ctx), errSha256Pending)
+	startNode(t, cfg)
+	require.NoError(t, s.prepare(ctx))
+
+	quit := make(chan struct{})
+	s.startRestore(quit)
+	s.startRestore(quit) // a second connect while the first runs
+	require.Eventually(t, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+
+		return len(fake.restored) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+	close(quit)
+	require.Eventually(t, func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		return !s.restoring
+	}, 5*time.Second, 10*time.Millisecond)
+	fake.mu.Lock()
+	require.Len(t, fake.restored, 1)
+	fake.mu.Unlock()
+}

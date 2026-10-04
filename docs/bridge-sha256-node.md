@@ -52,11 +52,14 @@ Both nodes live in one data directory, so a platform backup of Lightning
 Fork carries both. For the SHA256 node it carries the channel backup and not
 the wallet or channel database: a channel database from the past can
 broadcast an old channel state, which can lose that channel's funds. On a
-restore Lightning Fork recreates the node's wallet from the derived seed and
-hands it that channel backup, so its on-chain coins are found again and its
-channels are closed by their peers with the funds returned to the wallet. A
-copy of the backup it restored from is kept as `channel.backup.restored`
-beside the wallet password.
+restore Lightning Fork recreates the node's wallet from the derived seed,
+so its on-chain coins are found again, and once the node is known to follow
+the SHA256 chain it restores the channels from that backup: their peers
+close them and the funds return to the wallet. The backup is first copied to
+`channel.backup.restored` beside the wallet password, because the node
+rewrites its own file as soon as it starts; the restore is retried every
+minute until it works (a peer may be offline), `lncli bridge status` says so
+meanwhile, and `channel.backup.restored.done` marks it finished.
 
 A platform backup is only as recent as the last time it ran. Keep a current
 copy of `sha256-node/.../channel.backup` as you would this node's own:

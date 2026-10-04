@@ -39,6 +39,8 @@ type fakeSha256Node struct {
 	bakes       int
 	rejectBaked bool // the baked macaroon no longer works
 	adminMac    []byte
+	restored    [][]byte // what RestoreChannelBackups was given
+	restoreErr  error
 
 	// writeAdmin is where InitWallet writes the admin macaroon, as lnd
 	// does.
@@ -147,6 +149,20 @@ func (f fakeAdmin) IdentityPubkey(context.Context) (string, error) {
 	}
 
 	return f.n.identity, nil
+}
+
+func (f fakeAdmin) RestoreChannelBackups(_ context.Context,
+	multi []byte) error {
+
+	f.n.mu.Lock()
+	defer f.n.mu.Unlock()
+
+	if f.n.restoreErr != nil {
+		return f.n.restoreErr
+	}
+	f.n.restored = append(f.n.restored, multi)
+
+	return nil
 }
 
 func (f fakeAdmin) Close() error { return nil }
@@ -267,11 +283,11 @@ func TestSupervisorFirstRun(t *testing.T) {
 	require.Equal(t, pw, pw2, "the password must not change")
 }
 
-// The bridge's macaroon carries only what it calls: nothing that opens or
-// closes channels or moves on-chain funds.
 // After a platform restore the node's directory has its channel backup and no
-// wallet: the wallet is created again from the derived seed with that backup,
-// and a copy of it is kept where the node cannot overwrite it.
+// wallet. The wallet is created again from the derived seed, without the
+// backup; a copy is kept where the node cannot overwrite it, and the channels
+// are restored from it only when asked (once the chain is checked), until it
+// has worked.
 func TestSupervisorRestoresChannelsFromTheBackupLeft(t *testing.T) {
 	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
 	fake.identity = testIdentity(t)
@@ -279,9 +295,7 @@ func TestSupervisorRestoresChannelsFromTheBackupLeft(t *testing.T) {
 	ctx := context.Background()
 
 	backup := []byte("an encrypted multi-channel backup")
-	scb := filepath.Join(
-		filepath.Dir(cfg.SHA256AdminMacaroonPath), "channel.backup",
-	)
+	scb := s.nodeChannelBackup()
 	require.NoError(t, os.MkdirAll(filepath.Dir(scb), 0700))
 	require.NoError(t, os.WriteFile(scb, backup, 0600))
 
@@ -290,14 +304,11 @@ func TestSupervisorRestoresChannelsFromTheBackupLeft(t *testing.T) {
 	require.NoError(t, s.prepare(ctx))
 
 	require.NotNil(t, fake.initReq)
-	require.NotNil(t, fake.initReq.ChannelBackups)
-	require.Equal(t, backup,
-		fake.initReq.ChannelBackups.GetMultiChanBackup().
-			GetMultiChanBackup())
+	require.Nil(t, fake.initReq.ChannelBackups,
+		"channels are not restored before the chain is checked")
+	require.Empty(t, fake.restored)
 
-	kept := filepath.Join(
-		filepath.Dir(cfg.SHA256PasswordFile), sha256RestoredBackupName,
-	)
+	kept, done := s.restoredBackup()
 	got, err := os.ReadFile(kept)
 	require.NoError(t, err)
 	require.Equal(t, backup, got)
@@ -305,32 +316,90 @@ func TestSupervisorRestoresChannelsFromTheBackupLeft(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
 
-	// The node rewriting its own file afterwards leaves the copy alone.
+	// The node rewrites its own file as soon as it starts.
 	require.NoError(t, os.WriteFile(scb, []byte("empty set"), 0600))
-	got, err = os.ReadFile(kept)
+
+	// A peer that cannot be reached: noted, retried, the copy kept.
+	fake.restoreErr = errors.New("unable to connect to peer")
+	require.Error(t, s.restoreChannels(ctx))
+	require.Contains(t, s.restoreStatus(), "unable to connect to peer")
+	_, err = os.Stat(done)
+	require.True(t, os.IsNotExist(err))
+
+	fake.restoreErr = nil
+	require.NoError(t, s.restoreChannels(ctx))
+	require.Equal(t, [][]byte{backup}, fake.restored,
+		"restored from the kept copy, not the rewritten file")
+	require.Empty(t, s.restoreStatus())
+	_, err = os.Stat(done)
 	require.NoError(t, err)
-	require.Equal(t, backup, got)
+
+	// Done is done.
+	require.NoError(t, s.restoreChannels(ctx))
+	require.Len(t, fake.restored, 1)
 }
 
-// An empty channel backup is no backup.
+// A restore that has not finished keeps its copy: creating the wallet again
+// (the node's directory wiped once more) must not replace it with whatever
+// the node has written since, which may be an empty set.
+func TestSupervisorKeepsAnUnfinishedRestoresCopy(t *testing.T) {
+	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
+	fake.identity = testIdentity(t)
+	s, _ := newTestSupervisor(t, fake)
+
+	original := []byte("the backup with the channels")
+	scb := s.nodeChannelBackup()
+	require.NoError(t, os.MkdirAll(filepath.Dir(scb), 0700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(s.cfg.SHA256PasswordFile), 0700))
+	require.NoError(t, os.WriteFile(scb, original, 0600))
+
+	staged, err := s.stageRestore()
+	require.NoError(t, err)
+	require.True(t, staged)
+
+	require.NoError(t, os.WriteFile(scb, []byte("empty set"), 0600))
+	staged, err = s.stageRestore()
+	require.NoError(t, err)
+	require.True(t, staged)
+	kept, done := s.restoredBackup()
+	got, err := os.ReadFile(kept)
+	require.NoError(t, err)
+	require.Equal(t, original, got)
+
+	// Once that restore has finished, a later restore stages afresh.
+	require.NoError(t, os.WriteFile(done, []byte("x"), 0600))
+	newer := []byte("a later backup")
+	require.NoError(t, os.WriteFile(scb, newer, 0600))
+	staged, err = s.stageRestore()
+	require.NoError(t, err)
+	require.True(t, staged)
+	got, err = os.ReadFile(kept)
+	require.NoError(t, err)
+	require.Equal(t, newer, got)
+	_, err = os.Stat(done)
+	require.True(t, os.IsNotExist(err), "the new copy is not done")
+}
+
+// An empty channel backup is no backup, and nothing is waiting to restore.
 func TestSupervisorIgnoresAnEmptyChannelBackup(t *testing.T) {
 	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
 	fake.identity = testIdentity(t)
 	s, cfg := newTestSupervisor(t, fake)
 	ctx := context.Background()
 
-	scb := filepath.Join(
-		filepath.Dir(cfg.SHA256AdminMacaroonPath), "channel.backup",
-	)
+	scb := s.nodeChannelBackup()
 	require.NoError(t, os.MkdirAll(filepath.Dir(scb), 0700))
 	require.NoError(t, os.WriteFile(scb, nil, 0600))
 
 	require.ErrorIs(t, s.prepare(ctx), errSha256Pending)
 	startNode(t, cfg)
 	require.NoError(t, s.prepare(ctx))
-	require.Nil(t, fake.initReq.ChannelBackups)
+	require.NoError(t, s.restoreChannels(ctx))
+	require.Empty(t, fake.restored)
 }
 
+// The bridge's macaroon carries only what it calls: nothing that opens or
+// closes channels or moves on-chain funds.
 func TestBridgeMacaroonPermissionsAreNarrow(t *testing.T) {
 	for _, uri := range bridgeMacaroonPermissions {
 		for _, forbidden := range []string{
