@@ -141,6 +141,14 @@ func (s *service) sample(ctx context.Context) {
 		if info.Height == 0 || info.Time.IsZero() {
 			continue
 		}
+		// A node catching up (after every restart, for a while) reports
+		// its backend's tip height beside its wallet's best header time,
+		// which belong to different blocks: that pair would rewrite a
+		// block's time and skew the spacing every margin is sized on. Only
+		// a synced node's tip is a block.
+		if !info.SyncedToChain {
+			continue
+		}
 
 		s.chainMu.Lock()
 		// Add rejects a height it already holds, which is the common

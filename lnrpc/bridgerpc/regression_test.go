@@ -1577,3 +1577,31 @@ func TestStatusNamesAnUnreadableBalance(t *testing.T) {
 			resp.Refusals)
 	}
 }
+
+// A node still catching up reports its backend's tip beside its wallet's best
+// header time, which belong to different blocks; only a synced tip is taken.
+func TestSampleTakesOnlyASyncedTip(t *testing.T) {
+	t.Parallel()
+
+	tip := BlockInfo{Height: 800_000, Time: time.Now()}
+	f := &fakeNode{synced: true}
+	deps := f.deps()
+	deps.BestBlock = func(context.Context) (BlockInfo, error) {
+		return tip, nil
+	}
+	svc := serviceFor(t, usable(), f, remote(nil, nil, nil))
+	svc.local = NewLocal(deps)
+	before := svc.b2bChain.Len()
+
+	svc.sample(context.Background())
+	if got := svc.b2bChain.Len(); got != before {
+		t.Fatalf("a tip from a node catching up was taken (%d -> %d)",
+			before, got)
+	}
+
+	tip.SyncedToChain = true
+	svc.sample(context.Background())
+	if got := svc.b2bChain.Len(); got != before+1 {
+		t.Fatalf("a synced tip was not taken (%d -> %d)", before, got)
+	}
+}
