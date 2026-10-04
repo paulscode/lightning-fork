@@ -23,6 +23,38 @@ about 1 to 3 GB. It starts empty. The bridge cannot pay anyone until you send
 it coins on the SHA256 chain and open a channel from it, which the packages
 help you do.
 
+## Which node on the SHA256 chain it reads
+
+People run both chains in one of two ways, and either works: their main
+node on one chain and a companion on the other, either way round, or both as
+companions.
+
+| Setup | Lightning Fork reads | The bridge's node reads |
+| --- | --- | --- |
+| Main node on the SHA256 chain, BLAKE2b companion | the BLAKE2b companion | the main node |
+| Main node on the BLAKE2b chain (Bitcoin Knots 29.4.1 or later), SHA256 companion | the main node | the SHA256 companion |
+| Both companions | the BLAKE2b companion | the SHA256 companion |
+
+**StartOS.** Select Node and the Bridge action list the node packages with
+what each installed one is ("Bitcoin Knots: installed, on the SHA256
+chain"), told from its version, and put first the one that fits. A node
+that plainly follows the wrong chain is refused when chosen. The version is
+only a first guess; the chain checks below decide.
+
+**Umbrel.** Lightning Fork's own node is the Bitcoin node chosen for the app
+in umbrelOS. For the bridge's node, the dashboard finds every installed
+candidate (Knots (SHA256) Companion, Bitcoin Knots, Bitcoin Node), asks each
+which chain it follows, and offers only those on the SHA256 chain, never the
+node Lightning Fork reads. Bitcoin Knots on Umbrel follows either chain,
+depending on the version picked in its own settings, so the dashboard asks
+rather than assumes. The chosen node is written to `bridge-sha256.conf`
+beside Lightning Fork's data, which the bridge's node reads; choosing
+another restarts only that node. A candidate installed after Lightning Fork
+is found once Lightning Fork restarts.
+
+Links to the SHA256 chain in the dashboard go to an installed Mempool app on
+that chain, else to mempool.space.
+
 ## How the pieces fit
 
 | Who | Does |
