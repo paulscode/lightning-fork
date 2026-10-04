@@ -92,10 +92,10 @@ var bridgeInfoCommand = cli.Command{
 
 var bridgeSetRateCommand = cli.Command{
 	Name:      "setrate",
-	Usage:     "Set the rate the bridge trades at (bridgerpc.ratesource=fixed).",
+	Usage:     "Set the rate the bridge trades at (bridgerpc.ratesource=fixed, test networks only).",
 	ArgsUsage: "rate",
 	Description: `
-	With bridgerpc.ratesource=fixed: the rate is SHA256 coin per BLAKE2b
+	With bridgerpc.ratesource=fixed, on a test network: the rate is SHA256 coin per BLAKE2b
 	coin, for example 0.00483. It takes effect at once, is kept across
 	restarts, and is stamped with when it was set: once it is older than
 	bridgerpc.ratemaxage (one hour by default) the bridge stops quoting

@@ -92,3 +92,33 @@ func TestExternalNodeStillNeedsItsMacaroon(t *testing.T) {
 	require.Contains(t, err.Error(), "macaroon")
 	require.Empty(t, sub.SHA256PasswordFile)
 }
+
+// A fixed rate is for test networks: on mainnet the node refuses it, and the
+// market's rate (the default) or a test network's fixed one is fine.
+func TestAFixedRateIsRefusedOnMainnet(t *testing.T) {
+	sub := &bridgerpc.Config{
+		Enabled: true, Supervised: true, ToSHA256: true,
+		RateSource: bridgerpc.RateSourceFixed,
+	}
+	cfg, netDir := bridgeTestConfig(t, sub)
+	require.NoError(t, validateBridgeConfig(cfg, netDir))
+
+	sub = &bridgerpc.Config{
+		Enabled: true, Supervised: true, ToSHA256: true,
+		RateSource: bridgerpc.RateSourceFixed,
+	}
+	cfg, netDir = bridgeTestConfig(t, sub)
+	cfg.ActiveNetParams = chainreg.BitcoinMainNetParams
+	err := validateBridgeConfig(cfg, netDir)
+	require.True(t, errors.Is(err, bridgerpc.ErrConfig), "%v", err)
+	require.Contains(t, err.Error(), "test networks")
+
+	sub = &bridgerpc.Config{
+		Enabled: true, Supervised: true, ToSHA256: true,
+		FixedRate: 0.006,
+	}
+	cfg, netDir = bridgeTestConfig(t, sub)
+	cfg.ActiveNetParams = chainreg.BitcoinMainNetParams
+	require.NoError(t, validateBridgeConfig(cfg, netDir),
+		"a fixedrate beside the default source is logged, not refused")
+}

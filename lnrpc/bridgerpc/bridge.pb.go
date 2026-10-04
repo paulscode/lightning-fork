@@ -394,8 +394,8 @@ type StatusResponse struct {
 	// not counted; it stays in needs_operator. This is what to wait on before
 	// turning the bridge off or changing its SHA256 node.
 	Unfinished uint32 `protobuf:"varint,10,opt,name=unfinished,proto3" json:"unfinished,omitempty"`
-	// Where the rate comes from: "neoxa" (the market, read live) or "fixed"
-	// (the operator's own, set with SetRate or the configuration).
+	// Where the rate comes from: "neoxa" (the market, read live) or, on test
+	// networks only, "fixed" (one set with SetRate or the configuration).
 	RateSource string `protobuf:"bytes,11,opt,name=rate_source,json=rateSource,proto3" json:"rate_source,omitempty"`
 	// Following the market: the cross-check's last reading, Neoxa's BTCB2_USDC
 	// market over a BTC/USD price, in the same unit as rate. The bridge quotes

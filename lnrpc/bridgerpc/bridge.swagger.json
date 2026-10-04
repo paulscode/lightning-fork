@@ -75,7 +75,7 @@
     },
     "/v2/bridge/rate": {
       "post": {
-        "summary": "lncli: `bridge setrate`\nSetRate changes the rate the bridge trades at, without a restart. The rate\nis kept across restarts and stamped with when it was set; once it is older\nthan the configured limit the bridge refuses to quote until it is set\nagain, because a rate nobody has looked at in a moving market is a loss\nwaiting to be taken.",
+        "summary": "lncli: `bridge setrate`\nSetRate changes the rate the bridge trades at, without a restart, on a\ntest network trading at a fixed rate (rate source fixed); following the\nmarket, which mainnet always does, it is refused. The rate is kept across\nrestarts and stamped with when it was set; once it is older than the\nconfigured limit the bridge refuses to quote until it is set again.",
         "operationId": "Bridge_SetRate",
         "responses": {
           "200": {
@@ -518,7 +518,7 @@
         },
         "rate_source": {
           "type": "string",
-          "description": "Where the rate comes from: \"neoxa\" (the market, read live) or \"fixed\"\n(the operator's own, set with SetRate or the configuration)."
+          "description": "Where the rate comes from: \"neoxa\" (the market, read live) or, on test\nnetworks only, \"fixed\" (one set with SetRate or the configuration)."
         },
         "rate_cross_check": {
           "type": "number",

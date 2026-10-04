@@ -100,22 +100,18 @@ seconds, through Tor when this node uses Tor:
 `lncli bridge status` shows the rate, the cross-check (`rate_cross_check`),
 the market's movement (`rate_volatility`) and, when nothing is quoted, why.
 
-To trade at your own rate instead, set `bridgerpc.ratesource=fixed` and
+On test networks, which have no market, `bridgerpc.ratesource=fixed` trades at
+a rate you set instead, with `bridgerpc.fixedrate` or
 
 ```
-lncli bridge setrate 0.00490
+lncli bridge setrate 1.0
 ```
 
-which takes effect at once, survives restarts and is stamped with when it was
-set. It needs the admin macaroon: setting the price your SHA256 funds are sold
-at takes the permission to make macaroons as well as to pay, so a wallet or app
-macaroon that can pay cannot change it. It also works while the bridge is
-waiting to start, which is how to replace a rate file it cannot read. Once it
-is older than `bridgerpc.ratemaxage` (one hour by default) the bridge stops
-quoting until you set it again, because a rate nobody has looked at in a
-moving market is a loss waiting to be taken. `bridgerpc.fixedrate` in the
-configuration sets it too. Following the market, setrate is refused and
-`bridgerpc.fixedrate` is not used.
+which takes effect at once, survives restarts, and stops being used after
+`bridgerpc.ratemaxage` (one hour by default). It needs the admin macaroon. On
+mainnet the node refuses `ratesource=fixed` at startup: a posted rate that has
+drifted past the fee is drained by whoever notices, and the bridge cannot
+tell, since the rate it checks against is that same number.
 
 Payers' wallets check every quote against Neoxa and, by default, refuse one
 more than 5% above it (widened by the last hour's range), so a rate set far

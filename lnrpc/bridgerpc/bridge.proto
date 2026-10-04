@@ -65,12 +65,11 @@ service Bridge {
     rpc Info (InfoRequest) returns (InfoResponse);
 
     /* lncli: `bridge setrate`
-    SetRate changes the rate the bridge trades at, without a restart, when it
-    trades at the operator's own rate (rate source fixed); following the
-    market it is refused. The rate is kept across restarts and stamped with
-    when it was set; once it is older than the configured limit the bridge
-    refuses to quote until it is set again, because a rate nobody has looked
-    at in a moving market is a loss waiting to be taken.
+    SetRate changes the rate the bridge trades at, without a restart, on a
+    test network trading at a fixed rate (rate source fixed); following the
+    market, which mainnet always does, it is refused. The rate is kept across
+    restarts and stamped with when it was set; once it is older than the
+    configured limit the bridge refuses to quote until it is set again.
     */
     rpc SetRate (SetRateRequest) returns (SetRateResponse);
 
@@ -230,8 +229,8 @@ message StatusResponse {
     uint32 unfinished = 10;
 
     /*
-    Where the rate comes from: "neoxa" (the market, read live) or "fixed"
-    (the operator's own, set with SetRate or the configuration).
+    Where the rate comes from: "neoxa" (the market, read live) or, on test
+    networks only, "fixed" (one set with SetRate or the configuration).
     */
     string rate_source = 11;
 

@@ -105,18 +105,20 @@ type Config struct {
 	// RateSource is where the rate comes from.
 	//
 	// The market for the BLAKE2b coin is thin and moves a few percent in
-	// minutes and tens of percent in a day, so the default follows it live
+	// minutes and tens of percent in a day, so the bridge follows it live
 	// (feed.go) and quotes nothing while it cannot be read. A fixed rate
-	// is the operator's own number, for whoever wants to post one.
-	RateSource string `long:"ratesource" description:"Where the rate comes from. neoxa (the default) follows Neoxa's BTCB2_BTC market live, cross-checked against its BTCB2_USDC market and a BTC/USD price, and quotes nothing while the market cannot be read or the two disagree. fixed trades at the rate you set (fixedrate, or lncli bridge setrate)."`
+	// is for test networks, which have no market; on mainnet it is
+	// refused (lnd's validateBridgeConfig).
+	RateSource string `long:"ratesource" description:"Where the rate comes from. neoxa (the default) follows Neoxa's BTCB2_BTC market live, cross-checked against its BTCB2_USDC market and a BTC/USD price, and quotes nothing while the market cannot be read or the two disagree. fixed, on test networks only, trades at a rate you set (fixedrate, or lncli bridge setrate)."`
 
-	// FixedRate is what the operator will trade at with ratesource=fixed,
+	// FixedRate is what the bridge trades at with ratesource=fixed (test
+	// networks only),
 	// in outgoing units per incoming unit for the toSHA256 direction:
 	// SHA256 coin per BLAKE2b coin.
 	//
 	// There is deliberately no default. A wrong rate loses money on every
 	// swap and does it quietly, so the bridge refuses to guess one.
-	FixedRate float64 `long:"fixedrate" description:"With ratesource=fixed: what you will trade at, as SHA256 coin per BLAKE2b coin. There is no default: a wrong rate loses money silently, so until one is set here or with lncli bridge setrate the bridge quotes nothing."`
+	FixedRate float64 `long:"fixedrate" description:"With ratesource=fixed (test networks only): what you will trade at, as SHA256 coin per BLAKE2b coin. There is no default: a wrong rate loses money silently, so until one is set here or with lncli bridge setrate the bridge quotes nothing."`
 
 	// Spread is the fee charged on top of the rate, in both directions
 	// unless one of the per-direction fees says otherwise.
@@ -195,13 +197,8 @@ type Config struct {
 	Deps *Deps
 }
 
-// DefaultRateMaxAge is how long a fixed rate is used when the operator names
-// no limit.
-//
-// An hour, not a day: the market has moved more than five percent in an hour
-// on half the days measured, and a posted rate that has drifted past the fee
-// is drained by anyone who notices. Operators who want a fixed rate want to be
-// watching it.
+// DefaultRateMaxAge is how long a fixed rate (test networks only) is used when
+// no limit is named.
 const DefaultRateMaxAge = time.Hour
 
 // The rate sources.

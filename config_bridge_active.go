@@ -42,6 +42,22 @@ func validateBridgeConfig(cfg *Config, networkDir string) error {
 		}
 	}
 
+	// A fixed rate is for networks without a market, such as a regtest
+	// lab. On mainnet it is the operator's number standing in for a market
+	// that moves several percent in an hour: once it has drifted past the
+	// fee, anyone who notices drains the bridge at it, and nothing in the
+	// bridge can tell, since the rate it checks against is that same
+	// number. So it is refused here, where it can only have been set by
+	// hand, rather than allowed to trade.
+	if sub.RateSource == bridgerpc.RateSourceFixed &&
+		cfg.ActiveNetParams.Params.Name == "mainnet" {
+
+		return fmt.Errorf("%w: bridgerpc.ratesource=fixed is for test "+
+			"networks without a market; on mainnet the bridge "+
+			"trades at the market's rate (leave ratesource out, or "+
+			"set it to neoxa)", bridgerpc.ErrConfig)
+	}
+
 	if sub.SHA256TLSCertPath != "" {
 		sub.SHA256TLSCertPath = CleanAndExpandPath(
 			sub.SHA256TLSCertPath,
