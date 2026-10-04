@@ -252,6 +252,24 @@ func (s *service) route(ctx context.Context, invoice string) (*side,
 		errors.Join(errs...))
 }
 
+// routeQuote is route for a new swap: a direction built only to finish its
+// own unfinished swaps is refused as the direction that is off it is.
+func (s *service) routeQuote(ctx context.Context, invoice string) (*side,
+	node.Decoded, error) {
+
+	sd, dec, err := s.route(ctx, invoice)
+	if err != nil {
+		return nil, dec, err
+	}
+	if !sd.quoting() {
+		return nil, dec, fmt.Errorf("%w: %w: configured but not "+
+			"enabled: [%s]", ErrNoDirection, quote.ErrWrongChain,
+			sd.name)
+	}
+
+	return sd, dec, nil
+}
+
 // notAnswering reports whether a node failed to answer at all, as opposed to
 // answering that it cannot read the invoice.
 func notAnswering(err error) bool {

@@ -833,7 +833,7 @@ func (s *Server) Quote(ctx context.Context, req *QuoteRequest) (*QuoteResponse,
 	ctx, cancel := context.WithTimeout(svc.ctx, quoteTimeout)
 	defer cancel()
 
-	sd, dec, err := svc.route(ctx, req.GetInvoice())
+	sd, dec, err := svc.routeQuote(ctx, req.GetInvoice())
 	if err != nil {
 		return nil, refusal(err)
 	}
@@ -994,7 +994,9 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	}
 
 	for _, sd := range svc.sides {
-		resp.Directions = append(resp.Directions, sd.name)
+		if sd.quoting() {
+			resp.Directions = append(resp.Directions, sd.name)
+		}
 	}
 	for _, name := range svc.disabled {
 		resp.Refusals = append(resp.Refusals, name+" is configured "+
@@ -1069,8 +1071,10 @@ func (s *Server) Info(ctx context.Context, _ *InfoRequest) (*InfoResponse,
 		Node:    s.local.NodeKey(),
 	}
 	for _, sd := range svc.sides {
-		resp.Directions = append(resp.Directions,
-			svc.directionInfo(ctx, sd))
+		if sd.quoting() {
+			resp.Directions = append(resp.Directions,
+				svc.directionInfo(ctx, sd))
+		}
 	}
 	s.info, s.infoAt = resp, time.Now()
 

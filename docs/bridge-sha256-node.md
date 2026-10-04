@@ -242,6 +242,11 @@ SHA256 node they started on, and stops once they are done. `lncli bridge
 status` says so meanwhile. For this the platforms keep the SHA256 node's
 settings when the bridge is turned off.
 
+The same goes for one direction: turned off (`bridgerpc.toblake2b` removed,
+say) with a payment in that direction unfinished, the direction is still
+driven to finish it, quotes nothing, and is reported as configured but not
+enabled.
+
 The bridge also notices the SHA256 node renewing its TLS certificate (lnd does
 so when it expires) and dials it again with the new one.
 

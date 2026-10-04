@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/store"
 	"github.com/paulscode/lightning-fork-bridge/swap"
 	"github.com/stretchr/testify/require"
@@ -164,4 +165,43 @@ func TestANewTLSCertificateIsDialledWith(t *testing.T) {
 
 	close(srv.quit)
 	srv.wg.Wait()
+}
+
+// A direction turned off with swaps unfinished is built to finish them and
+// quotes nothing; with none unfinished it is not built at all.
+func TestAnOffDirectionFinishesWhatIsUnfinished(t *testing.T) {
+	t.Parallel()
+
+	cfg := usable()
+	cfg.ToBLAKE2b = false
+	cfg.Journal = journalWith(t, swap.Funded)
+	svc, err := newService(&cfg, NewLocal((&fakeNode{synced: true}).deps()),
+		remote(nil, nil, nil))
+	require.NoError(t, err)
+	t.Cleanup(svc.close)
+	require.Len(t, svc.sides, 2)
+	require.True(t, svc.sides[0].quoting())
+	require.Equal(t, "toBLAKE2b", svc.sides[1].name)
+	require.False(t, svc.sides[1].quoting())
+	require.Equal(t, []string{"toBLAKE2b"}, svc.disabled)
+
+	cfg.Journal = journalWith(t, swap.Settled)
+	svc, err = newService(&cfg, NewLocal((&fakeNode{synced: true}).deps()),
+		remote(nil, nil, nil))
+	require.NoError(t, err)
+	t.Cleanup(svc.close)
+	require.Len(t, svc.sides, 1)
+
+	// Routed to, for the swaps it finishes; refused, for a new one.
+	routed := sidedService(t, 10_000_000)
+	routed.sides[1].finishing = true
+	sd, _, err := routed.route(context.Background(), "sideB-payme")
+	require.NoError(t, err)
+	require.Equal(t, "toBLAKE2b", sd.name)
+	_, _, err = routed.routeQuote(context.Background(), "sideB-payme")
+	require.Equal(t, quote.CodeNoDirection, quote.CodeOf(err))
+	require.Contains(t, err.Error(), "configured but not enabled")
+	sd, _, err = routed.routeQuote(context.Background(), "sideA-payme")
+	require.NoError(t, err)
+	require.Equal(t, "toSHA256", sd.name)
 }

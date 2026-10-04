@@ -78,6 +78,16 @@ type side struct {
 	// paysBLAKE2b is whether this direction pays out on the BLAKE2b chain,
 	// which is how an invoice is matched to its direction.
 	paysBLAKE2b bool
+
+	// finishing is set on a direction configured off that was built only
+	// to finish the swaps of its own still in the journal. It quotes
+	// nothing and is not offered.
+	finishing bool
+}
+
+// quoting is whether this direction takes new swaps.
+func (sd *side) quoting() bool {
+	return !sd.finishing
 }
 
 // policy is this side's inventory policy, copied under the lock.
@@ -245,15 +255,41 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 		return nil, fmt.Errorf("the SHA256 chain observer: %w", err)
 	}
 
+	// A direction turned off with swaps unfinished is built all the same,
+	// to finish them, and quotes nothing: left undriven, a payer's HTLC
+	// could expire after the bridge had paid out, or a paid one never be
+	// claimed. Only resume reaches it, by the journal's own invoices.
+	finishOff := false
+	if !cfg.ToSHA256 || !cfg.ToBLAKE2b {
+		pending, err := s.journal.Pending(context.Background())
+		if err != nil {
+			s.close()
+
+			return nil, fmt.Errorf("reading the swap journal: %w", err)
+		}
+		finishOff = len(pending) > 0
+	}
+
 	// toSHA256 receives here and pays on the SHA256 chain, so it drains the
 	// SHA256 side. toBLAKE2b puts back what the other one spends.
-	if cfg.ToSHA256 {
-		s.sides = append(s.sides, s.build(
+	if cfg.ToSHA256 || finishOff {
+		sd := s.build(
 			"toSHA256", local, remote, remote.Balance,
 			inventory.Draining, false,
-		))
-	} else {
+		)
+		sd.finishing = !cfg.ToSHA256
+		s.sides = append(s.sides, sd)
+	}
+	if !cfg.ToSHA256 {
 		s.disabled = append(s.disabled, "toSHA256")
+	}
+	if !cfg.ToBLAKE2b && finishOff {
+		sd := s.build(
+			"toBLAKE2b", remote, local, local.Balance,
+			inventory.Replenishing, true,
+		)
+		sd.finishing = true
+		s.sides = append(s.sides, sd)
 	}
 	if cfg.ToBLAKE2b {
 		// Its swap bounds are configured in SHA256 coin and converted
@@ -713,6 +749,9 @@ func (s *service) liquidityRefusals(ctx context.Context) []string {
 
 	var out []string
 	for _, sd := range s.sides {
+		if !sd.quoting() {
+			continue
+		}
 		held, err := sd.balance(ctx)
 		if err != nil {
 			out = append(out, fmt.Sprintf("%s cannot read what "+
