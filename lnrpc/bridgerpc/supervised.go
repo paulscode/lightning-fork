@@ -67,9 +67,13 @@ var errSha256Pending = errors.New("the SHA256 Lightning node is not ready yet")
 // is being created again over an existing history. Asking lnd to recover makes
 // that case find its on-chain coins, at the cost of a rescan from the fixed
 // birthday, which is days of blocks rather than years. Channels are another
-// matter: those come back only from that node's channel backup, which is in
-// its own directory (docs/bridge-sha256-node.md says how).
+// matter: those come back only from that node's channel backup, which
+// createWallet hands over when the node left one (see channelBackup).
 const sha256RecoveryWindow = 2500
+
+// sha256RestoredBackupName is the copy of the SHA256 node's channel backup
+// kept beside its wallet password when its wallet is recreated from it.
+const sha256RestoredBackupName = "channel.backup.restored"
 
 // sha256ReadyWait bounds how long one attempt waits for a wallet it has just
 // created to come up, before handing back to the retry loop.
@@ -406,24 +410,88 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 			"be encoded", err)
 	}
 
-	s.record(sha256CreatingWallet, "creating the SHA256 node's wallet "+
-		"from a seed derived from this node's own; there is nothing "+
-		"new to write down")
+	backup, err := s.channelBackup()
+	if err != nil {
+		return s.fail(sha256Error, "the SHA256 node's channel backup "+
+			"could not be read", err)
+	}
 
-	err = conn.InitWallet(ctx, &lnrpc.InitWalletRequest{
+	req := &lnrpc.InitWalletRequest{
 		WalletPassword:     password,
 		CipherSeedMnemonic: mnemonic[:],
 		RecoveryWindow:     sha256RecoveryWindow,
-	})
+	}
+	if backup != nil {
+		s.record(sha256CreatingWallet, "recreating the SHA256 node's "+
+			"wallet from its derived seed and restoring its "+
+			"channels from the channel backup it left")
+		req.ChannelBackups = &lnrpc.ChanBackupSnapshot{
+			MultiChanBackup: &lnrpc.MultiChanBackup{
+				MultiChanBackup: backup,
+			},
+		}
+	} else {
+		s.record(sha256CreatingWallet, "creating the SHA256 node's "+
+			"wallet from a seed derived from this node's own; "+
+			"there is nothing new to write down")
+	}
+
+	err = conn.InitWallet(ctx, req)
 	if err != nil {
 		return s.fail(sha256Error, "the SHA256 node would not create "+
 			"its wallet", err)
 	}
 
-	log.Infof("Bridge created the supervised SHA256 node's wallet from " +
-		"the derived seed")
+	if backup != nil {
+		log.Infof("Bridge recreated the supervised SHA256 node's "+
+			"wallet from the derived seed and asked it to restore "+
+			"its channels from %d bytes of channel backup; its "+
+			"peers close them and the funds return to its wallet",
+			len(backup))
+	} else {
+		log.Infof("Bridge created the supervised SHA256 node's " +
+			"wallet from the derived seed")
+	}
 
 	return nil
+}
+
+// channelBackup is the channel backup a SHA256 node left behind when its
+// wallet is being created again, or nil when there is none.
+//
+// That is a restore: a platform backup carries this file and leaves out the
+// wallet and channel database (a channel database from the past can broadcast
+// an old state and lose the channel), so the node is recreated from the
+// derived seed and its channels come back the way any lnd's come back from a
+// channel backup. A first run has no such file.
+//
+// A copy is kept beside the wallet password before anything is attempted. The
+// node rewrites its channel.backup from the channels it knows as soon as it
+// starts, so a restore that failed would otherwise leave nothing to try again
+// with.
+func (s *supervisor) channelBackup() ([]byte, error) {
+	path := filepath.Join(
+		filepath.Dir(s.cfg.SHA256AdminMacaroonPath), "channel.backup",
+	)
+	data, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case len(data) == 0:
+		return nil, nil
+	}
+
+	kept := filepath.Join(
+		filepath.Dir(s.cfg.SHA256PasswordFile),
+		sha256RestoredBackupName,
+	)
+	if err := writeFileAtomic(kept, data); err != nil {
+		return nil, fmt.Errorf("keeping a copy at %s: %w", kept, err)
+	}
+
+	return data, nil
 }
 
 // waitActive waits for the node to finish starting after creation or unlock.

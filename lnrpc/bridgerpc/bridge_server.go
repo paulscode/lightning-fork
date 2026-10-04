@@ -348,6 +348,20 @@ func (s *Server) connect() error {
 		return fmt.Errorf("the bridge will not use the SHA256 node at "+
 			"%s: %w", s.cfg.SHA256RPCHost, err)
 	}
+	if s.cfg.Deps != nil && s.cfg.Deps.Blake2bActivation != nil {
+		height, hash, strict, err := s.cfg.Deps.Blake2bActivation(ctx)
+		if err == nil {
+			err = remoteNode.CheckNotBlake2b(
+				ctx, height, hash, strict,
+			)
+		}
+		if err != nil {
+			_ = conn.Close()
+
+			return fmt.Errorf("the bridge will not use the SHA256 "+
+				"node at %s: %w", s.cfg.SHA256RPCHost, err)
+		}
+	}
 	if !local.SyncedToChain || !remote.SyncedToChain {
 		log.Infof("Bridge will refuse to quote until both nodes catch "+
 			"up (this node synced=%v at height %d, SHA256 node "+

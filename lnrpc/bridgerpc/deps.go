@@ -117,6 +117,16 @@ type Deps struct {
 	// inventory policy prices the spread against: a node with little
 	// outbound left should be charging more to part with what remains.
 	ChannelBalance func(ctx context.Context) (uint64, error)
+
+	// Blake2bActivation is this chain's first BLAKE2b block: its height
+	// and id. The SHA256 node must not have that block, which is how a
+	// stock lnd pointed at a node that follows BLAKE2b is caught. A height
+	// of zero means this network has no activation block to compare.
+	//
+	// Strict is whether the network holds real money; there a SHA256 node
+	// that cannot be checked is not used.
+	Blake2bActivation func(ctx context.Context) (height int32,
+		hash [32]byte, strict bool, err error)
 }
 
 // HoldInvoiceRequest is what the bridge asks the local node to create.

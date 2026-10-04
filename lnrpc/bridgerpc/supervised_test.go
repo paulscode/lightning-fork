@@ -250,6 +250,8 @@ func TestSupervisorFirstRun(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, testEntropy, seed.Entropy,
 		"the wallet must be created from the derived seed")
+	require.Nil(t, fake.initReq.ChannelBackups,
+		"a first run has no channels to restore")
 
 	require.Equal(t, bridgeMacaroonPermissions, fake.bakedPerms)
 	require.Equal(t, "baked-1", macaroonID(t, cfg.SHA256MacaroonPath))
@@ -267,6 +269,68 @@ func TestSupervisorFirstRun(t *testing.T) {
 
 // The bridge's macaroon carries only what it calls: nothing that opens or
 // closes channels or moves on-chain funds.
+// After a platform restore the node's directory has its channel backup and no
+// wallet: the wallet is created again from the derived seed with that backup,
+// and a copy of it is kept where the node cannot overwrite it.
+func TestSupervisorRestoresChannelsFromTheBackupLeft(t *testing.T) {
+	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
+	fake.identity = testIdentity(t)
+	s, cfg := newTestSupervisor(t, fake)
+	ctx := context.Background()
+
+	backup := []byte("an encrypted multi-channel backup")
+	scb := filepath.Join(
+		filepath.Dir(cfg.SHA256AdminMacaroonPath), "channel.backup",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(scb), 0700))
+	require.NoError(t, os.WriteFile(scb, backup, 0600))
+
+	require.ErrorIs(t, s.prepare(ctx), errSha256Pending)
+	startNode(t, cfg)
+	require.NoError(t, s.prepare(ctx))
+
+	require.NotNil(t, fake.initReq)
+	require.NotNil(t, fake.initReq.ChannelBackups)
+	require.Equal(t, backup,
+		fake.initReq.ChannelBackups.GetMultiChanBackup().
+			GetMultiChanBackup())
+
+	kept := filepath.Join(
+		filepath.Dir(cfg.SHA256PasswordFile), sha256RestoredBackupName,
+	)
+	got, err := os.ReadFile(kept)
+	require.NoError(t, err)
+	require.Equal(t, backup, got)
+	info, err := os.Stat(kept)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+
+	// The node rewriting its own file afterwards leaves the copy alone.
+	require.NoError(t, os.WriteFile(scb, []byte("empty set"), 0600))
+	got, err = os.ReadFile(kept)
+	require.NoError(t, err)
+	require.Equal(t, backup, got)
+}
+
+// An empty channel backup is no backup.
+func TestSupervisorIgnoresAnEmptyChannelBackup(t *testing.T) {
+	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
+	fake.identity = testIdentity(t)
+	s, cfg := newTestSupervisor(t, fake)
+	ctx := context.Background()
+
+	scb := filepath.Join(
+		filepath.Dir(cfg.SHA256AdminMacaroonPath), "channel.backup",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(scb), 0700))
+	require.NoError(t, os.WriteFile(scb, nil, 0600))
+
+	require.ErrorIs(t, s.prepare(ctx), errSha256Pending)
+	startNode(t, cfg)
+	require.NoError(t, s.prepare(ctx))
+	require.Nil(t, fake.initReq.ChannelBackups)
+}
+
 func TestBridgeMacaroonPermissionsAreNarrow(t *testing.T) {
 	for _, uri := range bridgeMacaroonPermissions {
 		for _, forbidden := range []string{

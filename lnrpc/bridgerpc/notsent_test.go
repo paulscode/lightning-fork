@@ -41,6 +41,8 @@ func TestNeverDelivered(t *testing.T) {
 		status.Error(codes.Unknown, "verification failed: signature "+
 			"mismatch after caveat verification"),
 		status.Error(codes.Unknown, "permission denied"),
+		status.Error(codes.Unknown, "cannot get macaroon: root key "+
+			"with id 1 doesn't exist"),
 	}
 	for _, err := range unsent {
 		require.True(t, neverDelivered(err), "%v", err)
@@ -53,9 +55,20 @@ func TestNeverDelivered(t *testing.T) {
 			`"error reading server preface: read: connection reset"`),
 		status.Error(codes.DeadlineExceeded, "context deadline exceeded"),
 		status.Error(codes.Canceled, "context canceled"),
-		status.Error(codes.Unknown, "server is still in the process of "+
-			"starting"),
-		status.Error(codes.Unimplemented, "unknown method SendPaymentV2"),
+		// Failures after the payment exists that carry the same words:
+		// a database's, an RPC middleware's, a refusal under another
+		// code. Only the exact sentences from before the handler count.
+		status.Error(codes.Unknown, "pq: permission denied for table "+
+			"payments"),
+		status.Error(codes.Unknown, "middleware rejected: permission "+
+			"denied"),
+		status.Error(codes.Internal, "permission denied"),
+		status.Error(codes.Unknown, "the RPC server is in the process "+
+			"of starting up"),
+		status.Error(codes.Unknown, "wallet locked, unlock it to "+
+			"enable full RPC access: and then some"),
+		status.Error(codes.Unimplemented, "unknown method "+
+			"SendPaymentV2 for service routerrpc.Router"),
 		errors.New("connection refused"), // not a gRPC status
 		context.DeadlineExceeded,
 		nil,

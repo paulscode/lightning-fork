@@ -21,6 +21,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
+	"github.com/lightningnetwork/lnd/rpcperms"
 	"github.com/paulscode/lightning-fork-bridge/node"
 )
 
@@ -717,19 +718,27 @@ func neverDelivered(err error) bool {
 		return strings.Contains(msg, "unknown service routerrpc.Router")
 	}
 
-	// lnd's own refusals before any handler (rpcperms), whatever code they
-	// arrive with.
-	for _, refused := range []string{
-		"waiting to start, RPC services not available",
-		"wallet locked, unlock it to enable full RPC access",
-		"wallet not created, create one to enable full RPC access",
-		"the RPC server is in the process of starting up",
-		"verification failed",
-		"permission denied",
-	} {
-		if strings.Contains(msg, refused) {
-			return true
-		}
+	// lnd's own refusals before any handler (rpcperms), matched whole:
+	// a payment that has started can fail with text of its own (an RPC
+	// middleware's, a database's "permission denied for table"), and only
+	// these exact sentences come from before the payment exists.
+	switch msg {
+	case rpcperms.ErrWaitingToStart.Error(),
+		rpcperms.ErrWalletLocked.Error(),
+		rpcperms.ErrNoWallet.Error(),
+		rpcperms.ErrRPCStarting.Error():
+
+		return true
+	}
+
+	// The macaroon check, also before the handler: macaroon-bakery's own
+	// errors (a refused permission or signature, a revoked root key),
+	// which reach the client with codes.Unknown.
+	if st.Code() == codes.Unknown && (msg == "permission denied" ||
+		strings.HasPrefix(msg, "verification failed: ") ||
+		strings.HasPrefix(msg, "cannot get macaroon: ")) {
+
+		return true
 	}
 
 	return false

@@ -49,8 +49,18 @@ Under this node's lnd directory (`/root/.lnd` in the packages):
 | `data/chain/bitcoin/mainnet/bridge/sha256/bridge.macaroon` | The narrow macaroon the bridge uses. |
 
 Both nodes live in one data directory, so a platform backup of Lightning
-Fork carries both. Back up `sha256-node/.../channel.backup` as you would this
-node's own: channels come back only from a channel backup.
+Fork carries both. For the SHA256 node it carries the channel backup and not
+the wallet or channel database: a channel database from the past can
+broadcast an old channel state, which can lose that channel's funds. On a
+restore Lightning Fork recreates the node's wallet from the derived seed and
+hands it that channel backup, so its on-chain coins are found again and its
+channels are closed by their peers with the funds returned to the wallet. A
+copy of the backup it restored from is kept as `channel.backup.restored`
+beside the wallet password.
+
+A platform backup is only as recent as the last time it ran. Keep a current
+copy of `sha256-node/.../channel.backup` as you would this node's own:
+channels opened after the last backup come back only from a newer one.
 
 The node listens on 9739 (peers), 10019 (gRPC) and 8089 (REST), clear of
 Lightning Fork's own ports.
@@ -114,8 +124,10 @@ that each level makes a difference.
 
 Restore Lightning Fork from its phrase as usual and turn the bridge on in the
 same mode. Lightning Fork derives the same seed and creates the same node,
-asking lnd to recover its on-chain funds. Then restore its channels from its
-`channel.backup`, for example with `lncli restorechanbackup`.
+asking lnd to recover its on-chain funds. If the node's `channel.backup` is
+already in place (as after a platform restore), its channels are restored
+with the wallet; otherwise restore them from your copy, for example with
+`lncli restorechanbackup`.
 
 If only the SHA256 node's directory survived and Lightning Fork's did not,
 Lightning Fork finds a wallet whose password it no longer has, and says so
@@ -153,6 +165,18 @@ If Lightning Fork itself cannot be run, derive the seed from its recovery
 phrase with any BIP32 and HKDF implementation, following the derivation above
 (mind the table), and restore with the 16-byte entropy or the BIP32 root key
 built from it.
+
+## Which chain it follows
+
+A stock lnd checks neither proof of work nor which side of the fork its chain
+backend took, and the two chains share their genesis block, so pointed at a
+node that follows BLAKE2b it would sync, give out addresses and open channels
+on the wrong chain. Before using the SHA256 node, the bridge reads its block
+at the BLAKE2b activation height: it must not be this node's block there, and
+its header must be an 80-byte header that hashes to the id the node reports.
+On mainnet a node that cannot answer (one built without `chainrpc`, or not yet
+past that height) is waited for or refused; the official lnd images have
+`chainrpc`.
 
 ## When the node is down
 

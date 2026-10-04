@@ -8,6 +8,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/feature"
@@ -92,7 +93,35 @@ func (s *server) bridgeDeps(
 		BlockAt: s.bridgeBlockAt,
 
 		ChannelBalance: s.bridgeChannelBalance,
+
+		Blake2bActivation: s.bridgeBlake2bActivation,
 	}
+}
+
+// bridgeBlake2bActivation is this chain's first BLAKE2b block, which the
+// bridge's SHA256 node must not have. Pinned on mainnet; read from this node's
+// own chain elsewhere, where the height is configured or fixed by the spec.
+func (s *server) bridgeBlake2bActivation(_ context.Context) (int32, [32]byte,
+	bool, error) {
+
+	params := s.cfg.ActiveNetParams
+	height := params.GossipFloor()
+	strict := params.Net == wire.MainNet
+	if height == 0 {
+		return 0, [32]byte{}, strict, nil
+	}
+	if params.Blake2bActivationHash != nil {
+		return int32(height), *params.Blake2bActivationHash, strict, nil
+	}
+
+	hash, err := s.cc.ChainIO.GetBlockHash(int64(height))
+	if err != nil {
+		return 0, [32]byte{}, strict, fmt.Errorf("this node's own "+
+			"block at the BLAKE2b activation height %d: %w",
+			height, err)
+	}
+
+	return int32(height), *hash, strict, nil
 }
 
 // bridgeNetworkName is a chain parameters name as lnd's GetInfo reports it,
