@@ -758,10 +758,10 @@ var operatorMacaroonPermissions = []string{
 // ensureOperatorMacaroon bakes the console's macaroon (see
 // operatorMacaroonPermissions) beside the bridge's, unless a current one is
 // there. The bridge does not need it, so failing here only says so.
-func (s *supervisor) ensureOperatorMacaroon(ctx context.Context) {
+func (s *supervisor) ensureOperatorMacaroon(ctx context.Context) bool {
 	path := s.cfg.SHA256OperatorMacaroonPath
 	if path == "" {
-		return
+		return true
 	}
 	if cur, _ := os.ReadFile(path + ".perms"); string(cur) ==
 		fingerprintOf(operatorMacaroonPermissions) {
@@ -774,7 +774,7 @@ func (s *supervisor) ensureOperatorMacaroon(ctx context.Context) {
 				_, err = conn.IdentityPubkey(ctx)
 				conn.Close()
 				if err == nil || !macaroonRefused(err) {
-					return
+					return true
 				}
 			}
 		}
@@ -782,11 +782,11 @@ func (s *supervisor) ensureOperatorMacaroon(ctx context.Context) {
 
 	admin, err := os.ReadFile(s.cfg.SHA256AdminMacaroonPath)
 	if err != nil {
-		return
+		return false
 	}
 	conn, err := s.dialAdmin(s.cfg, admin)
 	if err != nil {
-		return
+		return false
 	}
 	defer conn.Close()
 
@@ -802,9 +802,11 @@ func (s *supervisor) ensureOperatorMacaroon(ctx context.Context) {
 		log.Warnf("Bridge could not bake the console's macaroon for the "+
 			"SHA256 node: %v", err)
 
-		return
+		return false
 	}
 	log.Infof("Bridge baked the console's macaroon for the SHA256 node")
+
+	return true
 }
 
 // ensureMacaroon bakes the bridge's macaroon from the node's admin one, unless

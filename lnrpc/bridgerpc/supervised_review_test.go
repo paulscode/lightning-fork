@@ -617,3 +617,32 @@ func TestTheConsoleGetsANarrowMacaroon(t *testing.T) {
 	require.NoError(t, s.prepare(ctx))
 	require.Len(t, fake.allBaked, 3)
 }
+
+// With the bridge off the SHA256 node goes on running, and its console's
+// macaroon is still baked once the node exists, never by creating it.
+func TestAnOffBridgeStillBakesTheConsoleMacaroon(t *testing.T) {
+	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
+	fake.identity = testIdentity(t)
+	s, cfg := newTestSupervisor(t, fake)
+	cfg.SHA256OperatorMacaroonPath = filepath.Join(
+		filepath.Dir(cfg.SHA256MacaroonPath), Sha256OperatorMacaroonName,
+	)
+	ctx := context.Background()
+
+	// No node yet: nothing baked, and no password written for one.
+	require.False(t, s.ensureOperatorMacaroon(ctx))
+	require.Empty(t, fake.allBaked)
+	_, err := os.Stat(cfg.SHA256PasswordFile)
+	require.True(t, os.IsNotExist(err), "the node is not started from here")
+
+	// Once it has run (the bridge was on before): baked, then left alone.
+	require.ErrorIs(t, s.prepare(ctx), errSha256Pending)
+	startNode(t, cfg)
+	require.NoError(t, s.prepare(ctx))
+	require.NoError(t, os.Remove(cfg.SHA256OperatorMacaroonPath))
+	baked := len(fake.allBaked)
+	require.True(t, s.ensureOperatorMacaroon(ctx))
+	require.Len(t, fake.allBaked, baked+1)
+	require.True(t, s.ensureOperatorMacaroon(ctx))
+	require.Len(t, fake.allBaked, baked+1)
+}

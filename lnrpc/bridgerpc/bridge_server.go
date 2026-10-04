@@ -151,6 +151,11 @@ type Server struct {
 	drained    bool
 	drainStuck int
 
+	// journalErr is why the journal could not be read when the bridge
+	// started off, so Status can say what the log does. Written before
+	// RPCs are served.
+	journalErr error
+
 	// rateMu serialises SetRate with the service coming up; see connect.
 	rateMu sync.Mutex
 
@@ -219,6 +224,7 @@ func (s *Server) Start() error {
 			log.Errorf("Bridge is off and could not read its swap "+
 				"journal to see whether anything is unfinished: %v",
 				err)
+			s.journalErr = err
 
 			return nil
 
@@ -229,6 +235,16 @@ func (s *Server) Start() error {
 			// this on should be told so, not left wondering
 			// whether their build has it.
 			log.Infof("Bridge is compiled in but not enabled")
+
+			// The SHA256 node it ran goes on running (it may hold
+			// channels), and the console manages it with the
+			// macaroon baked for it: keep that one there and
+			// current, as connecting would.
+			if s.sup != nil {
+				s.quit = make(chan struct{})
+				s.wg.Add(1)
+				go s.keepConsoleMacaroon()
+			}
 
 			return nil
 
@@ -286,6 +302,34 @@ func unfinishedInJournal(path string) (int, error) {
 	pending, err := j.Pending(context.Background())
 
 	return len(pending), err
+}
+
+// consoleMacaroonInterval is how often a bridge that is off checks the
+// console's macaroon for the SHA256 node until it is in place.
+var consoleMacaroonInterval = 5 * time.Minute
+
+// keepConsoleMacaroon bakes the console's macaroon for the SHA256 node while
+// the bridge is off, once that node exists and answers. It never creates,
+// starts or unlocks the node: it only uses the node's own admin macaroon, which
+// exists only once the node does.
+func (s *Server) keepConsoleMacaroon() {
+	defer s.wg.Done()
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(),
+			dialTimeout)
+		done := s.sup.ensureOperatorMacaroon(ctx)
+		cancel()
+		if done {
+			return
+		}
+
+		select {
+		case <-s.quit:
+			return
+		case <-time.After(consoleMacaroonInterval):
+		}
+	}
 }
 
 // drainCheckInterval is how often a draining bridge looks for its last swap
@@ -425,6 +469,10 @@ func (s *Server) connect() error {
 		}
 	}
 
+	// Taken before dialling, so a certificate renewed in between is seen
+	// as a change (one needless rebuild) rather than missed for the life
+	// of this connection.
+	cert := certFingerprint(s.cfg.SHA256TLSCertPath)
 	conn, dialErr := dialSHA256Node(s.cfg)
 	if dialErr != nil {
 		return dialErr
@@ -517,7 +565,7 @@ func (s *Server) connect() error {
 		"node at %s", len(svc.sides), s.cfg.SHA256RPCHost)
 
 	s.wg.Add(1)
-	go s.watchChain(svc, remoteNode, certFingerprint(s.cfg.SHA256TLSCertPath))
+	go s.watchChain(svc, remoteNode, cert)
 
 	return nil
 }
@@ -939,6 +987,11 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		draining, drained, stuck := s.draining, s.drained, s.drainStuck
 		s.mu.RUnlock()
 		switch {
+		case s.journalErr != nil:
+			resp.Refusals = append(resp.Refusals, fmt.Sprintf("its "+
+				"swap journal cannot be read, so whether a swap "+
+				"is unfinished is not known: %v", s.journalErr))
+
 		case stuck > 0:
 			resp.Refusals = append(resp.Refusals, fmt.Sprintf("%d "+
 				"swap(s) are unfinished and no SHA256 node is "+
@@ -950,6 +1003,20 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 				"swaps already under way; quoting nothing")
 			if svc := s.service(); svc != nil {
 				resp.SwapsInFlight = uint32(svc.active())
+				// A swap stopped for the operator keeps the
+				// drain going until they act on it.
+				resp.NeedsOperator = svc.needsOperator(ctx)
+			} else {
+				s.mu.RLock()
+				why := s.startErr
+				s.mu.RUnlock()
+				if why != nil && !errors.Is(why, errStarting) {
+					resp.Refusals = append(resp.Refusals,
+						fmt.Sprintf("it cannot start to "+
+							"finish them, and tries "+
+							"again every %v: %v",
+							retryInterval, why))
+				}
 			}
 			resp.Sha256Node = s.sha256Summary(ctx)
 		}
@@ -1096,7 +1163,10 @@ const infoFresh = 5 * time.Second
 func (s *Server) SetRate(_ context.Context, req *SetRateRequest) (
 	*SetRateResponse, error) {
 
-	if !s.cfg.Enabled {
+	// While draining too: a rate file that cannot be read keeps the
+	// bridge from coming up to finish its swaps, and setting a rate is
+	// how it is replaced.
+	if !s.cfg.Enabled && !s.draining {
 		return nil, errDisabled()
 	}
 

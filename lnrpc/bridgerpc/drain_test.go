@@ -5,6 +5,7 @@ package bridgerpc
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -204,4 +205,47 @@ func TestAnOffDirectionFinishesWhatIsUnfinished(t *testing.T) {
 	sd, _, err = routed.routeQuote(context.Background(), "sideA-payme")
 	require.NoError(t, err)
 	require.Equal(t, "toSHA256", sd.name)
+}
+
+// Draining and unable to come up: Status says why, and a rate can be set,
+// which is how an unreadable rate file is replaced.
+func TestADrainThatCannotStartSaysWhy(t *testing.T) {
+	cfg := usable()
+	cfg.Enabled = false
+	cfg.Journal = journalWith(t, swap.Funded)
+	srv, _, err := New(&cfg)
+	require.NoError(t, err)
+	srv.draining = true
+	srv.setStartErr(errors.New("the rate file is damaged"))
+
+	status, err := srv.Status(context.Background(), &StatusRequest{})
+	require.NoError(t, err)
+	require.Contains(t, status.Refusals[len(status.Refusals)-1],
+		"the rate file is damaged")
+
+	_, err = srv.SetRate(context.Background(), &SetRateRequest{Rate: 0.004})
+	require.NoError(t, err)
+
+	off := usable()
+	off.Enabled = false
+	srv, _, err = New(&off)
+	require.NoError(t, err)
+	_, err = srv.SetRate(context.Background(), &SetRateRequest{Rate: 0.004})
+	require.Error(t, err, "off and not draining: refused as before")
+}
+
+// A journal that cannot be read while off is said, not only logged.
+func TestAnUnreadableJournalIsSaid(t *testing.T) {
+	cfg := usable()
+	cfg.Enabled = false
+	cfg.Journal = filepath.Join(t.TempDir(), "swaps.journal")
+	require.NoError(t, os.WriteFile(cfg.Journal, []byte("not a journal\n"), 0600))
+	srv, _, err := New(&cfg)
+	require.NoError(t, err)
+	require.NoError(t, srv.Start())
+	defer srv.Stop()
+	status, err := srv.Status(context.Background(), &StatusRequest{})
+	require.NoError(t, err)
+	require.Contains(t, status.Refusals[len(status.Refusals)-1],
+		"cannot be read")
 }

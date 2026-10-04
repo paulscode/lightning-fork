@@ -193,6 +193,8 @@ type service struct {
 	cancel context.CancelFunc
 
 	wg sync.WaitGroup
+
+	closeOnce sync.Once
 }
 
 // newService wires everything. It does not start the pollers: start does that,
@@ -637,11 +639,16 @@ func (s *service) remember(hash node.Hash, sd *side) {
 }
 
 // close releases what newService opened. Safe to call twice.
+//
+// The journal stays referenced once closed: a closed journal still answers
+// from its index, and a caller that read the service just before it was
+// stopped (the drain's watcher, LookupSwap) must not find it gone.
 func (s *service) close() {
-	if s.journal != nil {
-		_ = s.journal.Close()
-		s.journal = nil
-	}
+	s.closeOnce.Do(func() {
+		if s.journal != nil {
+			_ = s.journal.Close()
+		}
+	})
 }
 
 // sizeInventory derives each side's working balance from what it actually
