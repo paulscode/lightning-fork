@@ -595,9 +595,14 @@ func TestTheConsoleGetsANarrowMacaroon(t *testing.T) {
 	require.Len(t, fake.allBaked, 2)
 	require.Equal(t, bridgeMacaroonPermissions, fake.allBaked[0])
 	require.Equal(t, operatorMacaroonPermissions, fake.allBaked[1])
+	// Paying from the node is the operator paying a SHA256 invoice from
+	// their own bridge, through the router alone; it adds nothing to what
+	// sending its coins on chain already allows. Signing, macaroons,
+	// policy, invoices and the older payment calls stay out.
 	for _, uri := range operatorMacaroonPermissions {
 		for _, never := range []string{"Sign", "BakeMacaroon",
-			"UpdateChannelPolicy", "SendPayment", "AddInvoice"} {
+			"UpdateChannelPolicy", "AddInvoice", "Lightning/SendPayment",
+			"SendToRoute", "Keysend"} {
 
 			require.NotContains(t, uri, never)
 		}

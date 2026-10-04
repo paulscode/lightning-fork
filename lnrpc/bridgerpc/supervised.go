@@ -736,9 +736,10 @@ func fingerprintOf(perms []string) string {
 // operatorMacaroonPermissions is what the operator's console (the dashboard)
 // does with the SHA256 node, and nothing more: read its balances and
 // channels, give a deposit address, connect a peer and open a channel, close
-// one, send its coins on chain, and take its channel backup. The console used
-// to hold the node's admin macaroon for this, which also signs, changes fees
-// and policy, and bakes macaroons.
+// one, send its coins on chain, take its channel backup, and pay a SHA256
+// invoice from it (the operator paying from their own bridge, which needs no
+// swap). The console used to hold the node's admin macaroon for this, which
+// also signs, changes fees and policy, and bakes macaroons.
 var operatorMacaroonPermissions = []string{
 	"/lnrpc.Lightning/GetInfo",
 	"/lnrpc.Lightning/WalletBalance",
@@ -753,6 +754,9 @@ var operatorMacaroonPermissions = []string{
 	"/lnrpc.Lightning/EstimateFee",
 	"/lnrpc.Lightning/SendCoins",
 	"/lnrpc.Lightning/ExportAllChannelBackups",
+	"/lnrpc.Lightning/DecodePayReq",
+	"/routerrpc.Router/SendPaymentV2",
+	"/routerrpc.Router/TrackPaymentV2",
 }
 
 // ensureOperatorMacaroon bakes the console's macaroon (see
