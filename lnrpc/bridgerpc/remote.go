@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"strings"
 	"time"
@@ -367,6 +366,11 @@ func (r *Remote) Pay(ctx context.Context, req node.PayRequest) (node.Payment,
 		},
 	)
 	if err != nil {
+		if neverDelivered(err) {
+			return node.Payment{}, fmt.Errorf("sending: %w: %w",
+				node.ErrNotSent, err)
+		}
+
 		return node.Payment{}, fmt.Errorf("sending: %w", err)
 	}
 
@@ -374,17 +378,21 @@ func (r *Remote) Pay(ctx context.Context, req node.PayRequest) (node.Payment,
 	// rather than from the zero value means a stream that dies early cannot
 	// be read as "never started".
 	last := node.Payment{State: node.PaymentInFlight}
-	for {
+	for received := false; ; received = true {
 		update, err := stream.Recv()
 		if err != nil {
+			// A refusal before the node has said anything about the
+			// payment, from the part of lnd that runs before any
+			// handler, means the router never saw it.
+			if !received && neverDelivered(err) {
+				return node.Payment{}, fmt.Errorf("sending: %w: %w",
+					node.ErrNotSent, err)
+			}
+
 			// EOF, a broken stream or a passed deadline. The
 			// payment is not known to have failed, and saying so
 			// would let the caller cancel the incoming claim
 			// against an HTLC still in flight.
-			if errors.Is(err, io.EOF) {
-				return last, nil
-			}
-
 			return last, nil
 		}
 
@@ -669,4 +677,60 @@ func (r *Remote) BlockAt(ctx context.Context, height int32) (BlockInfo, error) {
 		// Historical, so by definition already in the chain.
 		SyncedToChain: true,
 	}, nil
+}
+
+// neverDelivered reports whether a failed call provably never reached the
+// node's handler, so that a payment it carried cannot be in flight.
+//
+// Two kinds of failure qualify, and only these:
+//
+//   - No connection at all. gRPC fails a call at once when it has no
+//     transport, before writing anything, and says it was dialling.
+//   - lnd's interceptor refusing the call before any handler runs, which it
+//     does while starting and while its wallet is locked or absent, and for
+//     a macaroon it does not accept.
+//
+// Everything else is left ambiguous on purpose. A connection that drops after
+// the request was written, a reset, a timeout: the request may have been
+// delivered, and calling it unsent would let the swap be paid again.
+func neverDelivered(err error) bool {
+	if err == nil {
+		return false
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	msg := st.Message()
+
+	switch st.Code() {
+	case codes.Unavailable:
+		// The transport could not be made. "transport is closing" and
+		// the like are absent deliberately: they follow a connection
+		// that existed.
+		return strings.Contains(msg, "Error while dialing") ||
+			strings.Contains(msg, "produced zero addresses")
+
+	case codes.Unimplemented:
+		// The router sub-server is not registered yet: lnd registers
+		// it once the wallet is unlocked.
+		return strings.Contains(msg, "unknown service routerrpc.Router")
+	}
+
+	// lnd's own refusals before any handler (rpcperms), whatever code they
+	// arrive with.
+	for _, refused := range []string{
+		"waiting to start, RPC services not available",
+		"wallet locked, unlock it to enable full RPC access",
+		"wallet not created, create one to enable full RPC access",
+		"the RPC server is in the process of starting up",
+		"verification failed",
+		"permission denied",
+	} {
+		if strings.Contains(msg, refused) {
+			return true
+		}
+	}
+
+	return false
 }
