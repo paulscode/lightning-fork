@@ -151,8 +151,8 @@ type Server struct {
 	drained    bool
 	drainStuck int
 
-	// journalErr is why the journal could not be read when the bridge
-	// started off, so Status can say what the log does. Written before
+	// journalErr is why the journal could not be read at Start, said in
+	// Status (on or off) until a service has opened it. Under mu once
 	// RPCs are served.
 	journalErr error
 
@@ -220,6 +220,11 @@ func (s *Server) Start() error {
 	n, journalErr := unfinishedInJournal(s.cfg.Journal)
 	if journalErr == nil {
 		s.unfinished = n
+	} else {
+		// Said in Status, on or off, so that what is unfinished reads
+		// as unknown rather than as none; cleared once a service has
+		// opened the journal.
+		s.journalErr = journalErr
 	}
 
 	if !s.cfg.Enabled {
@@ -342,6 +347,13 @@ func (s *Server) keepConsoleMacaroon() {
 		case <-time.After(consoleMacaroonInterval):
 		}
 	}
+}
+
+// journalRefusal says that the journal could not be read, in the words the
+// platforms read as "unfinished is unknown".
+func journalRefusal(err error) string {
+	return fmt.Sprintf("its swap journal cannot be read, so whether a "+
+		"swap is unfinished is not known: %v", err)
 }
 
 // unfinishedNow is how many swaps the journal holds unfinished: from the
@@ -587,6 +599,7 @@ func (s *Server) connect() error {
 
 	s.mu.Lock()
 	s.conn, s.remote, s.svc = conn, remoteNode, svc
+	s.journalErr = nil
 	s.mu.Unlock()
 	s.rateMu.Unlock()
 
@@ -618,6 +631,12 @@ func (s *Server) rebuild(svc *service, why string) {
 		return
 	}
 	conn := s.conn
+	// The count as it stands, before the service that knows it goes:
+	// Status gives it until the next one is up. A closed journal still
+	// answers from its index.
+	if pending, err := svc.journal.Pending(context.Background()); err == nil {
+		s.unfinished = len(pending)
+	}
 	s.svc, s.remote, s.conn = nil, nil, nil
 	s.mu.Unlock()
 	s.setStartErr(errStarting)
@@ -1017,12 +1036,11 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 			"enabled on this node")
 		s.mu.RLock()
 		draining, drained, stuck := s.draining, s.drained, s.drainStuck
+		journalErr := s.journalErr
 		s.mu.RUnlock()
 		switch {
-		case s.journalErr != nil:
-			resp.Refusals = append(resp.Refusals, fmt.Sprintf("its "+
-				"swap journal cannot be read, so whether a swap "+
-				"is unfinished is not known: %v", s.journalErr))
+		case journalErr != nil:
+			resp.Refusals = append(resp.Refusals, journalRefusal(journalErr))
 
 		case stuck > 0:
 			resp.Refusals = append(resp.Refusals, fmt.Sprintf("%d "+
@@ -1059,6 +1077,13 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	// The SHA256 node first and whatever the bridge's own state: it is
 	// the usual reason the bridge is not up.
 	resp.Sha256Node = s.sha256Summary(ctx)
+
+	s.mu.RLock()
+	journalErr := s.journalErr
+	s.mu.RUnlock()
+	if journalErr != nil {
+		resp.Refusals = append(resp.Refusals, journalRefusal(journalErr))
+	}
 
 	// Whether each node can be used at all comes first, and runs even when
 	// the bridge failed to start, because an unsynced or unreachable node

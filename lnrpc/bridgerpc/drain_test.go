@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,4 +293,50 @@ func TestStatusCountsWhatIsUnfinished(t *testing.T) {
 	status, err := srv.Status(context.Background(), &StatusRequest{})
 	require.NoError(t, err)
 	require.EqualValues(t, 0, status.Unfinished)
+}
+
+// On, with a journal that can't be read: said, so that what is unfinished
+// reads as unknown.
+func TestAnUnreadableJournalIsSaidWhileOn(t *testing.T) {
+	cfg := usable()
+	cfg.SHA256RPCHost = "127.0.0.1:1"
+	cfg.Journal = filepath.Join(t.TempDir(), "swaps.journal")
+	require.NoError(t, os.WriteFile(cfg.Journal, []byte("not a journal\n"), 0600))
+	srv, _, err := New(&cfg)
+	require.NoError(t, err)
+	require.NoError(t, srv.Start())
+	defer srv.Stop()
+	status, err := srv.Status(context.Background(), &StatusRequest{})
+	require.NoError(t, err)
+	found := false
+	for _, r := range status.Refusals {
+		if strings.Contains(r, "whether a swap is unfinished is not known") {
+			found = true
+		}
+	}
+	require.True(t, found, "refusals: %v", status.Refusals)
+}
+
+// A rebuild keeps the count the service it drops last knew.
+func TestARebuildKeepsTheUnfinishedCount(t *testing.T) {
+	cfg := usable()
+	svc := serviceFor(t, cfg, &fakeNode{synced: true}, remote(nil, nil, nil))
+	now := time.Now()
+	require.NoError(t, svc.journal.Put(context.Background(), store.Record{
+		Hash: [32]byte{9}, State: swap.Funded, OutgoingCLTVLimit: 40,
+		Invoice: "lnbc1x", IncomingMsat: 1_000, OutgoingMsat: 3,
+		Rate: 0.003, Spread: 0.01, Created: now, Updated: now,
+	}))
+	srv, _, err := New(&cfg)
+	require.NoError(t, err)
+	srv.quit = make(chan struct{})
+	srv.mu.Lock()
+	srv.svc = svc
+	srv.mu.Unlock()
+	srv.rebuild(svc, "for the test")
+	close(srv.quit)
+	srv.wg.Wait()
+	status, err := srv.Status(context.Background(), &StatusRequest{})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, status.Unfinished)
 }

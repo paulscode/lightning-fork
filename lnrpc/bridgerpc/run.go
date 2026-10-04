@@ -144,8 +144,10 @@ func (s *service) sample(ctx context.Context) {
 		// A node catching up (after every restart, for a while) reports
 		// its backend's tip height beside its wallet's best header time,
 		// which belong to different blocks: that pair would rewrite a
-		// block's time and skew the spacing every margin is sized on. Only
-		// a synced node's tip is a block.
+		// block's time and skew the spacing every margin is sized on. A
+		// synced node's pair is one block's, but for a block arriving
+		// between the two reads, which is rare and leaves one block's time
+		// at most one block early: within what the bounds allow for.
 		if !info.SyncedToChain {
 			continue
 		}

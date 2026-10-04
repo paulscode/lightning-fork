@@ -106,7 +106,12 @@ meanwhile, and `channel.backup.restored.done` marks it finished.
 
 A platform backup is only as recent as the last time it ran. Keep a current
 copy of `sha256-node/.../channel.backup` as you would this node's own:
-channels opened after the last backup come back only from a newer one.
+channels opened after the last backup come back only from a newer one. On
+StartOS and Umbrel the channel backup agent does this once a target is set
+up for Lightning Fork's channels: it copies the SHA256 node's file to the
+same targets, in a folder named by that node's identity, and keeps any copy
+already there (`channel.backup.before-<time>`) before its first one, since a
+node recreated from the same seed writes to the same folder.
 
 The node listens on 9739 (peers), 10019 (gRPC) and 8089 (REST), clear of
 Lightning Fork's own ports.
