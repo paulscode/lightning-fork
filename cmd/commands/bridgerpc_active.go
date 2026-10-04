@@ -92,13 +92,15 @@ var bridgeInfoCommand = cli.Command{
 
 var bridgeSetRateCommand = cli.Command{
 	Name:      "setrate",
-	Usage:     "Set the rate the bridge trades at.",
+	Usage:     "Set the rate the bridge trades at (bridgerpc.ratesource=fixed).",
 	ArgsUsage: "rate",
 	Description: `
-	The rate is SHA256 coin per BLAKE2b coin, for example 0.00483. It takes
-	effect at once, is kept across restarts, and is stamped with when it
-	was set: once it is older than bridgerpc.ratemaxage the bridge stops
-	quoting until it is set again.`,
+	With bridgerpc.ratesource=fixed: the rate is SHA256 coin per BLAKE2b
+	coin, for example 0.00483. It takes effect at once, is kept across
+	restarts, and is stamped with when it was set: once it is older than
+	bridgerpc.ratemaxage (one hour by default) the bridge stops quoting
+	until it is set again. Following the market (the default), this is
+	refused.`,
 	Action: actionDecorator(func(ctx *cli.Context) error {
 		if ctx.NArg() != 1 {
 			return cli.ShowCommandHelp(ctx, "setrate")

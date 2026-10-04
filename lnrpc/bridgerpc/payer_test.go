@@ -758,6 +758,7 @@ func TestABridgeThatCannotStartDoesNotStopTheNode(t *testing.T) {
 	dir := t.TempDir()
 	srv, _, err := New(&Config{
 		Enabled: true, ToSHA256: true, FixedRate: 0.004,
+		RateSource:         RateSourceFixed,
 		SHA256RPCHost:      "127.0.0.1:1",
 		SHA256MacaroonPath: filepath.Join(dir, "missing.macaroon"),
 		Journal:            filepath.Join(dir, "bridge", "swaps.journal"),

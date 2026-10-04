@@ -515,6 +515,29 @@
           "type": "integer",
           "format": "int64",
           "description": "How many swaps the journal holds unfinished: being driven, waiting to be,\nor stopped for the operator. Answered whether the bridge is on, off and\nfinishing them, or not up (then as last read). A lost swap is final and\nnot counted; it stays in needs_operator. This is what to wait on before\nturning the bridge off or changing its SHA256 node."
+        },
+        "rate_source": {
+          "type": "string",
+          "description": "Where the rate comes from: \"neoxa\" (the market, read live) or \"fixed\"\n(the operator's own, set with SetRate or the configuration)."
+        },
+        "rate_cross_check": {
+          "type": "number",
+          "format": "double",
+          "description": "Following the market: the cross-check's last reading, Neoxa's BTCB2_USDC\nmarket over a BTC/USD price, in the same unit as rate. The bridge quotes\nonly while the two agree."
+        },
+        "rate_volatility": {
+          "type": "number",
+          "format": "double",
+          "description": "Following the market: how far it moved in the last few minutes, as a\nfraction, which each quote's fee is widened by."
+        },
+        "fee_to_sha256": {
+          "type": "number",
+          "format": "double",
+          "description": "The fee each direction charges on top of the rate, as a fraction, before\nthe market's movement and the inventory policy widen it."
+        },
+        "fee_to_blake2b": {
+          "type": "number",
+          "format": "double"
         }
       }
     },

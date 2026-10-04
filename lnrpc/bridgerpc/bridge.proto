@@ -65,11 +65,12 @@ service Bridge {
     rpc Info (InfoRequest) returns (InfoResponse);
 
     /* lncli: `bridge setrate`
-    SetRate changes the rate the bridge trades at, without a restart. The rate
-    is kept across restarts and stamped with when it was set; once it is older
-    than the configured limit the bridge refuses to quote until it is set
-    again, because a rate nobody has looked at in a moving market is a loss
-    waiting to be taken.
+    SetRate changes the rate the bridge trades at, without a restart, when it
+    trades at the operator's own rate (rate source fixed); following the
+    market it is refused. The rate is kept across restarts and stamped with
+    when it was set; once it is older than the configured limit the bridge
+    refuses to quote until it is set again, because a rate nobody has looked
+    at in a moving market is a loss waiting to be taken.
     */
     rpc SetRate (SetRateRequest) returns (SetRateResponse);
 
@@ -187,15 +188,19 @@ message StatusResponse {
     // How many swaps are being driven right now.
     uint32 swaps_in_flight = 4;
 
-    // The rate in force, as SHA256 coin per BLAKE2b coin.
+    /*
+    The rate in force, as SHA256 coin per BLAKE2b coin: the market's last
+    reading (rate_source neoxa) or the operator's own (fixed).
+    */
     double rate = 5;
 
-    // When it was set, as a Unix timestamp in seconds.
+    // When it was set or read, as a Unix timestamp in seconds.
     int64 rate_set_at = 6;
 
     /*
     When it stops being used, as a Unix timestamp in seconds, or zero if the
-    bridge allows a rate of any age.
+    bridge allows a rate of any age. Following the market, a reading is used
+    for a short while and replaced by the next.
     */
     int64 rate_expires_at = 7;
 
@@ -223,6 +228,32 @@ message StatusResponse {
     turning the bridge off or changing its SHA256 node.
     */
     uint32 unfinished = 10;
+
+    /*
+    Where the rate comes from: "neoxa" (the market, read live) or "fixed"
+    (the operator's own, set with SetRate or the configuration).
+    */
+    string rate_source = 11;
+
+    /*
+    Following the market: the cross-check's last reading, Neoxa's BTCB2_USDC
+    market over a BTC/USD price, in the same unit as rate. The bridge quotes
+    only while the two agree.
+    */
+    double rate_cross_check = 12;
+
+    /*
+    Following the market: how far it moved in the last few minutes, as a
+    fraction, which each quote's fee is widened by.
+    */
+    double rate_volatility = 13;
+
+    /*
+    The fee each direction charges on top of the rate, as a fraction, before
+    the market's movement and the inventory policy widen it.
+    */
+    double fee_to_sha256 = 14;
+    double fee_to_blake2b = 15;
 }
 
 message Sha256Node {

@@ -102,18 +102,36 @@ type Config struct {
 	// ToBLAKE2b serves swaps that pay out on this chain.
 	ToBLAKE2b bool `long:"toblake2b" description:"Serve swaps that receive on the SHA256 chain and pay out on this chain. Needs outbound capacity here."`
 
-	// FixedRate is what the operator will trade at, in outgoing units per
-	// incoming unit for the toSHA256 direction: SHA256 coin per BLAKE2b
-	// coin.
+	// RateSource is where the rate comes from.
+	//
+	// The market for the BLAKE2b coin is thin and moves a few percent in
+	// minutes and tens of percent in a day, so the default follows it live
+	// (feed.go) and quotes nothing while it cannot be read. A fixed rate
+	// is the operator's own number, for whoever wants to post one.
+	RateSource string `long:"ratesource" description:"Where the rate comes from. neoxa (the default) follows Neoxa's BTCB2_BTC market live, cross-checked against its BTCB2_USDC market and a BTC/USD price, and quotes nothing while the market cannot be read or the two disagree. fixed trades at the rate you set (fixedrate, or lncli bridge setrate)."`
+
+	// FixedRate is what the operator will trade at with ratesource=fixed,
+	// in outgoing units per incoming unit for the toSHA256 direction:
+	// SHA256 coin per BLAKE2b coin.
 	//
 	// There is deliberately no default. A wrong rate loses money on every
-	// swap and does it quietly, so the bridge refuses to guess one; for a
-	// market this thin an operator's own posted rate is the price, and it
-	// has to be their number.
-	FixedRate float64 `long:"fixedrate" description:"What you will trade at, as SHA256 coin per BLAKE2b coin. There is no default: a wrong rate loses money silently, so until one is set here or with lncli bridge setrate the bridge quotes nothing."`
+	// swap and does it quietly, so the bridge refuses to guess one.
+	FixedRate float64 `long:"fixedrate" description:"With ratesource=fixed: what you will trade at, as SHA256 coin per BLAKE2b coin. There is no default: a wrong rate loses money silently, so until one is set here or with lncli bridge setrate the bridge quotes nothing."`
 
-	// Spread is the fraction charged on top of the rate.
-	Spread float64 `long:"spread" description:"The fraction you keep, on top of the rate. Routing fees come out of this. Default 0.01 (1%)."`
+	// Spread is the fee charged on top of the rate, in both directions
+	// unless one of the per-direction fees says otherwise.
+	Spread float64 `long:"spread" description:"Your fee, as a fraction on top of the rate, for both directions unless fee.tosha256 or fee.toblake2b says otherwise. Routing fees come out of it. Default 0.015 (1.5%)."`
+
+	// FeeToSHA256 and FeeToBLAKE2b are the fee for one direction each,
+	// over Spread.
+	//
+	// The two directions are not the same business: one spends what the
+	// bridge holds on the SHA256 chain and the other puts it back, and an
+	// operator who mines the BLAKE2b coin, say, may want SHA256 coin in
+	// and charge less for the direction that brings it. The inventory
+	// policy already moves both with the position; these move the base.
+	FeeToSHA256  float64 `long:"fee.tosha256" description:"Your fee for swaps that pay out on the SHA256 chain, as a fraction (0.015 is 1.5%). Default: spread."`
+	FeeToBLAKE2b float64 `long:"fee.toblake2b" description:"Your fee for swaps that pay out on this chain, as a fraction (0.015 is 1.5%). Default: spread."`
 
 	// MaxSwapMsat caps a single swap, in SHA256 millisatoshis.
 	//
@@ -160,7 +178,7 @@ type Config struct {
 	// moves; one nobody has looked at for a day prices swaps against a
 	// world that has gone. Past this the bridge refuses to quote until the
 	// rate is set again.
-	RateMaxAge time.Duration `long:"ratemaxage" description:"How long a rate is used after it was set; after that the bridge refuses to quote until the rate is set again. Default 24h."`
+	RateMaxAge time.Duration `long:"ratemaxage" description:"With ratesource=fixed: how long a rate is used after it was set; after that the bridge refuses to quote until the rate is set again. Default 1h."`
 
 	// FundedGrace is how long a funded swap may wait to be paid past its
 	// quote's expiry before it is given back.
@@ -177,9 +195,40 @@ type Config struct {
 	Deps *Deps
 }
 
-// DefaultRateMaxAge is how long a rate is used when the operator names no
-// limit.
-const DefaultRateMaxAge = 24 * time.Hour
+// DefaultRateMaxAge is how long a fixed rate is used when the operator names
+// no limit.
+//
+// An hour, not a day: the market has moved more than five percent in an hour
+// on half the days measured, and a posted rate that has drifted past the fee
+// is drained by anyone who notices. Operators who want a fixed rate want to be
+// watching it.
+const DefaultRateMaxAge = time.Hour
+
+// The rate sources.
+const (
+	RateSourceNeoxa = "neoxa"
+	RateSourceFixed = "fixed"
+)
+
+// DefaultFee is the fee each direction charges when the operator names none.
+//
+// Chosen against what payers allow by default: their check refuses a price
+// more than 5% over the market, widened by the last hour's range. The
+// inventory policy charges up to three times the fee on the draining side,
+// so 1.5% tops out at 4.5% and stays inside it; 2% would be refused exactly
+// when the bridge is low. Below about 1%, what is left after the routing
+// budget is smaller than an ordinary two-minute move of this market, and a
+// quote funded a minute or two later would be given back often.
+const DefaultFee = 0.015
+
+// discountFloorOverRouting is how far above the routing budget the discounted
+// direction's fee stays, at the most discount the inventory policy gives.
+//
+// Without it the default discount took the refilling direction below the
+// routing budget when the paying side was nearly empty, and the quote refuses
+// a fee that does not cover its own routing: the bridge refused the very
+// swaps that would have refilled it.
+const discountFloorOverRouting = 0.001
 
 // DefaultFloorFraction is the share of the working balance held back for swaps
 // already in flight, when the bounds are derived rather than configured. It is
@@ -248,6 +297,9 @@ type resolved struct {
 	margin      margin.Policy
 	inventory   inventory.Policy
 	rate        rate.Policy
+	rateSource  string
+	feeToSHA256 float64
+	feeToB2B    float64
 	b2bChain    chainrate.Params
 	shaChain    chainrate.Params
 	limits      quote.Limits
@@ -306,33 +358,65 @@ func (c *Config) resolve() resolved {
 	if c.MinSwapMsat != 0 {
 		r.quote.MinSwapMsat = c.MinSwapMsat
 	}
-	if c.Spread > 0 {
-		// The operator's spread is a floor, not a ceiling: the rate
-		// oracle widens for volatility and the inventory policy widens
-		// for how drained the paying side is, and both are reasons to
-		// charge more than the posted fee rather than less.
-		//
-		// Both policies are scaled by the same factor rather than
-		// having one field overwritten, because their fields are not
-		// independent. The inventory policy requires its discount to
-		// be no larger than its base spread and no larger than what a
-		// rebalance costs, and its maximum spread to cover that cost.
-		// Setting the base alone breaks all three at once for any
-		// spread below the default, which is a configuration that
-		// looks reasonable field by field and refuses every swap.
-		// Scaling preserves the ratios the defaults were chosen with.
-		scale := c.Spread / inventory.DefaultPolicy.BaseSpread
-		r.inventory.BaseSpread *= scale
-		r.inventory.MaxSpread *= scale
-		r.inventory.MaxDiscount *= scale
-		r.inventory.RebalanceCost *= scale
+	r.rateSource = c.RateSource
+	if r.rateSource == "" {
+		r.rateSource = RateSourceNeoxa
+	}
 
-		rateScale := c.Spread / rate.DefaultPolicy.BaseSpread
-		r.rate.BaseSpread *= rateScale
-		r.rate.MaxSpread *= rateScale
+	// The feed's oracle measures; the fee is added per direction (see
+	// pricer). Its base spread is therefore none, and its cap bounds only
+	// what the market's own movement adds.
+	r.rate.BaseSpread = 0
+	r.rate.MaxSpread = maxVolatilitySpread
+
+	both := DefaultFee
+	if c.Spread > 0 {
+		both = c.Spread
+	}
+	r.feeToSHA256, r.feeToB2B = both, both
+	if c.FeeToSHA256 > 0 {
+		r.feeToSHA256 = c.FeeToSHA256
+	}
+	if c.FeeToBLAKE2b > 0 {
+		r.feeToB2B = c.FeeToBLAKE2b
 	}
 
 	return r
+}
+
+// maxVolatilitySpread caps what the market's own movement adds to the fee.
+// Payers allow the last hour's range up to 10% on top of their premium, and
+// this is measured over a shorter window, so it stays inside what they allow.
+const maxVolatilitySpread = 0.10
+
+// inventoryFor is the inventory policy for a direction charging fee.
+//
+// The operator's fee is a floor, not a ceiling: the inventory policy widens it
+// for how drained the paying side is. Its fields are scaled together rather
+// than one overwritten, because they are not independent: the discount must be
+// no larger than the base or what a rebalance costs, and the maximum must
+// cover that cost. Setting the base alone breaks all three for any fee below
+// the default. Scaling preserves the ratios the defaults were chosen with.
+//
+// The discount is then held so the discounted fee still clears the routing
+// budget (discountFloorOverRouting).
+func (r resolved) inventoryFor(fee float64) inventory.Policy {
+	p := r.inventory
+	scale := fee / inventory.DefaultPolicy.BaseSpread
+	p.BaseSpread *= scale
+	p.MaxSpread *= scale
+	p.MaxDiscount *= scale
+	p.RebalanceCost *= scale
+
+	most := fee - r.quote.FeeFraction - discountFloorOverRouting
+	if most < 0 {
+		most = 0
+	}
+	if p.MaxDiscount > most {
+		p.MaxDiscount = most
+	}
+
+	return p
 }
 
 // Validate checks that this configuration would actually serve swaps.
@@ -398,6 +482,32 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%w: a negative spread (%g) pays people to "+
 			"use the bridge", ErrConfig, c.Spread)
 	}
+	for _, f := range []struct {
+		name string
+		v    float64
+	}{
+		{"fee.tosha256", c.FeeToSHA256}, {"fee.toblake2b", c.FeeToBLAKE2b},
+	} {
+		if f.v < 0 || math.IsNaN(f.v) {
+			return fmt.Errorf("%w: a negative fee (bridgerpc.%s %g) "+
+				"pays people to use the bridge", ErrConfig, f.name,
+				f.v)
+		}
+		if f.v >= maxSpread {
+			return fmt.Errorf("%w: bridgerpc.%s of %g means %.0f%%, "+
+				"which is almost certainly not what was meant: "+
+				"this is a fraction, so one percent is 0.01. The "+
+				"most this accepts is %g", ErrConfig, f.name, f.v,
+				f.v*100, maxSpread)
+		}
+	}
+	switch c.RateSource {
+	case "", RateSourceNeoxa, RateSourceFixed:
+	default:
+		return fmt.Errorf("%w: bridgerpc.ratesource is %q; it takes "+
+			"%s or %s", ErrConfig, c.RateSource, RateSourceNeoxa,
+			RateSourceFixed)
+	}
 	if c.Spread >= maxSpread {
 		// Far more likely to be a unit mistake than an intention. The
 		// spread is a fraction, so a one percent fee is 0.01, and
@@ -423,8 +533,10 @@ func (c *Config) Validate() error {
 	if !r.margin.Valid() {
 		return fmt.Errorf("%w: the margin policy is unusable", ErrConfig)
 	}
-	if err := r.inventory.Valid(); err != nil {
-		return fmt.Errorf("%w: %w", ErrConfig, err)
+	for _, fee := range []float64{r.feeToSHA256, r.feeToB2B} {
+		if err := r.inventoryFor(fee).Valid(); err != nil {
+			return fmt.Errorf("%w: %w", ErrConfig, err)
+		}
 	}
 	if !r.rate.Valid() {
 		return fmt.Errorf("%w: the rate policy is unusable", ErrConfig)
@@ -440,6 +552,19 @@ func (c *Config) Validate() error {
 			"bridge budgets for routing fees, so it would lose "+
 			"money on every swap", ErrConfig, c.Spread,
 			r.quote.FeeFraction)
+	}
+	for _, f := range []struct {
+		name string
+		v    float64
+	}{
+		{"fee.tosha256", c.FeeToSHA256}, {"fee.toblake2b", c.FeeToBLAKE2b},
+	} {
+		if f.v > 0 && f.v <= r.quote.FeeFraction {
+			return fmt.Errorf("%w: bridgerpc.%s of %g does not "+
+				"cover the %g this bridge budgets for routing "+
+				"fees, so it would lose money on every swap",
+				ErrConfig, f.name, f.v, r.quote.FeeFraction)
+		}
 	}
 
 	return c.checkReachable(r)

@@ -54,14 +54,11 @@ bridgerpc.sha256.tlscertpath=/path/to/sha256-node/tls.cert
 bridgerpc.sha256.macaroonpath=/path/to/sha256-node/admin.macaroon
 ```
 
-Either way the bridge comes up without a rate and quotes nothing until you
-set one (`lncli bridge setrate`, below); `bridgerpc.fixedrate=0.00483` sets
-one from the configuration instead.
+Either way the bridge trades at the market's rate, read live (below), and
+charges 1.5% on top of it each way.
 
 `tosha256` serves payers on this chain paying SHA256 invoices; `toblake2b` the
-reverse, which starts only once a rate is set. The rate is SHA256 coin per
-BLAKE2b coin and has no default: a wrong rate loses money on every swap and
-does it quietly. The node refuses to start the bridge with a combination of
+reverse, which starts once there is a rate. The node refuses to start the bridge with a combination of
 settings that would refuse every swap, and says which numbers to change.
 
 `lncli bridge status` says whether the bridge can serve swaps right now and,
@@ -80,23 +77,66 @@ off or moving it to another SHA256 node.
 
 ## The rate
 
+The rate is SHA256 coin per BLAKE2b coin. By default
+(`bridgerpc.ratesource=neoxa`) the bridge reads it from Neoxa every 30
+seconds, through Tor when this node uses Tor:
+
+- **The price** is Neoxa's BTCB2_BTC market, the middle of its last trade, best
+  bid and best ask, so that one trade off the book does not move it. It is
+  what payers' wallets check a quote against, so the premium they see is your
+  fee. The bridge trades at the median of the last few readings.
+- **The cross-check** is Neoxa's BTCB2_USDC market over a BTC/USD price
+  (CoinGecko's, or Neoxa's own BTC_USDC market). If the two are more than 5%
+  apart, or the cross-check cannot be read, nothing is quoted.
+- **No market, no quotes.** With no reading in the last 90 seconds, or a
+  ticker that has stopped updating, nothing is quoted. A move of 20% within
+  ten minutes stops quoting for half an hour.
+- **Your fee is widened by the market's own movement** over the last ten
+  minutes, as payers' wallets allow for it.
+- **Just before paying,** the bridge checks the swap again at the rate then. If
+  the market has moved against it by more than the fee since the quote, what
+  the payer sent is given back instead of paying out at a loss.
+
+`lncli bridge status` shows the rate, the cross-check (`rate_cross_check`),
+the market's movement (`rate_volatility`) and, when nothing is quoted, why.
+
+To trade at your own rate instead, set `bridgerpc.ratesource=fixed` and
+
 ```
 lncli bridge setrate 0.00490
 ```
 
-takes effect at once, survives restarts and is stamped with when it was set.
-It needs the admin macaroon: setting the price your SHA256 funds are sold at
-takes the permission to make macaroons as well as to pay, so a wallet or app
+which takes effect at once, survives restarts and is stamped with when it was
+set. It needs the admin macaroon: setting the price your SHA256 funds are sold
+at takes the permission to make macaroons as well as to pay, so a wallet or app
 macaroon that can pay cannot change it. It also works while the bridge is
-waiting to start, which is how to replace a rate file it cannot read.
-Once it is older than `bridgerpc.ratemaxage` (24 hours by default) the bridge
-stops quoting until you set it again, because a rate nobody has looked at in a
-moving market is a loss waiting to be taken. Changing `bridgerpc.fixedrate` in
-the configuration and restarting also sets it.
+waiting to start, which is how to replace a rate file it cannot read. Once it
+is older than `bridgerpc.ratemaxage` (one hour by default) the bridge stops
+quoting until you set it again, because a rate nobody has looked at in a
+moving market is a loss waiting to be taken. `bridgerpc.fixedrate` in the
+configuration sets it too. Following the market, setrate is refused and
+`bridgerpc.fixedrate` is not used.
 
-Payers' wallets check every quote against a public market price and refuse one
-too far above it, so a rate set far from the market is refused rather than
-paid.
+Payers' wallets check every quote against Neoxa and, by default, refuse one
+more than 5% above it (widened by the last hour's range), so a rate set far
+from the market is refused rather than paid.
+
+## The fee
+
+`bridgerpc.spread` is your fee on top of the rate, as a fraction, for both
+directions: 0.015 (1.5%) by default. `bridgerpc.fee.tosha256` and
+`bridgerpc.fee.toblake2b` set one direction each, over it. Routing fees come out
+of it (the bridge budgets 0.3% of each payout), so a fee must be above that.
+
+The fee is a floor. The bridge charges more on the side it is running low on,
+up to three times the fee near empty, and less, never below the routing budget
+plus 0.1%, on the side that refills it.
+
+Why 1.5%: payers allow 5% over the market by default, and three times 1.5% is
+4.5%, so a bridge running low is still paid. Much below 1%, what is left after
+routing is smaller than an ordinary two-minute move of this market, and quotes
+funded a minute or two later are given back more often. A higher fee in one
+direction makes sense when you want the coin the other one brings in.
 
 ## Participants
 

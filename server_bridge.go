@@ -70,6 +70,8 @@ func (s *server) bridgeDeps(
 
 		Network: bridgeNetworkName(s.cfg.ActiveNetParams.Params.Name),
 
+		Dial: s.cfg.net.Dial,
+
 		DeriveSha256Seed: s.deriveSha256Seed,
 
 		DecodeInvoice: func(_ context.Context,

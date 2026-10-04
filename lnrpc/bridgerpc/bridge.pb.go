@@ -369,12 +369,14 @@ type StatusResponse struct {
 	Refusals []string `protobuf:"bytes,3,rep,name=refusals,proto3" json:"refusals,omitempty"`
 	// How many swaps are being driven right now.
 	SwapsInFlight uint32 `protobuf:"varint,4,opt,name=swaps_in_flight,json=swapsInFlight,proto3" json:"swaps_in_flight,omitempty"`
-	// The rate in force, as SHA256 coin per BLAKE2b coin.
+	// The rate in force, as SHA256 coin per BLAKE2b coin: the market's last
+	// reading (rate_source neoxa) or the operator's own (fixed).
 	Rate float64 `protobuf:"fixed64,5,opt,name=rate,proto3" json:"rate,omitempty"`
-	// When it was set, as a Unix timestamp in seconds.
+	// When it was set or read, as a Unix timestamp in seconds.
 	RateSetAt int64 `protobuf:"varint,6,opt,name=rate_set_at,json=rateSetAt,proto3" json:"rate_set_at,omitempty"`
 	// When it stops being used, as a Unix timestamp in seconds, or zero if the
-	// bridge allows a rate of any age.
+	// bridge allows a rate of any age. Following the market, a reading is used
+	// for a short while and replaced by the next.
 	RateExpiresAt int64 `protobuf:"varint,7,opt,name=rate_expires_at,json=rateExpiresAt,proto3" json:"rate_expires_at,omitempty"`
 	// Swaps that need the operator: ones that ended lost (paid out and the
 	// claim on the money coming in could not be settled) or that the bridge
@@ -391,7 +393,21 @@ type StatusResponse struct {
 	// finishing them, or not up (then as last read). A lost swap is final and
 	// not counted; it stays in needs_operator. This is what to wait on before
 	// turning the bridge off or changing its SHA256 node.
-	Unfinished    uint32 `protobuf:"varint,10,opt,name=unfinished,proto3" json:"unfinished,omitempty"`
+	Unfinished uint32 `protobuf:"varint,10,opt,name=unfinished,proto3" json:"unfinished,omitempty"`
+	// Where the rate comes from: "neoxa" (the market, read live) or "fixed"
+	// (the operator's own, set with SetRate or the configuration).
+	RateSource string `protobuf:"bytes,11,opt,name=rate_source,json=rateSource,proto3" json:"rate_source,omitempty"`
+	// Following the market: the cross-check's last reading, Neoxa's BTCB2_USDC
+	// market over a BTC/USD price, in the same unit as rate. The bridge quotes
+	// only while the two agree.
+	RateCrossCheck float64 `protobuf:"fixed64,12,opt,name=rate_cross_check,json=rateCrossCheck,proto3" json:"rate_cross_check,omitempty"`
+	// Following the market: how far it moved in the last few minutes, as a
+	// fraction, which each quote's fee is widened by.
+	RateVolatility float64 `protobuf:"fixed64,13,opt,name=rate_volatility,json=rateVolatility,proto3" json:"rate_volatility,omitempty"`
+	// The fee each direction charges on top of the rate, as a fraction, before
+	// the market's movement and the inventory policy widen it.
+	FeeToSha256   float64 `protobuf:"fixed64,14,opt,name=fee_to_sha256,json=feeToSha256,proto3" json:"fee_to_sha256,omitempty"`
+	FeeToBlake2B  float64 `protobuf:"fixed64,15,opt,name=fee_to_blake2b,json=feeToBlake2b,proto3" json:"fee_to_blake2b,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -492,6 +508,41 @@ func (x *StatusResponse) GetSha256Node() *Sha256Node {
 func (x *StatusResponse) GetUnfinished() uint32 {
 	if x != nil {
 		return x.Unfinished
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetRateSource() string {
+	if x != nil {
+		return x.RateSource
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetRateCrossCheck() float64 {
+	if x != nil {
+		return x.RateCrossCheck
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetRateVolatility() float64 {
+	if x != nil {
+		return x.RateVolatility
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetFeeToSha256() float64 {
+	if x != nil {
+		return x.FeeToSha256
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetFeeToBlake2B() float64 {
+	if x != nil {
+		return x.FeeToBlake2B
 	}
 	return 0
 }
@@ -1132,7 +1183,7 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\rincoming_msat\x18\x03 \x01(\x04R\fincomingMsat\x12#\n" +
 	"\routgoing_msat\x18\x04 \x01(\x04R\foutgoingMsat\x12\x1a\n" +
 	"\bpreimage\x18\x05 \x01(\fR\bpreimage\"\x0f\n" +
-	"\rStatusRequest\"\xe9\x02\n" +
+	"\rStatusRequest\"\xa7\x04\n" +
 	"\x0eStatusResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1e\n" +
 	"\n" +
@@ -1149,7 +1200,13 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\n" +
 	"unfinished\x18\n" +
 	" \x01(\rR\n" +
-	"unfinished\"\xbb\x04\n" +
+	"unfinished\x12\x1f\n" +
+	"\vrate_source\x18\v \x01(\tR\n" +
+	"rateSource\x12(\n" +
+	"\x10rate_cross_check\x18\f \x01(\x01R\x0erateCrossCheck\x12'\n" +
+	"\x0frate_volatility\x18\r \x01(\x01R\x0erateVolatility\x12\"\n" +
+	"\rfee_to_sha256\x18\x0e \x01(\x01R\vfeeToSha256\x12$\n" +
+	"\x0efee_to_blake2b\x18\x0f \x01(\x01R\ffeeToBlake2b\"\xbb\x04\n" +
 	"\n" +
 	"Sha256Node\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x14\n" +

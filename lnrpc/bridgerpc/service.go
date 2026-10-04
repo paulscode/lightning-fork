@@ -71,6 +71,10 @@ type side struct {
 	// it directly.
 	inventory inventory.Policy
 
+	// fee is this direction's fee, as a fraction: bridgerpc.fee.<name>,
+	// else bridgerpc.spread, else DefaultFee.
+	fee float64
+
 	// sized is set once the inventory bounds have been derived from a
 	// real balance, so it is done once rather than tracking the balance.
 	sized bool
@@ -132,9 +136,15 @@ type service struct {
 
 	journal *store.Journal
 
-	// rates is the rate in force, which the operator can change while the
-	// bridge runs.
+	// rates is the operator's own rate, which they can change while the
+	// bridge runs. With ratesource=fixed it is what the bridge trades at.
 	rates *ratebook
+
+	// prices is what the bridge trades at: rates, or the market's feed.
+	prices priceSource
+
+	// market is the feed with ratesource=neoxa, for Status; nil otherwise.
+	market *feed
 
 	// own is both nodes' identity keys, so neither can be paid through the
 	// bridge.
@@ -201,6 +211,16 @@ type service struct {
 // so a caller can build a service to check a configuration without it
 // beginning to quote.
 func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
+	return newServiceWith(cfg, local, remote, nil)
+}
+
+// newServiceWith is newService trading at market's rate when the rate source
+// is the market. The server keeps one feed across the services it builds, so
+// that a rebuild does not throw away the readings the median and the breaker
+// need; nil builds one that has not read anything yet.
+func newServiceWith(cfg *Config, local *Local, remote *Remote,
+	market *feed) (*service, error) {
+
 	s := &service{
 		cfg: cfg, res: cfg.resolve(), local: local, remote: remote,
 	}
@@ -228,6 +248,24 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 		s.close()
 
 		return nil, err
+	}
+	s.prices = s.rates
+	if s.res.rateSource == RateSourceNeoxa {
+		if market == nil {
+			if market, err = newFeed(s.res.rate, nil); err != nil {
+				s.close()
+
+				return nil, fmt.Errorf("the market rate feed: %w",
+					err)
+			}
+		}
+		s.market, s.prices = market, market
+		if cfg.FixedRate > 0 {
+			log.Warnf("Bridge follows the market (bridgerpc." +
+				"ratesource is neoxa), so bridgerpc.fixedrate is " +
+				"not used; set bridgerpc.ratesource=fixed to trade " +
+				"at it")
+		}
 	}
 
 	s.own = []string{local.NodeKey()}
@@ -305,7 +343,7 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 		// to be driven: a payer's HTLC to settle or refund, a paid one
 		// to claim. Leaving them undriven until a rate is set could
 		// let an incoming HTLC expire after the bridge had paid out.
-		if r, _ := s.rates.current(); !usableRate(r) {
+		if r, _ := s.prices.last(); !usableRate(r) {
 			s.heldForRate = true
 		}
 		// The rate is posted as SHA256 coin per BLAKE2b coin, so the
@@ -326,9 +364,13 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 	balance func(context.Context) (uint64, error),
 	dir inventory.Direction, invert bool) *side {
 
+	fee := s.res.feeToSHA256
+	if invert {
+		fee = s.res.feeToB2B
+	}
 	sd := &side{
 		name: name, in: in, out: out, balance: balance, dir: dir,
-		invert: invert, inventory: s.res.inventory,
+		invert: invert, inventory: s.res.inventoryFor(fee), fee: fee,
 		// The direction that inverts the rate is the one paying in
 		// BTCB2.
 		paysBLAKE2b: invert,
@@ -361,6 +403,7 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 		},
 		Store:       s.journal,
 		Rates:       runner.Rates(s.spacing(invert)),
+		PriceCheck:  s.priceCheck(sd),
 		Log:         bridgeLogger(name),
 		FundedGrace: s.res.fundedGrace,
 	}
@@ -378,7 +421,7 @@ func (s *service) inBLAKE2bMsat(btcMsat uint64) uint64 {
 	// The rate in force when the bridge started. The bounds are caps, set
 	// once; a rate changed later moves what they are worth in BTCB2, but
 	// re-deriving them under quotes in flight would race those quotes.
-	rate, _ := s.rates.current()
+	rate, _ := s.prices.last()
 	if btcMsat == 0 || rate <= 0 {
 		return btcMsat
 	}
@@ -391,7 +434,43 @@ func (s *service) inBLAKE2bMsat(btcMsat uint64) uint64 {
 	return uint64(converted)
 }
 
-// pricer combines the posted rate with what the paying side is holding.
+// priceCheck is asked just before a funded swap is paid: is what the payer sent
+// still worth the payout and its routing budget at the rate now?
+//
+// The quote fixed what the payer owes, and they may fund it minutes later. If
+// the market moved against the bridge by more than its fee in between, paying
+// would be a loss taken knowingly; giving the payer's funds back costs nobody
+// anything. A rate that cannot be read is an error, which waits, and past the
+// funded grace the swap is given back: nothing is paid on a price the bridge
+// cannot see.
+func (s *service) priceCheck(sd *side) runner.PriceCheck {
+	return func(_ context.Context, sw *driver.Swap) (bool, error) {
+		m, err := s.prices.quoteRate()
+		if err != nil {
+			return false, err
+		}
+
+		r := m.rate
+		if sd.invert {
+			r = 1 / r
+		}
+		worth := float64(sw.IncomingMsat) * r
+		owed := float64(sw.OutgoingMsat) + float64(sw.MaxFeeMsat)
+		if worth >= owed {
+			return true, nil
+		}
+
+		log.Warnf("Bridge giving back %s swap %x: the market moved "+
+			"since it was quoted, and at %.8g the %d msat paid in "+
+			"is worth %.0f msat, under the %d msat payout and its "+
+			"%d msat routing budget", sd.name, sw.Hash[:8], m.rate,
+			sw.IncomingMsat, worth, sw.OutgoingMsat, sw.MaxFeeMsat)
+
+		return false, nil
+	}
+}
+
+// pricer combines the rate with the fee and what the paying side is holding.
 //
 // The spread charged is the larger of the operator's posted one and what the
 // inventory policy asks for given how drained the paying side is. Both are
@@ -403,21 +482,27 @@ func (s *service) inBLAKE2bMsat(btcMsat uint64) uint64 {
 // why the inventory half matters more here than it does with a live feed.
 func (s *service) pricer(sd *side) quote.Pricer {
 	return func(ctx context.Context) (rate.Reading, error) {
-		posted, at, err := s.rates.usable()
+		m, err := s.prices.quoteRate()
 		if err != nil {
 			return rate.Reading{}, fmt.Errorf("%w: %w", quote.ErrRefused,
 				err)
 		}
 
+		// The fee, widened by what the market itself has just done:
+		// a quote is honoured for minutes, and on a market moving
+		// fast the fee alone would not cover the move. Payers allow
+		// the same, measured over a longer window, so this stays
+		// inside what they accept.
+		moved := m.volatility * s.res.rate.VolatilityMultiple
+		if moved > s.res.rate.MaxSpread {
+			moved = s.res.rate.MaxSpread
+		}
 		r := rate.Reading{
-			OutgoingPerIncoming: posted,
-			At:                  at,
-
-			// One source, and it is the operator. Worth carrying
-			// honestly rather than inflating: nothing
-			// cross-checked this number.
-			Sources: 1,
-			Spread:  s.res.rate.BaseSpread,
+			OutgoingPerIncoming: m.rate,
+			At:                  m.at,
+			Sources:             m.sources,
+			Spread:              sd.fee + moved,
+			Volatility:          m.volatility,
 		}
 
 		if sd.invert {

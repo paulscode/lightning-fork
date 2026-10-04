@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/paulscode/lightning-fork-bridge/node"
+	"github.com/paulscode/lightning-fork-bridge/rate"
 	"github.com/paulscode/lightning-fork-bridge/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -142,6 +144,12 @@ type Server struct {
 	// sup prepares the SHA256 node when this node runs it for the bridge
 	// (bridgerpc.sha256.supervised), and is nil otherwise.
 	sup *supervisor
+
+	// market follows the market's rate with bridgerpc.ratesource=neoxa,
+	// and is nil otherwise. It outlives the services built on it, so a
+	// rebuild keeps the readings the median and the breaker need. Started
+	// by Start, ended with quit.
+	market *feed
 
 	// draining is set by Start when the bridge is off with swaps
 	// unfinished; drained once they are done. drainStuck is how many were
@@ -290,6 +298,7 @@ func (s *Server) Start() error {
 	// does not answer takes the dial timeout and the chain check's, and
 	// the node's own start should not wait on either.
 	s.quit = make(chan struct{})
+	s.startMarket()
 	s.setStartErr(errStarting)
 	s.wg.Add(1)
 	go s.retry()
@@ -299,6 +308,54 @@ func (s *Server) Start() error {
 	}
 
 	return nil
+}
+
+// startMarket starts following the market, when the bridge trades at its rate.
+//
+// Before the first service comes up rather than with it, so that a bridge
+// that takes a while to reach its SHA256 node has a rate by the time it does.
+// A reading that arrives while toBLAKE2b is held for want of a rate brings it
+// up, as SetRate does with a fixed one.
+func (s *Server) startMarket() {
+	if s.cfg.resolve().rateSource != RateSourceNeoxa {
+		return
+	}
+
+	var dial func(string, string, time.Duration) (net.Conn, error)
+	if s.cfg.Deps != nil {
+		dial = s.cfg.Deps.Dial
+	}
+	market, err := newFeed(s.cfg.resolve().rate, dial)
+	if err != nil {
+		// The policy is a fixed one, checked by Validate; a service
+		// built without the feed builds its own and says why it has
+		// no rate.
+		log.Errorf("Bridge cannot follow the market: %v", err)
+
+		return
+	}
+	market.onReading = func() {
+		if svc := s.service(); svc != nil && svc.heldForRate {
+			s.rebuild(svc, "now that the market's rate is known, "+
+				"to bring up toBLAKE2b")
+		}
+	}
+
+	s.mu.Lock()
+	s.market = market
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.wg.Add(2)
+	go func() {
+		defer s.wg.Done()
+		<-s.quit
+		cancel()
+	}()
+	go func() {
+		defer s.wg.Done()
+		market.run(ctx)
+	}()
 }
 
 // unfinishedInJournal is how many swaps the journal at path has not finished,
@@ -585,7 +642,10 @@ func (s *Server) connect() error {
 		c.ToSHA256, c.ToBLAKE2b = true, true
 		cfg = &c
 	}
-	svc, err := newService(cfg, s.local, remoteNode)
+	s.mu.RLock()
+	market := s.market
+	s.mu.RUnlock()
+	svc, err := newServiceWith(cfg, s.local, remoteNode, market)
 	if err != nil {
 		s.rateMu.Unlock()
 		_ = conn.Close()
@@ -1128,22 +1188,33 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	}
 	if svc.heldForRate {
 		resp.Refusals = append(resp.Refusals, "toBLAKE2b quotes once "+
-			"a rate is set: its swap bounds are converted from "+
+			"there is a rate: its swap bounds are converted from "+
 			"SHA256 coin at the rate in force then (swaps already "+
 			"under way go on meanwhile)")
 	}
 	resp.SwapsInFlight = uint32(svc.active())
 
-	rate, setAt := svc.rates.current()
+	resp.RateSource = svc.res.rateSource
+	resp.FeeToSha256, resp.FeeToBlake2B = svc.res.feeToSHA256,
+		svc.res.feeToB2B
+	rate, setAt := svc.prices.last()
 	resp.Rate = rate
 	if !setAt.IsZero() {
 		resp.RateSetAt = setAt.Unix()
 	}
-	if exp := svc.rates.expiresAt(); !exp.IsZero() {
+	if svc.market != nil {
+		resp.RateCrossCheck = svc.market.crossCheck()
+		if !setAt.IsZero() {
+			resp.RateExpiresAt = setAt.Add(
+				svc.res.rate.MaxAge).Unix()
+		}
+	} else if exp := svc.rates.expiresAt(); !exp.IsZero() {
 		resp.RateExpiresAt = exp.Unix()
 	}
-	if _, _, err := svc.rates.usable(); err != nil {
-		resp.Refusals = append(resp.Refusals, err.Error())
+	if m, err := svc.prices.quoteRate(); err != nil {
+		resp.Refusals = append(resp.Refusals, rateRefusal(err))
+	} else {
+		resp.RateVolatility = m.volatility
 	}
 
 	// A chain the bridge cannot currently measure is a chain it cannot
@@ -1205,6 +1276,28 @@ func (s *Server) Info(ctx context.Context, _ *InfoRequest) (*InfoResponse,
 	return proto.Clone(resp).(*InfoResponse), nil
 }
 
+// rateRefusal says why there is no rate to trade at, for Status.
+func rateRefusal(err error) string {
+	switch {
+	case errors.Is(err, errNoReading):
+		return "no rate yet: reading the market"
+
+	case errors.Is(err, rate.ErrDisagreement):
+		return "quoting nothing while the market's two readings " +
+			"disagree: " + err.Error()
+
+	case errors.Is(err, rate.ErrBroken):
+		return "quoting nothing while the market settles: " +
+			err.Error()
+
+	case errors.Is(err, rate.ErrStale), errors.Is(err, errFeedUnreadable):
+		return "quoting nothing without a current market rate: " +
+			err.Error()
+	}
+
+	return err.Error()
+}
+
 // infoTimeout bounds Info. It reads balances on both nodes, and a payer is
 // waiting on it to show a price.
 const infoTimeout = 15 * time.Second
@@ -1225,6 +1318,12 @@ func (s *Server) SetRate(_ context.Context, req *SetRateRequest) (
 	// how it is replaced.
 	if !s.cfg.Enabled && !s.draining {
 		return nil, errDisabled()
+	}
+	if s.cfg.resolve().rateSource != RateSourceFixed {
+		return nil, coded(codes.FailedPrecondition, "rate_from_market",
+			"this bridge trades at the market's rate, read live from "+
+				"Neoxa (bridgerpc.ratesource=neoxa); to post your "+
+				"own, set bridgerpc.ratesource=fixed")
 	}
 
 	s.rateMu.Lock()

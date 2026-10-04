@@ -2,6 +2,7 @@ package bridgerpc
 
 import (
 	"context"
+	"net"
 	"time"
 
 	"github.com/lightningnetwork/lnd/aezeed"
@@ -57,6 +58,13 @@ type Deps struct {
 	// Network is this node's network as lnd's GetInfo names it (mainnet,
 	// testnet, regtest, ...). The SHA256 node must be on the same one.
 	Network string
+
+	// Dial reaches the world as this node does: through Tor when the node
+	// is set to. The rate feed reads the market with it, so a node that
+	// keeps its address to itself does not hand it to an exchange. Nil
+	// dials directly.
+	Dial func(network, address string, timeout time.Duration) (net.Conn,
+		error)
 
 	// DeriveSha256Seed is the supervised SHA256 node's aezeed entropy,
 	// derived from this node's wallet as seed.go specifies.

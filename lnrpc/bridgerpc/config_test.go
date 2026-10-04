@@ -26,6 +26,7 @@ func usable() Config {
 		SHA256MacaroonPath: "/tmp/admin.macaroon",
 		ToSHA256:           true,
 		ToBLAKE2b:          true,
+		RateSource:         RateSourceFixed,
 		FixedRate:          0.00308078,
 		Spread:             0.01,
 	}
@@ -291,18 +292,15 @@ func TestSpreadIsAFloorNotACeiling(t *testing.T) {
 	c.Spread = 0.05
 	r := c.resolve()
 
-	if r.rate.BaseSpread != 0.05 {
-		t.Errorf("rate base spread %g, wanted the operator's 0.05",
-			r.rate.BaseSpread)
+	if r.feeToSHA256 != 0.05 || r.feeToB2B != 0.05 {
+		t.Errorf("fees %g/%g, wanted the operator's 0.05 both ways",
+			r.feeToSHA256, r.feeToB2B)
 	}
-	if r.inventory.BaseSpread != 0.05 {
-		t.Errorf("inventory base spread %g, wanted 0.05",
-			r.inventory.BaseSpread)
+	inv := r.inventoryFor(r.feeToSHA256)
+	if inv.BaseSpread != 0.05 {
+		t.Errorf("inventory base spread %g, wanted 0.05", inv.BaseSpread)
 	}
-	if r.rate.MaxSpread < r.rate.BaseSpread {
-		t.Error("the rate policy cannot widen past the posted fee")
-	}
-	if r.inventory.MaxSpread < r.inventory.BaseSpread {
+	if inv.MaxSpread < inv.BaseSpread {
 		t.Error("the inventory policy cannot widen past the posted fee")
 	}
 
@@ -310,12 +308,99 @@ func TestSpreadIsAFloorNotACeiling(t *testing.T) {
 	// silently clamped down to it.
 	c.Spread = 0.1
 	r = c.resolve()
-	if r.rate.MaxSpread < 0.1 || r.inventory.MaxSpread < 0.1 {
-		t.Errorf("a large spread was clamped: rate %g, inventory %g",
-			r.rate.MaxSpread, r.inventory.MaxSpread)
+	if inv := r.inventoryFor(r.feeToSHA256); inv.MaxSpread < 0.1 {
+		t.Errorf("a large spread was clamped: inventory %g", inv.MaxSpread)
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("a spread of 0.1 should still validate: %v", err)
+	}
+}
+
+// The fees: 1.5% each way by default, spread for both, and a per-direction fee
+// over either.
+func TestFeesPerDirection(t *testing.T) {
+	t.Parallel()
+
+	c := usable()
+	c.Spread = 0
+	r := c.resolve()
+	if r.feeToSHA256 != DefaultFee || r.feeToB2B != DefaultFee {
+		t.Errorf("default fees %g/%g, wanted %g", r.feeToSHA256,
+			r.feeToB2B, DefaultFee)
+	}
+
+	c.Spread = 0.012
+	c.FeeToBLAKE2b = 0.008
+	r = c.resolve()
+	if r.feeToSHA256 != 0.012 || r.feeToB2B != 0.008 {
+		t.Errorf("fees %g/%g, wanted 0.012/0.008", r.feeToSHA256,
+			r.feeToB2B)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("per-direction fees refused: %v", err)
+	}
+
+	for _, bad := range []struct {
+		name string
+		set  func(*Config)
+	}{
+		{"negative", func(c *Config) { c.FeeToSHA256 = -0.01 }},
+		{"a percentage typed as a whole number", func(c *Config) {
+			c.FeeToBLAKE2b = 1.5
+		}},
+		{"under the routing budget", func(c *Config) {
+			c.FeeToSHA256 = 0.002
+		}},
+		{"an unknown rate source", func(c *Config) {
+			c.RateSource = "coinbase"
+		}},
+	} {
+		c := usable()
+		bad.set(&c)
+		if err := c.Validate(); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: accepted (%v)", bad.name, err)
+		}
+	}
+}
+
+// The discounted direction never goes below its routing budget: at the most
+// discount, the default discount took a 1% fee to 0.2%, under the 0.3%
+// budget, and the quote refused the swaps that would have refilled the bridge.
+func TestTheDiscountStaysAboveTheRoutingBudget(t *testing.T) {
+	t.Parallel()
+
+	for _, fee := range []float64{0.004, 0.01, DefaultFee, 0.05, 0.19} {
+		c := usable()
+		c.Spread = fee
+		r := c.resolve()
+		inv := r.inventoryFor(fee)
+		if err := inv.Valid(); err != nil {
+			t.Errorf("fee %g: %v", fee, err)
+		}
+		least := inv.BaseSpread - inv.MaxDiscount
+		if least <= r.quote.FeeFraction {
+			t.Errorf("fee %g discounts to %g, not above the %g "+
+				"routing budget", fee, least, r.quote.FeeFraction)
+		}
+	}
+}
+
+// The source: the market by default, the operator's own on request.
+func TestTheRateSourceDefaultsToTheMarket(t *testing.T) {
+	t.Parallel()
+
+	c := usable()
+	c.RateSource = ""
+	if got := c.resolve().rateSource; got != RateSourceNeoxa {
+		t.Errorf("default source %q", got)
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("a fixed rate beside the default source must not stop "+
+			"the node: %v", err)
+	}
+	c.RateSource = RateSourceFixed
+	if got := c.resolve().rateSource; got != RateSourceFixed {
+		t.Errorf("source %q", got)
 	}
 }
 
