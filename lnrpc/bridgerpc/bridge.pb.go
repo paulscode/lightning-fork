@@ -385,7 +385,13 @@ type StatusResponse struct {
 	// The Lightning node on the SHA256 chain: how far it has got and what it
 	// holds. Present whenever the bridge is enabled, including while it cannot
 	// start, since that node is usually why.
-	Sha256Node    *Sha256Node `protobuf:"bytes,9,opt,name=sha256_node,json=sha256Node,proto3" json:"sha256_node,omitempty"`
+	Sha256Node *Sha256Node `protobuf:"bytes,9,opt,name=sha256_node,json=sha256Node,proto3" json:"sha256_node,omitempty"`
+	// How many swaps the journal holds unfinished: being driven, waiting to be,
+	// or stopped for the operator. Answered whether the bridge is on, off and
+	// finishing them, or not up (then as last read). A lost swap is final and
+	// not counted; it stays in needs_operator. This is what to wait on before
+	// turning the bridge off or changing its SHA256 node.
+	Unfinished    uint32 `protobuf:"varint,10,opt,name=unfinished,proto3" json:"unfinished,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -481,6 +487,13 @@ func (x *StatusResponse) GetSha256Node() *Sha256Node {
 		return x.Sha256Node
 	}
 	return nil
+}
+
+func (x *StatusResponse) GetUnfinished() uint32 {
+	if x != nil {
+		return x.Unfinished
+	}
+	return 0
 }
 
 type Sha256Node struct {
@@ -1119,7 +1132,7 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\rincoming_msat\x18\x03 \x01(\x04R\fincomingMsat\x12#\n" +
 	"\routgoing_msat\x18\x04 \x01(\x04R\foutgoingMsat\x12\x1a\n" +
 	"\bpreimage\x18\x05 \x01(\fR\bpreimage\"\x0f\n" +
-	"\rStatusRequest\"\xc9\x02\n" +
+	"\rStatusRequest\"\xe9\x02\n" +
 	"\x0eStatusResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1e\n" +
 	"\n" +
@@ -1132,7 +1145,11 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\x0frate_expires_at\x18\a \x01(\x03R\rrateExpiresAt\x12%\n" +
 	"\x0eneeds_operator\x18\b \x03(\tR\rneedsOperator\x126\n" +
 	"\vsha256_node\x18\t \x01(\v2\x15.bridgerpc.Sha256NodeR\n" +
-	"sha256Node\"\xbb\x04\n" +
+	"sha256Node\x12\x1e\n" +
+	"\n" +
+	"unfinished\x18\n" +
+	" \x01(\rR\n" +
+	"unfinished\"\xbb\x04\n" +
 	"\n" +
 	"Sha256Node\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x14\n" +

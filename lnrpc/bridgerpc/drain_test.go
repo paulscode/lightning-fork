@@ -249,3 +249,47 @@ func TestAnUnreadableJournalIsSaid(t *testing.T) {
 	require.Contains(t, status.Refusals[len(status.Refusals)-1],
 		"cannot be read")
 }
+
+// Status counts the journal's unfinished swaps whatever the bridge's state,
+// and never a lost one, which is final.
+func TestStatusCountsWhatIsUnfinished(t *testing.T) {
+	count := func(cfg Config) uint32 {
+		t.Helper()
+		srv, _, err := New(&cfg)
+		require.NoError(t, err)
+		require.NoError(t, srv.Start())
+		defer srv.Stop()
+		status, err := srv.Status(context.Background(), &StatusRequest{})
+		require.NoError(t, err)
+
+		return status.Unfinished
+	}
+
+	stuck := usable()
+	stuck.Enabled = false
+	stuck.SHA256RPCHost, stuck.SHA256MacaroonPath = "", ""
+	stuck.Journal = journalWith(t, swap.Funded)
+	require.EqualValues(t, 1, count(stuck), "off with nothing to finish through")
+
+	lost := stuck
+	lost.Journal = journalWith(t, swap.Lost)
+	require.EqualValues(t, 0, count(lost), "a lost swap is final")
+
+	on := usable()
+	on.SHA256RPCHost = "127.0.0.1:1"
+	on.Journal = journalWith(t, swap.Funded)
+	require.EqualValues(t, 1, count(on), "on and not up: as read at start")
+
+	// Running: from the service's own journal.
+	cfg := usable()
+	svc := serviceFor(t, cfg, &fakeNode{synced: true}, remote(nil, nil, nil))
+	srv, _, err := New(&cfg)
+	require.NoError(t, err)
+	srv.mu.Lock()
+	srv.svc = svc
+	srv.unfinished = 5
+	srv.mu.Unlock()
+	status, err := srv.Status(context.Background(), &StatusRequest{})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, status.Unfinished)
+}

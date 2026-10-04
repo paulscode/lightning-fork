@@ -68,7 +68,7 @@ that chain, else to mempool.space.
 
 | Who | Does |
 | --- | --- |
-| The platform | Runs the stock lnd, from the official image, once the bridge is on. Starts it with `--wallet-unlock-password-file` and `--wallet-unlock-allow-create`, so it waits for its wallet to be created and unlocks itself after that. Restarts it if it stops. |
+| The platform | Runs the stock lnd, from the official image, once the bridge is on, and keeps it running after the bridge is turned off while it has a wallet (it may hold channels). Starts it with `--wallet-unlock-password-file` and `--wallet-unlock-allow-create`, so it waits for its wallet to be created and unlocks itself after that. Restarts it if it stops. |
 | Lightning Fork | Writes that password (random, kept beside the bridge's journal). Creates the node's wallet, once, from a seed derived from its own. Bakes a macaroon with only the 14 calls the bridge makes, and uses that, never the admin one. Refuses the node unless its identity is the one the derived seed gives. |
 
 Every step Lightning Fork takes is repeated before each connection attempt and

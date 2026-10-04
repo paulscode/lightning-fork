@@ -510,6 +510,11 @@
         "sha256_node": {
           "$ref": "#/definitions/bridgerpcSha256Node",
           "description": "The Lightning node on the SHA256 chain: how far it has got and what it\nholds. Present whenever the bridge is enabled, including while it cannot\nstart, since that node is usually why."
+        },
+        "unfinished": {
+          "type": "integer",
+          "format": "int64",
+          "description": "How many swaps the journal holds unfinished: being driven, waiting to be,\nor stopped for the operator. Answered whether the bridge is on, off and\nfinishing them, or not up (then as last read). A lost swap is final and\nnot counted; it stays in needs_operator. This is what to wait on before\nturning the bridge off or changing its SHA256 node."
         }
       }
     },

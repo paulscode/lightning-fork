@@ -156,6 +156,10 @@ type Server struct {
 	// RPCs are served.
 	journalErr error
 
+	// unfinished is the journal's count of unfinished swaps as last read:
+	// at Start, then from the running service. Under mu.
+	unfinished int
+
 	// rateMu serialises SetRate with the service coming up; see connect.
 	rateMu sync.Mutex
 
@@ -210,6 +214,14 @@ func (s *Server) Start() error {
 		return nil
 	}
 
+	// Read here, before anything else has the journal open: opening it
+	// repairs a torn tail, which must never race a writer. From now on
+	// Status takes the count from the running service's own copy.
+	n, journalErr := unfinishedInJournal(s.cfg.Journal)
+	if journalErr == nil {
+		s.unfinished = n
+	}
+
 	if !s.cfg.Enabled {
 		// Turned off with swaps unfinished: they are finished, through
 		// the SHA256 node they started on, and nothing new is quoted.
@@ -218,7 +230,7 @@ func (s *Server) Start() error {
 		// platforms refuse to turn the bridge off while one is in
 		// flight; this covers the one that starts in between, and a
 		// configuration edited by hand.
-		n, err := unfinishedInJournal(s.cfg.Journal)
+		err := journalErr
 		switch {
 		case err != nil:
 			log.Errorf("Bridge is off and could not read its swap "+
@@ -332,6 +344,22 @@ func (s *Server) keepConsoleMacaroon() {
 	}
 }
 
+// unfinishedNow is how many swaps the journal holds unfinished: from the
+// running service's journal when there is one, else as last read.
+func (s *Server) unfinishedNow(ctx context.Context) uint32 {
+	if svc := s.service(); svc != nil {
+		if pending, err := svc.journal.Pending(ctx); err == nil {
+			s.mu.Lock()
+			s.unfinished = len(pending)
+			s.mu.Unlock()
+		}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return uint32(s.unfinished)
+}
+
 // drainCheckInterval is how often a draining bridge looks for its last swap
 // to have finished.
 var drainCheckInterval = 30 * time.Second
@@ -365,6 +393,7 @@ func (s *Server) watchDrain() {
 		conn := s.conn
 		s.svc, s.remote, s.conn = nil, nil, nil
 		s.drained = true
+		s.unfinished = 0
 		s.mu.Unlock()
 
 		svc.stop()
@@ -978,7 +1007,10 @@ func (s *Server) LookupSwap(ctx context.Context, req *LookupSwapRequest) (
 func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	*StatusResponse, error) {
 
-	resp := &StatusResponse{Enabled: s.cfg.Enabled}
+	resp := &StatusResponse{
+		Enabled:    s.cfg.Enabled,
+		Unfinished: s.unfinishedNow(ctx),
+	}
 
 	if !s.cfg.Enabled {
 		resp.Refusals = append(resp.Refusals, "the bridge is not "+

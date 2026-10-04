@@ -72,7 +72,11 @@ on this node's network, the bridge stays down and tries again every minute
 while this node runs as usual. `needs_operator`
 lists swaps that need you: one that ended lost (paid out, and the payment
 coming in could not be claimed), or one the bridge stopped driving because it
-must not decide it alone. Watch that list.
+must not decide it alone. Watch that list. It is filled while the bridge is
+on, and while it is off but still finishing swaps. `unfinished` counts the
+swaps the journal has not finished (a lost one is final and not counted),
+whatever the bridge's state: wait for it to be 0 before turning the bridge
+off or moving it to another SHA256 node.
 
 ## The rate
 
