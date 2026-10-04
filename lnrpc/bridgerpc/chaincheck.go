@@ -26,6 +26,26 @@ var errChainNotYet = errors.New("the SHA256 node has not reached the " +
 // is longer.
 const sha256HeaderSize = 80
 
+// The SHA256 chain's block at the mainnet activation height, pinned as the
+// BLAKE2b one is (chainreg): mempool.space and blockstream.info agree on it,
+// and its 80-byte header hashes to it. Not the BLAKE2b block is not enough
+// on mainnet: a node on a third chain (a BIP 110 Knots 29.4, which follows
+// neither, say) is not the BLAKE2b chain either, and is no SHA256 node.
+const sha256MainnetActivationHeight = 961640
+
+var sha256MainnetActivationHash = mustHash(
+	"00000000000000000001d82da6ecccf08e07afa383f9212b0e1b95cc72430c00",
+)
+
+func mustHash(s string) chainhash.Hash {
+	h, err := chainhash.NewHashFromStr(s)
+	if err != nil {
+		panic(err)
+	}
+
+	return *h
+}
+
 // CheckNotBlake2b refuses a SHA256 node that follows the BLAKE2b chain.
 //
 // A stock lnd reads blocks from whatever node it is given and checks neither
@@ -96,11 +116,21 @@ func (r *Remote) CheckNotBlake2b(ctx context.Context, height int32,
 		return fmt.Errorf("the SHA256 node's block hash at height %d: "+
 			"%w", height, err)
 	}
+	if strict && height == sha256MainnetActivationHeight &&
+		!got.IsEqual(&blake2bHash) &&
+		!got.IsEqual(&sha256MainnetActivationHash) {
+
+		return fmt.Errorf("%w: the SHA256 node follows neither chain (its "+
+			"block %d is %v, which is neither the SHA256 chain's nor "+
+			"the BLAKE2b chain's). Its chain backend must be a node on "+
+			"the SHA256 chain, such as Bitcoin Core or a Bitcoin Knots "+
+			"before 29.4", ErrConfig, height, got)
+	}
 	if got.IsEqual(&blake2bHash) {
 		return fmt.Errorf("%w: the SHA256 node follows the BLAKE2b "+
 			"chain (its block %d is %v, this node's). Its chain "+
 			"backend must be a node on the SHA256 chain, such as "+
-			"Bitcoin Core or a Bitcoin Knots before 29.4.1",
+			"Bitcoin Core or a Bitcoin Knots before 29.4",
 			ErrConfig, height, got)
 	}
 

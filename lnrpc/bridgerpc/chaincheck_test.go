@@ -5,6 +5,7 @@ package bridgerpc
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -81,6 +83,14 @@ func TestCheckNotBlake2b(t *testing.T) {
 
 	// A longer header that does hash to the id given with it, so only
 	// its length gives it away.
+	// The SHA256 chain's block 961640, as mempool.space serves it.
+	realHeader, _ := hex.DecodeString("00c0cd2f5020e5d6a59cf5acc8ab25e8" +
+		"6ded4c3528c5216205ca010000000000000000003" +
+		"17c696ea6df187e55b05be2146a5afffa3d3f7d9c" +
+		"23c8cec147d52d9f8b3e0ea6a6776a3d35021742202ecb")
+	realID := chainhash.DoubleHashH(realHeader)
+	require.Equal(t, sha256MainnetActivationHash, realID)
+
 	blake2bHeader := make([]byte, 164)
 	copy(blake2bHeader, header)
 	blake2bID := chainhash.DoubleHashH(blake2bHeader)
@@ -97,9 +107,22 @@ func TestCheckNotBlake2b(t *testing.T) {
 		notYet bool   // the refusal is errChainNotYet
 	}{
 		{
-			name:   "a SHA256 chain block passes",
+			name: "the SHA256 chain's real block passes on mainnet",
+			chain: &headerChain{
+				hash: realID[:], header: realHeader,
+			},
+			height: height, strict: true,
+		},
+		{
+			name:   "a SHA256 header off mainnet passes",
+			chain:  &headerChain{hash: id, header: header},
+			height: 300, strict: false,
+		},
+		{
+			name:   "a third chain on mainnet is refused",
 			chain:  &headerChain{hash: id, header: header},
 			height: height, strict: true,
+			want: "follows neither chain", config: true,
 		},
 		{
 			name:   "this node's own block is refused",
@@ -116,13 +139,13 @@ func TestCheckNotBlake2b(t *testing.T) {
 		{
 			name:   "a BLAKE2b-length header is refused",
 			chain:  &headerChain{hash: blake2bID[:], header: blake2bHeader},
-			height: height, strict: true,
+			height: 300, strict: false,
 			want: "not a SHA256 chain block", config: true,
 		},
 		{
 			name:   "a header that does not hash to its id is refused",
 			chain:  &headerChain{hash: id, header: wrongID},
-			height: height, strict: true,
+			height: 300, strict: false,
 			want: "not a SHA256 chain block", config: true,
 		},
 		{
