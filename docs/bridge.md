@@ -16,11 +16,35 @@ on.
 
 - This node, with channels on the BLAKE2b chain that payers can reach you
   through. Payers who open a channel to you have the shortest route.
-- A stock lnd (v0.21.3-beta) on the SHA256 chain, with outbound capacity on its
-  channels and the `chainrpc` sub-server (release builds have it). Its admin
-  macaroon and TLS certificate.
+- A Lightning node on the SHA256 chain, with outbound capacity on its
+  channels. Either:
+  - **one Lightning Fork runs for you** (`bridgerpc.sha256.supervised`): a
+    stock lnd the platform starts, whose seed is derived from this node's,
+    so there is nothing new to write down. It reads the SHA256 Bitcoin node
+    you already run and starts empty. See
+    [bridge-sha256-node.md](bridge-sha256-node.md); or
+  - **one you already run**: a stock lnd (v0.21.3-beta or later) with the
+    `chainrpc` sub-server (release builds have it), its admin macaroon and
+    TLS certificate.
 
 ## Turning it on
+
+With a node Lightning Fork runs for you:
+
+```
+bridgerpc.enabled=true
+bridgerpc.tosha256=true
+bridgerpc.sha256.supervised=true
+```
+
+The packages do this from their Bridge setting, and run the node. By hand,
+start a stock lnd once
+`<networkdir>/bridge/sha256/wallet.password` exists, with
+`--lnddir=<lnddir>/sha256-node --wallet-unlock-password-file=<that file>
+--wallet-unlock-allow-create`, its gRPC on `127.0.0.1:10019` (or name it with
+`bridgerpc.sha256.rpchost`), against your SHA256 Bitcoin node.
+
+With an LND you already run:
 
 ```
 bridgerpc.enabled=true
@@ -28,19 +52,23 @@ bridgerpc.tosha256=true
 bridgerpc.sha256.rpchost=10.0.0.5:10009
 bridgerpc.sha256.tlscertpath=/path/to/sha256-node/tls.cert
 bridgerpc.sha256.macaroonpath=/path/to/sha256-node/admin.macaroon
-bridgerpc.fixedrate=0.00483
 ```
 
+Either way the bridge comes up without a rate and quotes nothing until you
+set one (`lncli bridge setrate`, below); `bridgerpc.fixedrate=0.00483` sets
+one from the configuration instead.
+
 `tosha256` serves payers on this chain paying SHA256 invoices; `toblake2b` the
-reverse. `fixedrate` is SHA256 coin per BLAKE2b coin and has no default: a
-wrong rate loses money on every swap and does it quietly. The node refuses to
-start the bridge with a combination of settings that would refuse every swap,
-and says which numbers to change.
+reverse, which starts only once a rate is set. The rate is SHA256 coin per
+BLAKE2b coin and has no default: a wrong rate loses money on every swap and
+does it quietly. The node refuses to start the bridge with a combination of
+settings that would refuse every swap, and says which numbers to change.
 
 `lncli bridge status` says whether the bridge can serve swaps right now and,
-if not, why. If the SHA256 node cannot be reached, or turns out not to be a
-stock lnd on the SHA256 chain on this node's network, the bridge stays down
-and tries again every minute while this node runs as usual. `needs_operator`
+if not, why, and how far the SHA256 node has got (`sha256_node`). If the SHA256
+node cannot be reached, or turns out not to be a stock lnd on the SHA256 chain
+on this node's network, the bridge stays down and tries again every minute
+while this node runs as usual. `needs_operator`
 lists swaps that need you: one that ended lost (paid out, and the payment
 coming in could not be claimed), or one the bridge stopped driving because it
 must not decide it alone. Watch that list.
