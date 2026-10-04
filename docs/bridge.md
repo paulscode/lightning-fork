@@ -68,6 +68,7 @@ settings that would refuse every swap, and says which numbers to change.
 if not, why, and how far the SHA256 node has got (`sha256_node`). If the SHA256
 node cannot be reached, or turns out not to be a stock lnd on the SHA256 chain
 on this node's network, the bridge stays down and tries again every minute
+(every ten seconds while a SHA256 node Lightning Fork runs is coming up)
 while this node runs as usual. `needs_operator`
 lists swaps that need you: one that ended lost (paid out, and the payment
 coming in could not be claimed), or one the bridge stopped driving because it

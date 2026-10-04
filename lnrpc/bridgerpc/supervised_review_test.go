@@ -6,12 +6,15 @@ package bridgerpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -23,7 +26,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // Its bounds are converted at the rate in force when it is built, so without a
-// rate it is held back rather than built with bounds in the wrong unit.
+// rate it is held: built, so swaps already in the journal are driven, but
+// quoting nothing until SetRate rebuilds it with its bounds converted.
 func TestToBLAKE2bWaitsForARate(t *testing.T) {
 	t.Parallel()
 
@@ -33,11 +37,18 @@ func TestToBLAKE2bWaitsForARate(t *testing.T) {
 		remote(nil, nil, nil))
 
 	require.True(t, svc.heldForRate)
+	var held *side
 	for _, sd := range svc.sides {
-		require.NotEqual(t, "toBLAKE2b", sd.name,
-			"built with no rate to convert its bounds at")
+		if sd.name == "toBLAKE2b" {
+			held = sd
+		}
 	}
-	require.Len(t, svc.sides, 1, "toSHA256 still comes up")
+	require.NotNil(t, held, "built, to drive swaps already in the journal")
+	require.Len(t, svc.sides, 2)
+
+	_, err := svc.pricer(held)(context.Background())
+	require.ErrorIs(t, err, ErrNoRate, "and quoting nothing without a rate")
+	require.ErrorIs(t, err, quote.ErrRefused)
 }
 
 // With a rate set at runtime and none configured, both directions come up and
@@ -442,4 +453,70 @@ func TestSupervisorRestoreRunsOnceAndStops(t *testing.T) {
 	fake.mu.Lock()
 	require.Len(t, fake.restored, 1)
 	fake.mu.Unlock()
+}
+
+// A SHA256 node the bridge refused is reported as refused, with why, never as
+// a node ready to be funded.
+func TestSummarySaysWhyTheNodeWasRefused(t *testing.T) {
+	t.Parallel()
+
+	srv, _, err := New(&Config{Enabled: true, ToSHA256: true})
+	require.NoError(t, err)
+	refused := fmt.Errorf("the bridge will not use the SHA256 node at "+
+		"x: %w: the SHA256 node follows the BLAKE2b chain", ErrConfig)
+	srv.setStartErr(refused)
+
+	out := srv.sha256Summary(context.Background())
+	require.Equal(t, sha256Error, out.State)
+	require.Contains(t, out.Detail, "follows the BLAKE2b chain")
+
+	// Any other reason it is not up says nothing of the kind: the node is
+	// asked as usual (here, not there at all).
+	srv.setStartErr(errors.New("dial tcp: connection refused"))
+	out = srv.sha256Summary(context.Background())
+	require.NotContains(t, out.Detail, "BLAKE2b chain")
+}
+
+// A backup lnd cannot read is tried once, and the status says what to do; a
+// peer that cannot be reached is tried again.
+func TestSupervisorGivesUpOnAnUnreadableBackup(t *testing.T) {
+	fake := &fakeSha256Node{state: lnrpc.WalletState_NON_EXISTING}
+	fake.identity = testIdentity(t)
+	s, cfg := newTestSupervisor(t, fake)
+	ctx := context.Background()
+
+	scb := s.nodeChannelBackup()
+	require.NoError(t, os.MkdirAll(filepath.Dir(scb), 0700))
+	require.NoError(t, os.WriteFile(scb, []byte("garbage"), 0600))
+	require.ErrorIs(t, s.prepare(ctx), errSha256Pending)
+	startNode(t, cfg)
+	require.NoError(t, s.prepare(ctx))
+
+	fake.restoreErr = errors.New("unable to unpack chan backup: " +
+		"chacha20poly1305: message authentication failed")
+	done := make(chan struct{})
+	go func() {
+		s.restoreUntilDone(ctx, time.Millisecond)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("kept trying a backup that cannot be read")
+	}
+	require.Equal(t, 1, fake.restoreCalls)
+	require.Contains(t, s.restoreStatus(), "cannot be read")
+	require.Contains(t, s.restoreStatus(), "restorechanbackup")
+
+	fake.mu.Lock()
+	fake.restoreErr = errors.New("unable to connect to peer")
+	fake.restoreCalls = 0
+	fake.mu.Unlock()
+	ctx2, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	s.restoreUntilDone(ctx2, time.Millisecond)
+	fake.mu.Lock()
+	require.Greater(t, fake.restoreCalls, 1, "a peer may come back")
+	fake.mu.Unlock()
+	require.Contains(t, s.restoreStatus(), "trying again")
 }

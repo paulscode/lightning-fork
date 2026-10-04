@@ -235,3 +235,35 @@ func TestCheckNotBlake2bWithoutActivation(t *testing.T) {
 		t.Fatalf("asked the node %d times", chain.calls)
 	}
 }
+
+// The running bridge's recheck asks with this node's activation block, and a
+// node that has moved to the BLAKE2b chain is a configuration refusal (which
+// takes the bridge down), while one that does not answer is not.
+func TestRecheckChain(t *testing.T) {
+	t.Parallel()
+
+	var ours chainhash.Hash
+	copy(ours[:], []byte("blake2b activation block id 32b!"))
+	srv, _, err := New(&Config{Enabled: true, ToSHA256: true,
+		Deps: &Deps{Blake2bActivation: func(context.Context) (int32,
+			[32]byte, bool, error) {
+
+			return 300, ours, false, nil
+		}},
+	})
+	require.NoError(t, err)
+
+	header, id := sha256Block(7)
+	r := remote(nil, nil, nil)
+	r.chain = &headerChain{hash: id, header: header}
+	require.NoError(t, srv.recheckChain(r))
+
+	r.chain = &headerChain{hash: ours[:], header: header}
+	require.ErrorIs(t, srv.recheckChain(r), ErrConfig)
+
+	r.chain = &headerChain{hashErr: errors.New("connection refused")}
+	r.main = &fakeMain{info: &lnrpc.GetInfoResponse{BlockHeight: 400}}
+	err = srv.recheckChain(r)
+	require.Error(t, err)
+	require.False(t, errors.Is(err, ErrConfig))
+}

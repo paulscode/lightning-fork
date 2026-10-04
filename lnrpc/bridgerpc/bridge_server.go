@@ -237,6 +237,7 @@ const pendingRetryInterval = 10 * time.Second
 func (s *Server) retry() {
 	defer s.wg.Done()
 
+	var waited int
 	for first := true; ; first = false {
 		err := s.connect()
 		s.setStartErr(err)
@@ -250,7 +251,17 @@ func (s *Server) retry() {
 		case err == nil:
 			return
 		case pending:
-			log.Infof("Bridge waiting for its SHA256 node: %v", err)
+			// Every ten seconds for as long as it takes, which for a
+			// node the platform never starts is for ever: said now
+			// and then, not each time.
+			if waited%30 == 0 {
+				log.Infof("Bridge waiting for its SHA256 node: %v",
+					err)
+			} else {
+				log.Debugf("Bridge waiting for its SHA256 node: %v",
+					err)
+			}
+			waited++
 		case first:
 			log.Warnf("Bridge did not start, retrying every %v: %v",
 				retryInterval, err)
@@ -400,6 +411,9 @@ func (s *Server) connect() error {
 	log.Infof("Bridge is up, serving %d direction(s) through the SHA256 "+
 		"node at %s", len(svc.sides), s.cfg.SHA256RPCHost)
 
+	s.wg.Add(1)
+	go s.watchChain(svc, remoteNode)
+
 	return nil
 }
 
@@ -411,27 +425,26 @@ func (s *Server) remoteNode() *Remote {
 	return s.remote
 }
 
-// rebuildForRate brings the bridge up again once a rate has been set for the
-// first time, so the direction held back for want of one starts.
-//
-// Safe to do with no thought for swaps: the bridge that is replaced had no rate
-// for its whole life, so it never quoted one. Anything it resumed from the
-// journal is waited for by stop and picked up again by the new one, as at any
-// restart. It runs in the background so SetRate answers at once.
-func (s *Server) rebuildForRate() {
+// rebuild takes down the running bridge and starts it again through the
+// retry loop, if svc is still the one running: two callers that saw the same
+// service (two SetRate calls at once) rebuild it once, not into two bridges.
+func (s *Server) rebuild(svc *service, why string) {
+	s.mu.Lock()
+	if s.svc != svc || svc == nil {
+		s.mu.Unlock()
+
+		return
+	}
+	conn := s.conn
+	s.svc, s.remote, s.conn = nil, nil, nil
+	s.mu.Unlock()
+	s.setStartErr(errStarting)
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 
-		s.mu.Lock()
-		svc, conn := s.svc, s.conn
-		s.svc, s.remote, s.conn = nil, nil, nil
-		s.mu.Unlock()
-		s.setStartErr(errStarting)
-
-		if svc != nil {
-			svc.stop()
-		}
+		svc.stop()
 		if conn != nil {
 			_ = conn.Close()
 		}
@@ -439,11 +452,61 @@ func (s *Server) rebuildForRate() {
 			return
 		}
 
-		log.Infof("Bridge restarting now that a rate is set, to bring " +
-			"up toBLAKE2b")
+		log.Infof("Bridge restarting %s", why)
 		s.wg.Add(1)
 		go s.retry()
 	}()
+}
+
+// recheckChain asks the SHA256 node which chain it follows, as connect does.
+// ErrConfig means it is not on the SHA256 chain; anything else is no answer.
+func (s *Server) recheckChain(remoteNode *Remote) error {
+	if s.cfg.Deps == nil || s.cfg.Deps.Blake2bActivation == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+
+	height, hash, strict, err := s.cfg.Deps.Blake2bActivation(ctx)
+	if err != nil {
+		return err
+	}
+
+	return remoteNode.CheckNotBlake2b(ctx, height, hash, strict)
+}
+
+// chainRecheckInterval is how often the running bridge asks again which chain
+// its SHA256 node follows.
+const chainRecheckInterval = 10 * time.Minute
+
+// watchChain asks the SHA256 node which chain it follows, again, every
+// chainRecheckInterval while svc is the bridge running. Its chain backend can
+// change under a running bridge (Bitcoin Knots upgraded to a BLAKE2b version,
+// a node swapped in the platform's settings), and a bridge paying through a
+// node on the wrong chain sizes its margins from the wrong heights and pays
+// from the wrong coins. A refusal takes the bridge down; it stays down, saying
+// why, until the node is back on the SHA256 chain. A node that merely does not
+// answer is left to the bridge's own handling.
+func (s *Server) watchChain(svc *service, remoteNode *Remote) {
+	defer s.wg.Done()
+
+	for {
+		select {
+		case <-s.quit:
+			return
+		case <-time.After(chainRecheckInterval):
+		}
+		if s.service() != svc {
+			return
+		}
+
+		if err := s.recheckChain(remoteNode); errors.Is(err, ErrConfig) {
+			log.Errorf("Bridge stopping: %v", err)
+			s.rebuild(svc, "to check its SHA256 node again")
+
+			return
+		}
+	}
 }
 
 // Stop signals any active goroutines for a graceful closure.
@@ -760,9 +823,10 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 			"but not enabled")
 	}
 	if svc.heldForRate {
-		resp.Refusals = append(resp.Refusals, "toBLAKE2b starts once "+
+		resp.Refusals = append(resp.Refusals, "toBLAKE2b quotes once "+
 			"a rate is set: its swap bounds are converted from "+
-			"SHA256 coin at the rate in force when it starts")
+			"SHA256 coin at the rate in force then (swaps already "+
+			"under way go on meanwhile)")
 	}
 	resp.SwapsInFlight = uint32(svc.active())
 
@@ -885,7 +949,7 @@ func (s *Server) SetRate(_ context.Context, req *SetRateRequest) (
 	s.infoMu.Unlock()
 
 	if svc := s.service(); svc != nil && svc.heldForRate {
-		s.rebuildForRate()
+		s.rebuild(svc, "now that a rate is set, to bring up toBLAKE2b")
 	}
 
 	log.Infof("Bridge rate set to %g SHA256 coin per BLAKE2b coin", r)

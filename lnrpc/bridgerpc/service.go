@@ -257,22 +257,25 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 	}
 	if cfg.ToBLAKE2b {
 		// Its swap bounds are configured in SHA256 coin and converted
-		// at the rate in force now, once (see inBLAKE2bMsat). Built
-		// with no rate they would stay in the wrong unit, capping a
-		// different amount of value than the operator chose once a
-		// rate is set, so it waits for one: SetRate rebuilds the
-		// bridge the first time.
-		if r, _ := s.rates.current(); usableRate(r) {
-			// The rate is posted as SHA256 coin per BLAKE2b coin,
-			// so the direction that pays out in BTCB2 quotes its
-			// reciprocal.
-			s.sides = append(s.sides, s.build(
-				"toBLAKE2b", remote, local, local.Balance,
-				inventory.Replenishing, true,
-			))
-		} else {
+		// at the rate in force now, once (see inBLAKE2bMsat). With no
+		// rate they stay in the wrong unit, so it is held: nothing is
+		// quoted without a rate anyway, and SetRate rebuilds the
+		// bridge the first time, converting them.
+		//
+		// Built all the same. Swaps already in the journal (from
+		// before a configured rate was dropped, say) need their side
+		// to be driven: a payer's HTLC to settle or refund, a paid one
+		// to claim. Leaving them undriven until a rate is set could
+		// let an incoming HTLC expire after the bridge had paid out.
+		if r, _ := s.rates.current(); !usableRate(r) {
 			s.heldForRate = true
 		}
+		// The rate is posted as SHA256 coin per BLAKE2b coin, so the
+		// direction that pays out in BTCB2 quotes its reciprocal.
+		s.sides = append(s.sides, s.build(
+			"toBLAKE2b", remote, local, local.Balance,
+			inventory.Replenishing, true,
+		))
 	} else {
 		s.disabled = append(s.disabled, "toBLAKE2b")
 	}

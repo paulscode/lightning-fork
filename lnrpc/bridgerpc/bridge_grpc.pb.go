@@ -56,7 +56,9 @@ type BridgeClient interface {
 	// the bridge, outside Lightning Fork: a 24-word aezeed phrase and the
 	// equivalent BIP32 root key. Neither is stored anywhere; both are derived
 	// from this node's own wallet, so the operator's one recovery phrase is
-	// enough. Only for a supervised node, and only for an admin macaroon.
+	// enough. For the node Lightning Fork runs, or ran, for the bridge
+	// (answered in any bridge mode, since that node may still hold coins);
+	// only for an admin macaroon.
 	ExportSha256Seed(ctx context.Context, in *ExportSha256SeedRequest, opts ...grpc.CallOption) (*ExportSha256SeedResponse, error)
 }
 
@@ -164,7 +166,9 @@ type BridgeServer interface {
 	// the bridge, outside Lightning Fork: a 24-word aezeed phrase and the
 	// equivalent BIP32 root key. Neither is stored anywhere; both are derived
 	// from this node's own wallet, so the operator's one recovery phrase is
-	// enough. Only for a supervised node, and only for an admin macaroon.
+	// enough. For the node Lightning Fork runs, or ran, for the bridge
+	// (answered in any bridge mode, since that node may still hold coins);
+	// only for an admin macaroon.
 	ExportSha256Seed(context.Context, *ExportSha256SeedRequest) (*ExportSha256SeedResponse, error)
 	mustEmbedUnimplementedBridgeServer()
 }

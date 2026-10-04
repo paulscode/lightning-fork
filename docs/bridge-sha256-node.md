@@ -80,7 +80,8 @@ where the node is (`sha256_node.state`: `starting`, `creating_wallet`,
 
 ### Where things are
 
-Under this node's lnd directory (`/root/.lnd` in the packages):
+Under this node's lnd directory (`/root/.lnd` on StartOS, `/data/.lnd` on
+Umbrel):
 
 | Path | What |
 | --- | --- |
@@ -170,13 +171,17 @@ Restore Lightning Fork from its phrase as usual and turn the bridge on in the
 same mode. Lightning Fork derives the same seed and creates the same node,
 asking lnd to recover its on-chain funds. If the node's `channel.backup` is
 already in place (as after a platform restore), its channels are restored
-with the wallet; otherwise restore them from your copy, for example with
-`lncli restorechanbackup`.
+from it once the bridge has checked the node's chain, in the background and
+retried until it works; otherwise restore them from your copy, for example
+with `lncli restorechanbackup`. A backup lnd cannot read (damaged, or another
+node's) is not retried: `lncli bridge status` says so, and what to do.
 
 If only the SHA256 node's directory survived and Lightning Fork's did not,
 Lightning Fork finds a wallet whose password it no longer has, and says so
-rather than overwriting anything: move `sha256-node/` aside, keeping its
-`channel.backup`, and the node is created again from the same seed.
+rather than overwriting anything: move `sha256-node/` aside, and copy its
+`channel.backup` to `channel.backup.restored` beside the wallet password
+(`data/chain/bitcoin/<network>/bridge/sha256/`). The node is created again
+from the same seed and its channels restored from that copy.
 
 ### Without Lightning Fork
 
@@ -216,8 +221,12 @@ A stock lnd checks neither proof of work nor which side of the fork its chain
 backend took, and the two chains share their genesis block, so pointed at a
 node that follows BLAKE2b it would sync, give out addresses and open channels
 on the wrong chain. Before using the SHA256 node, the bridge reads its block
-at the BLAKE2b activation height: it must not be this node's block there, and
-its header must be an 80-byte header that hashes to the id the node reports.
+at the BLAKE2b activation height: it must not be this node's block there; on
+mainnet it must be the SHA256 chain's block there (pinned, as the BLAKE2b one
+is), since a node on a third chain is not the BLAKE2b chain either; and its
+header must be an 80-byte header that hashes to the id the node reports. The
+running bridge asks again every ten minutes, and stops, saying why, if the
+node has left the SHA256 chain.
 On mainnet a node that cannot answer (one built without `chainrpc`, or not yet
 past that height) is waited for or refused; the official lnd images have
 `chainrpc`.
@@ -225,7 +234,10 @@ past that height) is waited for or refused; the official lnd images have
 ## When the node is down
 
 A swap in progress is safe across a restart of either node. If the SHA256
-node does not answer when the bridge goes to pay, nothing is sent, and the
-swap waits and is paid when the node is back, provided the payer's HTLC still
-leaves enough time; otherwise the payer is refunded. A payment that did reach
-the node is never sent again.
+node provably did not receive the payment (it could not be dialled, or it
+refused the call before handling it, as a node still starting does), nothing
+was sent, and the swap waits and is paid when the node is back, provided the
+payer's HTLC still leaves enough time; otherwise the payer is refunded.
+Anything less certain (a connection lost mid-call, a timeout) is treated as
+possibly sent: the swap waits for that payment's outcome, and is never paid
+twice.

@@ -28,19 +28,20 @@ import (
 type fakeSha256Node struct {
 	mu sync.Mutex
 
-	state       lnrpc.WalletState
-	stateErr    error
-	initReq     *lnrpc.InitWalletRequest
-	initErr     error
-	unlockWith  []byte
-	password    []byte // what UnlockWallet accepts
-	identity    string
-	bakedPerms  []string
-	bakes       int
-	rejectBaked bool // the baked macaroon no longer works
-	adminMac    []byte
-	restored    [][]byte // what RestoreChannelBackups was given
-	restoreErr  error
+	state        lnrpc.WalletState
+	stateErr     error
+	initReq      *lnrpc.InitWalletRequest
+	initErr      error
+	unlockWith   []byte
+	password     []byte // what UnlockWallet accepts
+	identity     string
+	bakedPerms   []string
+	bakes        int
+	rejectBaked  bool // the baked macaroon no longer works
+	adminMac     []byte
+	restored     [][]byte // what RestoreChannelBackups was given
+	restoreErr   error
+	restoreCalls int
 
 	// writeAdmin is where InitWallet writes the admin macaroon, as lnd
 	// does.
@@ -157,6 +158,7 @@ func (f fakeAdmin) RestoreChannelBackups(_ context.Context,
 	f.n.mu.Lock()
 	defer f.n.mu.Unlock()
 
+	f.n.restoreCalls++
 	if f.n.restoreErr != nil {
 		return f.n.restoreErr
 	}

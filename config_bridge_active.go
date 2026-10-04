@@ -59,9 +59,10 @@ func validateBridgeConfig(cfg *Config, networkDir string) error {
 // superviseSha256Node fills in where the supervised SHA256 node and this node's
 // files for it are.
 //
-// The address, certificate and macaroon default to that node's own, and an
-// operator who names them anyway is told why not: the macaroon in particular is
-// one this node bakes, and a path pointing elsewhere would have the bridge use a
+// The address, certificate and macaroon default to that node's own. The address
+// and certificate may be named, for a platform that runs the node elsewhere
+// (Umbrel gives it an address of its own); the macaroon may not: it is one this
+// node bakes, and a path pointing elsewhere would have the bridge use a
 // credential it did not make for a node it did not create.
 func superviseSha256Node(cfg *Config, sub *bridgerpc.Config,
 	networkDir string) error {

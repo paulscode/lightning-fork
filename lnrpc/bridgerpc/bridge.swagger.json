@@ -108,7 +108,7 @@
     },
     "/v2/bridge/sha256seed": {
       "post": {
-        "summary": "lncli: `bridge sha256seed`\nExportSha256Seed shows how to restore the SHA256 node this node runs for\nthe bridge, outside Lightning Fork: a 24-word aezeed phrase and the\nequivalent BIP32 root key. Neither is stored anywhere; both are derived\nfrom this node's own wallet, so the operator's one recovery phrase is\nenough. Only for a supervised node, and only for an admin macaroon.",
+        "summary": "lncli: `bridge sha256seed`\nExportSha256Seed shows how to restore the SHA256 node this node runs for\nthe bridge, outside Lightning Fork: a 24-word aezeed phrase and the\nequivalent BIP32 root key. Neither is stored anywhere; both are derived\nfrom this node's own wallet, so the operator's one recovery phrase is\nenough. For the node Lightning Fork runs, or ran, for the bridge\n(answered in any bridge mode, since that node may still hold coins);\nonly for an admin macaroon.",
         "operationId": "Bridge_ExportSha256Seed",
         "responses": {
           "200": {

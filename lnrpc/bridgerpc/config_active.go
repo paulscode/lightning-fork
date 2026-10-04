@@ -223,8 +223,9 @@ const (
 	Sha256MacaroonName = "bridge.macaroon"
 
 	// DefaultSupervisedRPCHost is where the supervised node's gRPC listens
-	// when it shares this node's network namespace, as both platform
-	// packages run it. Clear of lnd's own 10009.
+	// when it shares this node's network namespace, as the StartOS package
+	// runs it; a platform that cannot (Umbrel) names its address with
+	// bridgerpc.sha256.rpchost. Clear of lnd's own 10009.
 	DefaultSupervisedRPCHost = "127.0.0.1:10019"
 )
 

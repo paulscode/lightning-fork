@@ -6,6 +6,7 @@ package bridgerpc
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -35,6 +36,21 @@ func (s *Server) sha256Summary(ctx context.Context) *Sha256Node {
 		// Before its identity is confirmed there is nothing this node
 		// will read from it: it may not be ours.
 		if s.remoteNode() == nil && out.State != sha256Ready {
+			return out
+		}
+	}
+
+	// Refused (on the wrong chain, this node's own identity, another
+	// network): that is what to say, not its balances and what to fund,
+	// which would read as a node ready to use.
+	if s.remoteNode() == nil {
+		s.mu.RLock()
+		startErr := s.startErr
+		s.mu.RUnlock()
+		if errors.Is(startErr, ErrConfig) {
+			out.State = sha256Error
+			out.Detail = startErr.Error()
+
 			return out
 		}
 	}
@@ -111,7 +127,7 @@ func (s *Server) sha256Summary(ctx context.Context) *Sha256Node {
 		out.State = sha256Ready
 		out.Detail = "ready, but " + strings.Join(unread, ", ") +
 			" cannot be read with the macaroon the bridge has, so " +
-			"those numbers show as zero and are not"
+			"those show as zero, which they may well not be"
 
 	case out.ActiveChannels == 0 && out.PendingChannels == 0 &&
 		out.OnchainConfirmedSat+out.OnchainUnconfirmedSat == 0:

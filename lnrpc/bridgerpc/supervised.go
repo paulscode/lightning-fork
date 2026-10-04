@@ -79,6 +79,9 @@ const sha256RestoredBackupName = "channel.backup.restored"
 // again.
 const sha256RestoreRetry = time.Minute
 
+// sha256RestoreMaxRetry is the longest wait between restore attempts.
+const sha256RestoreMaxRetry = 30 * time.Minute
+
 // sha256ReadyWait bounds how long one attempt waits for a wallet it has just
 // created to come up, before handing back to the retry loop.
 const sha256ReadyWait = 2 * time.Minute
@@ -491,12 +494,15 @@ func (s *supervisor) stageRestore() (bool, error) {
 			// stands.
 			return true, nil
 		}
-		if err := os.Remove(done); err != nil {
-			return false, err
-		}
 	}
+	// The new copy first, then the old restore's marker: a crash between
+	// the two leaves the new copy marked done, never the old one unmarked
+	// in place of the new.
 	if err := writeFileAtomic(kept, data); err != nil {
 		return false, fmt.Errorf("keeping a copy at %s: %w", kept, err)
+	}
+	if err := os.Remove(done); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
 	}
 
 	return true, nil
@@ -525,9 +531,10 @@ func (s *supervisor) restoredBackup() (string, string) {
 // is safe to repeat until it has worked; a peer that cannot be reached fails
 // it, and it is tried again.
 //
-// Called only once the node is known to follow the SHA256 chain: restoring a
-// channel asks its peer to close it, which on the wrong chain would be
-// answered from the wrong chain.
+// Called only after the bridge's chain check has passed: restoring a channel
+// asks its peer to close it, which on the wrong chain would be answered from
+// the wrong chain. (On a test network that check cannot always tell, below the
+// activation height or without chainrpc, and passes.)
 func (s *supervisor) restoreChannels(ctx context.Context) error {
 	kept, done := s.restoredBackup()
 	if _, err := os.Stat(done); err == nil {
@@ -552,6 +559,10 @@ func (s *supervisor) restoreChannels(ctx context.Context) error {
 	defer conn.Close()
 
 	if err := conn.RestoreChannelBackups(ctx, data); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+
 		return s.noteRestore(err)
 	}
 	if err := writeFileAtomic(done, []byte(s.now().UTC().Format(
@@ -571,14 +582,45 @@ func (s *supervisor) restoreChannels(ctx context.Context) error {
 }
 
 func (s *supervisor) noteRestore(err error) error {
+	note := "restoring its channels from its channel backup has not " +
+		"worked yet (" + err.Error() + "); trying again"
+	if restoreHopeless(err) {
+		kept, _ := s.restoredBackup()
+		note = "its channel backup cannot be read (" + err.Error() +
+			"): it is damaged, or another node's. Restore its " +
+			"channels by hand from a good copy (lncli " +
+			"restorechanbackup), then delete " + kept
+	}
 	s.mu.Lock()
-	s.restoreNote = "restoring its channels from its channel backup " +
-		"has not worked yet (" + err.Error() + "); trying again"
+	s.restoreNote = note
 	s.mu.Unlock()
-	log.Warnf("Bridge could not restore the SHA256 node's channels yet: "+
-		"%v", err)
+	log.Warnf("Bridge could not restore the SHA256 node's channels: %s",
+		note)
 
 	return err
+}
+
+// restoreHopeless is a restore that cannot work however often it is tried:
+// a backup lnd cannot decrypt or read (damaged, cut short, or made by another
+// node). Anything else, a peer that cannot be reached above all, may work
+// later.
+func restoreHopeless(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, s := range []string{
+		"message authentication failed",
+		"payload size too small",
+		"unable to unpack unknown multi-version",
+		"unexpected EOF",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // restoreStatus is restoreNote, for the status.
@@ -617,17 +659,26 @@ func (s *supervisor) startRestore(quit <-chan struct{}) {
 }
 
 // restoreUntilDone keeps restoring until it has worked or ctx ends.
+//
+// Tried again after every, doubling up to sha256RestoreMaxRetry; never again
+// once lnd says the backup cannot be read, which the status then says how to
+// get past. Shutting down is no failure and is not reported as one.
 func (s *supervisor) restoreUntilDone(ctx context.Context,
 	every time.Duration) {
 
+	wait := every
 	for {
-		if s.restoreChannels(ctx) == nil {
+		err := s.restoreChannels(ctx)
+		if err == nil || restoreHopeless(err) || ctx.Err() != nil {
 			return
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(every):
+		case <-time.After(wait):
+		}
+		if wait *= 2; wait > sha256RestoreMaxRetry {
+			wait = sha256RestoreMaxRetry
 		}
 	}
 }
@@ -785,7 +836,7 @@ func macaroonRefused(err error) bool {
 	for _, s := range []string{
 		"verification failed", "permission denied",
 		"cannot get macaroon", "invalid macaroon",
-		"unable to unmarshal", "macaroon",
+		"unable to unmarshal",
 	} {
 		if strings.Contains(msg, s) {
 			return true

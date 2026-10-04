@@ -143,11 +143,17 @@ func (r *Remote) CheckNotBlake2b(ctx context.Context, height int32,
 	}
 	raw := hdr.GetRawBlockHeader()
 	id := chainhash.DoubleHashH(raw)
-	if len(raw) != sha256HeaderSize || !bytes.Equal(id[:], got[:]) {
+	if len(raw) != sha256HeaderSize {
 		return fmt.Errorf("%w: the SHA256 node's block %d is not a "+
-			"SHA256 chain block (a %d byte header that does not "+
-			"hash to its id). Its chain backend must be a node on "+
-			"the SHA256 chain", ErrConfig, height, len(raw))
+			"SHA256 chain block (a %d byte header). Its chain "+
+			"backend must be a node on the SHA256 chain", ErrConfig,
+			height, len(raw))
+	}
+	if !bytes.Equal(id[:], got[:]) {
+		return fmt.Errorf("%w: the SHA256 node's block %d is not a "+
+			"SHA256 chain block (its header does not hash to its "+
+			"id). Its chain backend must be a node on the SHA256 "+
+			"chain", ErrConfig, height)
 	}
 
 	return nil
