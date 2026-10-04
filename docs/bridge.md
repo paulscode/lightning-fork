@@ -20,8 +20,8 @@ on.
   channels. Either:
   - **one Lightning Fork runs for you** (`bridgerpc.sha256.supervised`): a
     stock lnd the platform starts, whose seed is derived from this node's,
-    so there is nothing new to write down. It reads the SHA256 Bitcoin node
-    you already run and starts empty. See
+    so there is nothing new to write down. It reads the full node on the
+    SHA256 chain you already run and starts empty. See
     [bridge-sha256-node.md](bridge-sha256-node.md); or
   - **one you already run**: a stock lnd (v0.21.3-beta or later) with the
     `chainrpc` sub-server (release builds have it), its admin macaroon and
@@ -42,7 +42,7 @@ start a stock lnd once
 `<networkdir>/bridge/sha256/wallet.password` exists, with
 `--lnddir=<lnddir>/sha256-node --wallet-unlock-password-file=<that file>
 --wallet-unlock-allow-create`, its gRPC on `127.0.0.1:10019` (or name it with
-`bridgerpc.sha256.rpchost`), against your SHA256 Bitcoin node.
+`bridgerpc.sha256.rpchost`), against your full node on the SHA256 chain.
 
 With an LND you already run:
 

@@ -17,8 +17,8 @@ recover that node with or without Lightning Fork.
 
 ## What it costs
 
-A Lightning node, not a chain node: it reads the SHA256 Bitcoin node you
-already run, over RPC, and keeps its own wallet, channels and gossip graph,
+A Lightning node, not a chain node: it reads the full node on the SHA256
+chain you already run, over RPC, and keeps its own wallet, channels and gossip graph,
 about 1 to 3 GB. It starts empty. The bridge cannot pay anyone until you send
 it coins on the SHA256 chain and open a channel from it, which the packages
 help you do.
