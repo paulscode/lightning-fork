@@ -1173,6 +1173,7 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 				retryInterval, why)
 		}
 		resp.Refusals = append(resp.Refusals, msg)
+		s.reportRate(resp, nil)
 
 		return resp, nil
 	}
@@ -1194,28 +1195,7 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	}
 	resp.SwapsInFlight = uint32(svc.active())
 
-	resp.RateSource = svc.res.rateSource
-	resp.FeeToSha256, resp.FeeToBlake2B = svc.res.feeToSHA256,
-		svc.res.feeToB2B
-	rate, setAt := svc.prices.last()
-	resp.Rate = rate
-	if !setAt.IsZero() {
-		resp.RateSetAt = setAt.Unix()
-	}
-	if svc.market != nil {
-		resp.RateCrossCheck = svc.market.crossCheck()
-		if !setAt.IsZero() {
-			resp.RateExpiresAt = setAt.Add(
-				svc.res.rate.MaxAge).Unix()
-		}
-	} else if exp := svc.rates.expiresAt(); !exp.IsZero() {
-		resp.RateExpiresAt = exp.Unix()
-	}
-	if m, err := svc.prices.quoteRate(); err != nil {
-		resp.Refusals = append(resp.Refusals, rateRefusal(err))
-	} else {
-		resp.RateVolatility = m.volatility
-	}
+	s.reportRate(resp, svc)
 
 	// A chain the bridge cannot currently measure is a chain it cannot
 	// size an HTLC against, so every swap touching it is refused. That
@@ -1274,6 +1254,51 @@ func (s *Server) Info(ctx context.Context, _ *InfoRequest) (*InfoResponse,
 	s.info, s.infoAt = resp, time.Now()
 
 	return proto.Clone(resp).(*InfoResponse), nil
+}
+
+// reportRate fills in Status's rate and fees: from the running service, or,
+// while it is not up, from the market the server follows, so that an operator
+// waiting on the SHA256 node can see whether the market can be read too.
+func (s *Server) reportRate(resp *StatusResponse, svc *service) {
+	res := s.cfg.resolve()
+	resp.RateSource = res.rateSource
+	resp.FeeToSha256, resp.FeeToBlake2B = res.feeToSHA256, res.feeToB2B
+
+	var prices priceSource
+	var market *feed
+	switch {
+	case svc != nil:
+		prices, market = svc.prices, svc.market
+
+	default:
+		s.mu.RLock()
+		market = s.market
+		s.mu.RUnlock()
+		if market == nil {
+			// The operator's own rate is read with the service.
+			return
+		}
+		prices = market
+	}
+
+	rate, setAt := prices.last()
+	resp.Rate = rate
+	if !setAt.IsZero() {
+		resp.RateSetAt = setAt.Unix()
+	}
+	if market != nil {
+		resp.RateCrossCheck = market.crossCheck()
+		if !setAt.IsZero() {
+			resp.RateExpiresAt = setAt.Add(res.rate.MaxAge).Unix()
+		}
+	} else if exp := svc.rates.expiresAt(); !exp.IsZero() {
+		resp.RateExpiresAt = exp.Unix()
+	}
+	if m, err := prices.quoteRate(); err != nil {
+		resp.Refusals = append(resp.Refusals, rateRefusal(err))
+	} else {
+		resp.RateVolatility = m.volatility
+	}
 }
 
 // rateRefusal says why there is no rate to trade at, for Status.

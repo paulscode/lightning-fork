@@ -533,3 +533,40 @@ func serviceForMarket(t *testing.T, cfg Config, f *fakeNode,
 
 	return svc
 }
+
+// While the bridge waits on its SHA256 node, Status still says where the rate
+// comes from and whether the market can be read.
+func TestStatusReportsTheMarketBeforeTheBridgeIsUp(t *testing.T) {
+	t.Parallel()
+
+	srv, _, err := New(&Config{Enabled: true, ToSHA256: true,
+		Deps: (&fakeNode{synced: true}).deps()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newMarket(feedStart)
+	m.now = time.Now()
+	m.set(pairDirect, 0.006, 0.006, 0.00606)
+	m.set(pairUSDC, 510, 509, 512)
+	srv.market = testFeed(t, m)
+
+	resp, err := srv.Status(context.Background(), &StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RateSource != RateSourceNeoxa || resp.FeeToSha256 != DefaultFee {
+		t.Errorf("source %q, fee %g", resp.RateSource, resp.FeeToSha256)
+	}
+	if !strings.Contains(strings.Join(resp.Refusals, "; "),
+		"reading the market") {
+
+		t.Errorf("refusals %q", resp.Refusals)
+	}
+
+	srv.market.read(context.Background())
+	resp, _ = srv.Status(context.Background(), &StatusRequest{})
+	if resp.Rate != 0.006 || resp.RateCrossCheck == 0 {
+		t.Errorf("rate %g, cross-check %g", resp.Rate,
+			resp.RateCrossCheck)
+	}
+}
