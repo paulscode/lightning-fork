@@ -45,10 +45,31 @@ type ratebook struct {
 // Configured is the rate the configuration named when this one was set, so a
 // rate set at runtime survives a restart, but a configuration edited since
 // wins: that edit is the newer decision.
+//
+// Source says which of the two the rate itself is: "configured" for the
+// configuration's own, "runtime" for one set while running. Files written
+// before it existed are told apart by comparing Rate with Configured.
 type rateFile struct {
 	Rate       float64   `json:"rate"`
 	SetAt      time.Time `json:"set_at"`
 	Configured float64   `json:"configured"`
+	Source     string    `json:"source,omitempty"`
+}
+
+// Where a rate came from.
+const (
+	rateFromConfig  = "configured"
+	rateFromRuntime = "runtime"
+)
+
+// setAtRuntime reports whether a file's rate was set while running rather
+// than copied from the configuration.
+func (f rateFile) setAtRuntime() bool {
+	if f.Source != "" {
+		return f.Source == rateFromRuntime
+	}
+
+	return f.Rate != f.Configured
 }
 
 // openRatebook loads the rate in force: the one last set at runtime if the
@@ -81,7 +102,7 @@ func openRatebook(dir string, configured float64, maxAge time.Duration,
 			return b, nil
 		}
 
-		return b, b.save(configured)
+		return b, b.save(configured, rateFromConfig)
 
 	case err != nil:
 		return nil, fmt.Errorf("reading the bridge's rate: %w", err)
@@ -103,18 +124,28 @@ func openRatebook(dir string, configured float64, maxAge time.Duration,
 			b.path)
 	}
 
-	// A rate set at runtime is kept when the configuration names none:
-	// having no configured rate is not a decision to discard the one the
-	// operator set since.
-	if f.Configured == configured || configured == 0 {
+	if f.Configured == configured {
 		b.rate, b.setAt = f.Rate, f.SetAt
+
+		return b, nil
+	}
+
+	if configured == 0 {
+		// A rate set at runtime is kept when the configuration stops
+		// naming one: that edit was not about the rate the operator
+		// set since. A rate that was only ever the configuration's is
+		// not: removing it from the configuration is removing it, and
+		// trading on at it would be the bridge choosing a price.
+		if f.setAtRuntime() {
+			b.rate, b.setAt = f.Rate, f.SetAt
+		}
 
 		return b, nil
 	}
 
 	// The configuration changed since the rate was last set. That edit is
 	// the newer decision, and it is stamped now.
-	return b, b.save(configured)
+	return b, b.save(configured, rateFromConfig)
 }
 
 // usableRate reports whether a number can be traded at.
@@ -123,9 +154,12 @@ func usableRate(r float64) bool {
 }
 
 // save records a rate as set now. The caller holds no lock.
-func (b *ratebook) save(configured float64) error {
+func (b *ratebook) save(configured float64, source string) error {
 	b.mu.RLock()
-	f := rateFile{Rate: b.rate, SetAt: b.setAt, Configured: configured}
+	f := rateFile{
+		Rate: b.rate, SetAt: b.setAt, Configured: configured,
+		Source: source,
+	}
 	b.mu.RUnlock()
 
 	raw, err := json.Marshal(f)
@@ -159,7 +193,7 @@ func (b *ratebook) set(r, configured float64) (float64, time.Time, error) {
 	at := b.setAt
 	b.mu.Unlock()
 
-	if err := b.save(configured); err != nil {
+	if err := b.save(configured, rateFromRuntime); err != nil {
 		// Not in force if it is not on disk: a restart would bring the
 		// old one back without a word.
 		b.mu.Lock()

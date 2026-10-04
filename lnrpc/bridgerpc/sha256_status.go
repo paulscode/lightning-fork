@@ -73,22 +73,32 @@ func (s *Server) sha256Summary(ctx context.Context) *Sha256Node {
 	out.Peers = info.GetNumPeers()
 	out.Version = info.GetVersion()
 
+	// A balance that cannot be read is said to be unknown, never shown as
+	// zero: an external node's macaroon may lack onchain:read, and "empty,
+	// send coins" for a funded node sends an operator the wrong way.
+	var unread []string
 	if wb, err := remote.main.WalletBalance(
 		ctx, &lnrpc.WalletBalanceRequest{},
 	); err == nil {
 		out.OnchainConfirmedSat = wb.GetConfirmedBalance()
 		out.OnchainUnconfirmedSat = wb.GetUnconfirmedBalance()
+	} else {
+		unread = append(unread, "its on-chain balance")
 	}
 
 	// What the bridge can pay with is the same number it sizes swaps
 	// against, so the screen and the quotes agree.
 	if outbound, err := remote.Balance(ctx); err == nil {
 		out.OutboundMsat = outbound
+	} else {
+		unread = append(unread, "what its channels can send")
 	}
 	if cb, err := remote.main.ChannelBalance(
 		ctx, &lnrpc.ChannelBalanceRequest{},
 	); err == nil {
 		out.InboundMsat = cb.GetRemoteBalance().GetMsat()
+	} else {
+		unread = append(unread, "what its channels can receive")
 	}
 
 	switch {
@@ -96,6 +106,12 @@ func (s *Server) sha256Summary(ctx context.Context) *Sha256Node {
 		out.State = sha256Syncing
 		out.Detail = fmt.Sprintf("catching up with the SHA256 chain "+
 			"(at block %d)", out.BlockHeight)
+
+	case len(unread) > 0:
+		out.State = sha256Ready
+		out.Detail = "ready, but " + strings.Join(unread, ", ") +
+			" cannot be read with the macaroon the bridge has, so " +
+			"those numbers show as zero and are not"
 
 	case out.ActiveChannels == 0 && out.PendingChannels == 0 &&
 		out.OnchainConfirmedSat+out.OnchainUnconfirmedSat == 0:

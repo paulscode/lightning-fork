@@ -141,6 +141,9 @@ type Server struct {
 	// (bridgerpc.sha256.supervised), and is nil otherwise.
 	sup *supervisor
 
+	// rateMu serialises SetRate with the service coming up; see connect.
+	rateMu sync.Mutex
+
 	// info is the last Info answer and when it was made, shared for
 	// infoFresh. Guarded by infoMu, which also lets one caller at a time
 	// make a new one.
@@ -278,10 +281,21 @@ func (s *Server) connect() error {
 	// created from the derived seed, macaroon baked, identity checked.
 	// Until that holds there is nothing to dial.
 	if s.sup != nil {
+		// Ends with the node too: preparing can wait minutes for a
+		// node catching up, and stopping this one must not wait on it.
 		ctx, cancel := context.WithTimeout(
 			context.Background(), sha256ReadyWait+dialTimeout,
 		)
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-s.quit:
+				cancel()
+			case <-done:
+			}
+		}()
 		err := s.sup.prepare(ctx)
+		close(done)
 		cancel()
 		if err != nil {
 			return err
@@ -341,8 +355,13 @@ func (s *Server) connect() error {
 			local.Height, remote.SyncedToChain, remote.Height)
 	}
 
+	// rateMu is held from reading the rate file until the service that
+	// read it is published, so a rate set in between cannot be written to
+	// the file after it was read and then be lost to the running service.
+	s.rateMu.Lock()
 	svc, err := newService(s.cfg, s.local, remoteNode)
 	if err != nil {
+		s.rateMu.Unlock()
 		_ = conn.Close()
 
 		return err
@@ -355,6 +374,7 @@ func (s *Server) connect() error {
 	s.mu.Lock()
 	s.conn, s.remote, s.svc = conn, remoteNode, svc
 	s.mu.Unlock()
+	s.rateMu.Unlock()
 
 	log.Infof("Bridge is up, serving %d direction(s) through the SHA256 "+
 		"node at %s", len(svc.sides), s.cfg.SHA256RPCHost)
@@ -368,6 +388,41 @@ func (s *Server) remoteNode() *Remote {
 	defer s.mu.RUnlock()
 
 	return s.remote
+}
+
+// rebuildForRate brings the bridge up again once a rate has been set for the
+// first time, so the direction held back for want of one starts.
+//
+// Safe to do with no thought for swaps: the bridge that is replaced had no rate
+// for its whole life, so it never quoted one. Anything it resumed from the
+// journal is waited for by stop and picked up again by the new one, as at any
+// restart. It runs in the background so SetRate answers at once.
+func (s *Server) rebuildForRate() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+
+		s.mu.Lock()
+		svc, conn := s.svc, s.conn
+		s.svc, s.remote, s.conn = nil, nil, nil
+		s.mu.Unlock()
+		s.setStartErr(errStarting)
+
+		if svc != nil {
+			svc.stop()
+		}
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if atomic.LoadInt32(&s.shutdown) != 0 {
+			return
+		}
+
+		log.Infof("Bridge restarting now that a rate is set, to bring " +
+			"up toBLAKE2b")
+		s.wg.Add(1)
+		go s.retry()
+	}()
 }
 
 // Stop signals any active goroutines for a graceful closure.
@@ -683,6 +738,11 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		resp.Refusals = append(resp.Refusals, name+" is configured "+
 			"but not enabled")
 	}
+	if svc.heldForRate {
+		resp.Refusals = append(resp.Refusals, "toBLAKE2b starts once "+
+			"a rate is set: its swap bounds are converted from "+
+			"SHA256 coin at the rate in force when it starts")
+	}
 	resp.SwapsInFlight = uint32(svc.active())
 
 	rate, setAt := svc.rates.current()
@@ -772,6 +832,10 @@ func (s *Server) SetRate(_ context.Context, req *SetRateRequest) (
 	if !s.cfg.Enabled {
 		return nil, errDisabled()
 	}
+
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+
 	rates := &ratebook{
 		path: filepath.Join(filepath.Dir(s.cfg.Journal), rateFileName),
 		now:  time.Now,
@@ -798,6 +862,10 @@ func (s *Server) SetRate(_ context.Context, req *SetRateRequest) (
 	s.infoMu.Lock()
 	s.info = nil
 	s.infoMu.Unlock()
+
+	if svc := s.service(); svc != nil && svc.heldForRate {
+		s.rebuildForRate()
+	}
 
 	log.Infof("Bridge rate set to %g SHA256 coin per BLAKE2b coin", r)
 

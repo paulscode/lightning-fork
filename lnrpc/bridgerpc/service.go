@@ -151,6 +151,10 @@ type service struct {
 	// but not enabled" sends them to the line they changed.
 	disabled []string
 
+	// heldForRate is set when toBLAKE2b is enabled but was not built,
+	// because there was no rate to convert its bounds at.
+	heldForRate bool
+
 	// b2bChain and shaChain measure how fast each chain is running, which
 	// is what turns a wall-clock safety margin into a number of blocks.
 	// Guarded because the poller writes them and quotes read them.
@@ -252,12 +256,23 @@ func newService(cfg *Config, local *Local, remote *Remote) (*service, error) {
 		s.disabled = append(s.disabled, "toSHA256")
 	}
 	if cfg.ToBLAKE2b {
-		// The rate is posted as SHA256 coin per BLAKE2b coin, so the direction that
-		// pays out in BTCB2 quotes its reciprocal.
-		s.sides = append(s.sides, s.build(
-			"toBLAKE2b", remote, local, local.Balance,
-			inventory.Replenishing, true,
-		))
+		// Its swap bounds are configured in SHA256 coin and converted
+		// at the rate in force now, once (see inBLAKE2bMsat). Built
+		// with no rate they would stay in the wrong unit, capping a
+		// different amount of value than the operator chose once a
+		// rate is set, so it waits for one: SetRate rebuilds the
+		// bridge the first time.
+		if r, _ := s.rates.current(); usableRate(r) {
+			// The rate is posted as SHA256 coin per BLAKE2b coin,
+			// so the direction that pays out in BTCB2 quotes its
+			// reciprocal.
+			s.sides = append(s.sides, s.build(
+				"toBLAKE2b", remote, local, local.Balance,
+				inventory.Replenishing, true,
+			))
+		} else {
+			s.heldForRate = true
+		}
 	} else {
 		s.disabled = append(s.disabled, "toBLAKE2b")
 	}

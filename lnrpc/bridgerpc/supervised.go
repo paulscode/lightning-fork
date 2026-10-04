@@ -6,6 +6,7 @@ package bridgerpc
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"gopkg.in/macaroon.v2"
 )
 
 // The supervised SHA256 node is a stock lnd the platform starts and this node
@@ -63,22 +65,33 @@ var errSha256Pending = errors.New("the SHA256 Lightning node is not ready yet")
 // A new wallet created from a derived seed is not necessarily a new wallet: if
 // this node's data was restored and the SHA256 node's was not, the same seed
 // is being created again over an existing history. Asking lnd to recover makes
-// that case find its coins, at the cost of a rescan from the fixed birthday,
-// which is days of blocks rather than years.
+// that case find its on-chain coins, at the cost of a rescan from the fixed
+// birthday, which is days of blocks rather than years. Channels are another
+// matter: those come back only from that node's channel backup, which is in
+// its own directory (docs/bridge-sha256-node.md says how).
 const sha256RecoveryWindow = 2500
 
 // sha256ReadyWait bounds how long one attempt waits for a wallet it has just
 // created to come up, before handing back to the retry loop.
 const sha256ReadyWait = 2 * time.Minute
 
+// sha256StartTimeout is how long a node that has started before (its
+// certificate is there) may go without answering before it is reported as
+// failing rather than starting.
+//
+// lnd exits at once on a wrong unlock password or an unreachable chain node,
+// and the platform restarts it, so a node in that loop never answers. Without
+// a limit that would read as "starting" for ever.
+const sha256StartTimeout = 5 * time.Minute
+
 // bridgeMacaroonPermissions is everything the bridge calls on the SHA256 node,
 // method by method, and nothing else.
 //
 // Per method rather than per entity, because entities are coarse: offchain
 // write alone would also allow closing channels and changing their policy.
-// The list is what remote.go and the status summary call; a method added
-// there that is missing here fails with a permission error naming it, which
-// is the loud way to find out.
+// The list is what remote.go and the status summary call. A macaroon baked
+// from an earlier list is baked again (see macaroonCurrent), so a release that
+// adds a method here does not leave upgraded nodes failing that call.
 var bridgeMacaroonPermissions = []string{
 	"/lnrpc.Lightning/GetInfo",
 	"/lnrpc.Lightning/ListChannels",
@@ -131,6 +144,10 @@ type supervisor struct {
 	// now is replaced in tests.
 	now func() time.Time
 
+	// unansweredSince is when a node that has started before was first
+	// found not answering, or zero. Only prepare touches it.
+	unansweredSince time.Time
+
 	mu     sync.Mutex
 	state  string
 	detail string
@@ -173,51 +190,58 @@ func (s *supervisor) report() (string, string) {
 	return s.state, s.detail
 }
 
-// set records where the node is and returns an error saying the same, so a
-// step can report and return in one line.
-func (s *supervisor) set(state, detail string, cause error) error {
+// record notes where the node is, for Status.
+func (s *supervisor) record(state, detail string) {
 	s.mu.Lock()
 	s.state, s.detail = state, detail
 	s.mu.Unlock()
+}
 
-	switch {
-	case state == sha256Ready || state == sha256Syncing:
-		return nil
-	case cause != nil:
+// pending records a state the node is on its way through and returns the
+// error that has the bridge try again soon: not a fault.
+func (s *supervisor) pending(state, detail string) error {
+	s.record(state, detail)
+
+	return fmt.Errorf("%w: %s", errSha256Pending, detail)
+}
+
+// fail records a state that needs something done and returns an error saying
+// what, which the bridge reports and retries at its ordinary pace.
+func (s *supervisor) fail(state, detail string, cause error) error {
+	s.record(state, detail)
+	if cause != nil {
 		return fmt.Errorf("%s: %w", detail, cause)
-	case state == sha256Starting || state == sha256CreatingWallet:
-		return fmt.Errorf("%w: %s", errSha256Pending, detail)
-	default:
-		return errors.New(detail)
 	}
+
+	return errors.New(detail)
 }
 
 // prepare brings the supervised node to the point where the bridge can use it:
 // a wallet created from the derived seed, unlocked, a bridge macaroon baked,
 // and its identity checked. It returns nil once all of that holds, and an
-// error saying where it stopped otherwise.
+// error saying where it stopped otherwise: errSha256Pending while the node is
+// on its way, anything else when it needs something done.
 func (s *supervisor) prepare(ctx context.Context) error {
 	if s.derive == nil {
-		return s.set(sha256Error, "this node cannot derive a seed for "+
+		return s.fail(sha256Error, "this node cannot derive a seed for "+
 			"the SHA256 node (no wallet keys were handed to the "+
 			"bridge)", nil)
 	}
 
 	password, err := s.ensurePassword()
 	if err != nil {
-		return s.set(sha256Error, "the SHA256 node's wallet password "+
-			"could not be prepared", err)
+		return err
 	}
 
 	// The certificate is the first thing lnd writes, so its absence
-	// means the process has not started: the platform starts it once the
+	// means the process has never started: the platform starts it once the
 	// password file exists, which the step above has just made sure of.
 	if _, err := os.Stat(s.cfg.SHA256TLSCertPath); err != nil {
-		return s.set(sha256Starting, fmt.Sprintf("waiting for the "+
+		return s.pending(sha256Starting, fmt.Sprintf("waiting for the "+
 			"SHA256 Lightning node to start (it writes %s when it "+
 			"does); the platform starts it once the bridge is on, "+
 			"so if this lasts, look at that node's log",
-			s.cfg.SHA256TLSCertPath), nil)
+			s.cfg.SHA256TLSCertPath))
 	}
 
 	if err := s.ensureWallet(ctx, password); err != nil {
@@ -226,48 +250,78 @@ func (s *supervisor) prepare(ctx context.Context) error {
 
 	entropy, err := s.derive()
 	if err != nil {
-		return s.set(sha256Error, "the SHA256 node's seed could not "+
+		return s.fail(sha256Error, "the SHA256 node's seed could not "+
 			"be derived", err)
 	}
 	if err := s.ensureMacaroon(ctx); err != nil {
 		return err
 	}
+	if err := s.checkIdentity(ctx, entropy); err != nil {
+		return err
+	}
+	s.record(sha256Ready, "ready")
 
-	return s.checkIdentity(ctx, entropy)
+	return nil
+}
+
+// walletDB is where the supervised node keeps its wallet, beside its admin
+// macaroon.
+func (s *supervisor) walletDB() string {
+	return filepath.Join(
+		filepath.Dir(s.cfg.SHA256AdminMacaroonPath), "wallet.db",
+	)
 }
 
 // ensurePassword returns the wallet password, creating it the first time.
 //
 // Random rather than derived: it protects the wallet file at rest, which is
 // only worth anything if it is not computable from something else on the same
-// disk. It is never the way back in (the seed is), so losing it costs a wallet
-// re-creation from the same seed, not funds.
+// disk. It is never the way back in (the seed is).
+//
+// It is only ever created for a node with no wallet. A node that has a wallet
+// and no password here lost it with this node's data, and a new one would not
+// open that wallet: lnd would exit on it at every start. That is said instead,
+// with the way out.
 func (s *supervisor) ensurePassword() ([]byte, error) {
 	path := s.cfg.SHA256PasswordFile
-	if raw, err := os.ReadFile(path); err == nil {
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
 		pw := []byte(strings.TrimRight(string(raw), "\r\n"))
 		if len(pw) >= 8 {
 			return pw, nil
 		}
 
-		return nil, fmt.Errorf("%s holds no usable password; remove it "+
-			"only if the SHA256 node has no wallet yet", path)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		return nil, s.fail(sha256Error, fmt.Sprintf("%s holds no "+
+			"usable password; remove it only if the SHA256 node "+
+			"has no wallet yet", path), nil)
+
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, s.fail(sha256Error, "the SHA256 node's wallet "+
+			"password cannot be read", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, err
+	if _, err := os.Stat(s.walletDB()); err == nil {
+		return nil, s.fail(sha256Locked, fmt.Sprintf("the SHA256 node "+
+			"has a wallet but the password this node kept for it "+
+			"(%s) is gone. Nothing is lost: its seed comes from this "+
+			"node's own. Move %s aside, keeping its channel.backup, "+
+			"and the bridge creates the node again from the same "+
+			"seed; then restore its channels from that backup "+
+			"(docs/bridge-sha256-node.md)", path, s.cfg.SHA256Dir),
+			nil)
 	}
 
 	var buf [32]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		return nil, err
+		return nil, s.fail(sha256Error, "no randomness for the SHA256 "+
+			"node's wallet password", err)
 	}
 	pw := []byte(hex.EncodeToString(buf[:]))
 
 	if err := writeFileAtomic(path, pw); err != nil {
-		return nil, err
+		return nil, s.fail(sha256Error, "the SHA256 node's wallet "+
+			"password could not be saved", err)
 	}
 
 	return pw, nil
@@ -278,44 +332,63 @@ func (s *supervisor) ensurePassword() ([]byte, error) {
 func (s *supervisor) ensureWallet(ctx context.Context, password []byte) error {
 	conn, err := s.dialUnlocker(s.cfg)
 	if err != nil {
-		return s.set(sha256Unreachable, fmt.Sprintf("the SHA256 "+
-			"Lightning node at %s cannot be reached",
-			s.cfg.SHA256RPCHost), err)
+		return s.notAnswering(err)
 	}
 	defer conn.Close()
 
 	state, err := conn.GetState(ctx)
 	if err != nil {
-		// A node that is starting answers nothing for a moment, and
-		// that is the common case right after the certificate appears.
-		return s.set(sha256Starting, "the SHA256 Lightning node is "+
-			"starting", nil)
+		return s.notAnswering(err)
 	}
+	s.unansweredSince = time.Time{}
 
+	created := false
 	switch state {
 	case lnrpc.WalletState_WAITING_TO_START:
-		return s.set(sha256Starting, "the SHA256 Lightning node is "+
-			"starting", nil)
+		return s.pending(sha256Starting, "the SHA256 Lightning node "+
+			"is starting")
 
 	case lnrpc.WalletState_NON_EXISTING:
 		if err := s.createWallet(ctx, conn, password); err != nil {
 			return err
 		}
+		created = true
 
 	case lnrpc.WalletState_LOCKED:
 		// The platform starts the node with the password file, so it
 		// unlocks itself. Being found locked means it was started
 		// without it; unlocking here gets the bridge going, and the
-		// wrong password is reported rather than retried forever.
+		// wrong password is reported rather than retried for ever.
 		if err := conn.UnlockWallet(ctx, password); err != nil {
-			return s.set(sha256Locked, "the SHA256 node's wallet "+
+			return s.fail(sha256Locked, "the SHA256 node's wallet "+
 				"is locked and the password this node keeps "+
 				"for it does not open it; this node did not "+
 				"create that wallet", err)
 		}
 	}
 
-	return s.waitActive(ctx, conn)
+	return s.waitActive(ctx, conn, created)
+}
+
+// notAnswering reports a node that has started before and does not answer:
+// starting, for a while, and then failing.
+func (s *supervisor) notAnswering(cause error) error {
+	now := s.now()
+	if s.unansweredSince.IsZero() {
+		s.unansweredSince = now
+	}
+	if now.Sub(s.unansweredSince) < sha256StartTimeout {
+		return s.pending(sha256Starting, "the SHA256 Lightning node "+
+			"is starting")
+	}
+
+	return s.fail(sha256Unreachable, fmt.Sprintf("the SHA256 Lightning "+
+		"node has started before (its certificate is at %s) but has "+
+		"not answered at %s for %v. It may be failing to start: look "+
+		"at its log. The usual causes are its chain node being "+
+		"unreachable and a wallet password that does not open its "+
+		"wallet", s.cfg.SHA256TLSCertPath, s.cfg.SHA256RPCHost,
+		now.Sub(s.unansweredSince).Round(time.Minute)), cause)
 }
 
 // createWallet creates the node's wallet from the derived seed.
@@ -324,18 +397,18 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 
 	entropy, err := s.derive()
 	if err != nil {
-		return s.set(sha256Error, "the SHA256 node's seed could not "+
+		return s.fail(sha256Error, "the SHA256 node's seed could not "+
 			"be derived", err)
 	}
 	mnemonic, err := Sha256SeedMnemonic(entropy)
 	if err != nil {
-		return s.set(sha256Error, "the SHA256 node's seed could not "+
+		return s.fail(sha256Error, "the SHA256 node's seed could not "+
 			"be encoded", err)
 	}
 
-	_ = s.set(sha256CreatingWallet, "creating the SHA256 node's wallet "+
+	s.record(sha256CreatingWallet, "creating the SHA256 node's wallet "+
 		"from a seed derived from this node's own; there is nothing "+
-		"new to write down", nil)
+		"new to write down")
 
 	err = conn.InitWallet(ctx, &lnrpc.InitWalletRequest{
 		WalletPassword:     password,
@@ -343,7 +416,7 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 		RecoveryWindow:     sha256RecoveryWindow,
 	})
 	if err != nil {
-		return s.set(sha256Error, "the SHA256 node would not create "+
+		return s.fail(sha256Error, "the SHA256 node would not create "+
 			"its wallet", err)
 	}
 
@@ -353,111 +426,167 @@ func (s *supervisor) createWallet(ctx context.Context, conn unlockerClients,
 	return nil
 }
 
-// waitActive waits for the node's RPC to come up after creation or unlock.
-func (s *supervisor) waitActive(ctx context.Context,
-	conn unlockerClients) error {
+// waitActive waits for the node to finish starting after creation or unlock.
+//
+// SERVER_ACTIVE, not RPC_ACTIVE: in between, lnd is catching up with its chain
+// and answers some of the calls the next steps make with "the server is still
+// starting", which would read as a node that is down. A node that is not there
+// within the wait is handed back to the retry loop as on its way, named for
+// what it is doing.
+func (s *supervisor) waitActive(ctx context.Context, conn unlockerClients,
+	created bool) error {
+
+	state, detail := sha256Syncing, "the SHA256 node is catching up with "+
+		"its chain before it serves calls"
+	if created {
+		state, detail = sha256CreatingWallet, "the SHA256 node's new "+
+			"wallet is opening and scanning its chain; this takes a "+
+			"few minutes the first time"
+	}
+	s.record(state, detail)
 
 	deadline := s.now().Add(sha256ReadyWait)
 	for {
-		// SERVER_ACTIVE, not RPC_ACTIVE: in between, lnd answers some
-		// of the calls the next steps make with "the server is still
-		// starting", which would read as a node that is down.
-		state, err := conn.GetState(ctx)
-		if err == nil && state == lnrpc.WalletState_SERVER_ACTIVE {
+		st, err := conn.GetState(ctx)
+		if err == nil && st == lnrpc.WalletState_SERVER_ACTIVE {
 			return nil
 		}
 		if s.now().After(deadline) {
-			return s.set(sha256CreatingWallet, "the SHA256 node's "+
-				"wallet is opening; this can take a few minutes "+
-				"the first time", nil)
+			return s.pending(state, detail)
 		}
 
 		select {
 		case <-ctx.Done():
-			return s.set(sha256Starting, "the SHA256 Lightning node "+
-				"is starting", ctx.Err())
+			return s.pending(state, detail)
 		case <-time.After(time.Second):
 		}
 	}
 }
 
-// ensureMacaroon bakes the bridge's macaroon from the node's admin one, if it
-// has not been baked yet.
+// permissionsFingerprint identifies the permission list a macaroon was baked
+// with, so a release that changes the list re-bakes it.
+func permissionsFingerprint() string {
+	h := sha256.Sum256([]byte(strings.Join(bridgeMacaroonPermissions, "\n")))
+
+	return hex.EncodeToString(h[:])
+}
+
+// ensureMacaroon bakes the bridge's macaroon from the node's admin one, unless
+// a current one is already there.
 //
 // Kept apart from the admin macaroon on purpose: the admin one stays in the
 // SHA256 node's own directory for the operator's tools, and the bridge holds
-// only what it calls. A baked macaroon that no longer works (the node's
-// macaroon store was reset) is replaced rather than left to fail every call.
+// only what it calls. One baked from an earlier permission list, one that does
+// not parse, and one the node no longer accepts (its macaroon store was reset)
+// are all replaced rather than left to fail.
 func (s *supervisor) ensureMacaroon(ctx context.Context) error {
-	if mac, err := os.ReadFile(s.cfg.SHA256MacaroonPath); err == nil &&
-		len(mac) > 0 {
-
-		ok, err := s.macaroonWorks(ctx, mac)
-		if err != nil {
-			return err
-		}
-		if ok {
-			return nil
-		}
-		log.Infof("Bridge macaroon for the SHA256 node no longer " +
-			"works; baking a new one")
+	current, err := s.macaroonCurrent(ctx)
+	if err != nil || current {
+		return err
 	}
 
 	admin, err := os.ReadFile(s.cfg.SHA256AdminMacaroonPath)
 	if err != nil || len(admin) == 0 {
-		return s.set(sha256CreatingWallet, fmt.Sprintf("waiting for "+
+		return s.pending(sha256CreatingWallet, fmt.Sprintf("waiting for "+
 			"the SHA256 node to write its admin macaroon (%s)",
-			s.cfg.SHA256AdminMacaroonPath), nil)
+			s.cfg.SHA256AdminMacaroonPath))
 	}
 
 	conn, err := s.dialAdmin(s.cfg, admin)
 	if err != nil {
-		return s.set(sha256Unreachable, "the SHA256 Lightning node "+
+		return s.fail(sha256Unreachable, "the SHA256 Lightning node "+
 			"cannot be reached", err)
 	}
 	defer conn.Close()
 
 	baked, err := conn.BakeMacaroon(ctx, bridgeMacaroonPermissions)
 	if err != nil {
-		return s.set(sha256Error, "the SHA256 node would not make the "+
+		return s.fail(sha256Error, "the SHA256 node would not make the "+
 			"bridge's macaroon", err)
 	}
+
+	// The macaroon first and its fingerprint after: a crash between the two
+	// leaves a fingerprint that does not match, which bakes again, rather
+	// than one that vouches for a macaroon that is not there.
 	if err := writeFileAtomic(s.cfg.SHA256MacaroonPath, baked); err != nil {
-		return s.set(sha256Error, "the bridge's macaroon for the "+
+		return s.fail(sha256Error, "the bridge's macaroon for the "+
 			"SHA256 node could not be saved", err)
 	}
+	if err := writeFileAtomic(s.cfg.SHA256MacaroonPath+".perms",
+		[]byte(permissionsFingerprint())); err != nil {
+
+		return s.fail(sha256Error, "the bridge's macaroon for the "+
+			"SHA256 node could not be saved", err)
+	}
+	log.Infof("Bridge baked its macaroon for the SHA256 node")
 
 	return nil
 }
 
-// macaroonWorks reports whether the bridge's macaroon is accepted. A refusal
-// on credentials is "no"; any other failure is an error, because it says
-// nothing about the macaroon.
-func (s *supervisor) macaroonWorks(ctx context.Context, mac []byte) (bool,
-	error) {
+// macaroonCurrent reports whether the bridge's macaroon is there, baked from
+// today's permission list, and accepted by the node. A node that does not
+// answer is an error, because that says nothing about the macaroon.
+func (s *supervisor) macaroonCurrent(ctx context.Context) (bool, error) {
+	mac, err := os.ReadFile(s.cfg.SHA256MacaroonPath)
+	if err != nil || len(mac) == 0 {
+		return false, nil
+	}
+	if err := (&macaroon.Macaroon{}).UnmarshalBinary(mac); err != nil {
+		log.Infof("Bridge macaroon for the SHA256 node does not parse; " +
+			"baking a new one")
+
+		return false, nil
+	}
+	perms, err := os.ReadFile(s.cfg.SHA256MacaroonPath + ".perms")
+	if err != nil || string(perms) != permissionsFingerprint() {
+		log.Infof("Bridge macaroon for the SHA256 node predates its " +
+			"current permissions; baking a new one")
+
+		return false, nil
+	}
 
 	conn, err := s.dialAdmin(s.cfg, mac)
 	if err != nil {
-		return false, s.set(sha256Unreachable, "the SHA256 Lightning "+
+		return false, s.fail(sha256Unreachable, "the SHA256 Lightning "+
 			"node cannot be reached", err)
 	}
 	defer conn.Close()
 
 	_, err = conn.IdentityPubkey(ctx)
-	switch status.Code(err) {
-	case codes.OK:
+	if err == nil {
 		return true, nil
-	case codes.PermissionDenied, codes.Unauthenticated:
-		return false, nil
 	}
-	if strings.Contains(err.Error(), "verification failed") ||
-		strings.Contains(err.Error(), "cannot get macaroon") {
+	if macaroonRefused(err) {
+		log.Infof("Bridge macaroon for the SHA256 node is no longer " +
+			"accepted; baking a new one")
 
 		return false, nil
 	}
 
-	return false, s.set(sha256Unreachable, "the SHA256 Lightning node "+
+	return false, s.fail(sha256Unreachable, "the SHA256 Lightning node "+
 		"does not answer", err)
+}
+
+// macaroonRefused reports whether an error is the node refusing the macaroon
+// itself, as opposed to not answering. lnd says so in several ways, most of
+// them with the Unknown code, so the message is read too.
+func macaroonRefused(err error) bool {
+	switch status.Code(err) {
+	case codes.PermissionDenied, codes.Unauthenticated:
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{
+		"verification failed", "permission denied",
+		"cannot get macaroon", "invalid macaroon",
+		"unable to unmarshal", "macaroon",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // checkIdentity confirms the node answering is the one the derived seed makes.
@@ -471,53 +600,80 @@ func (s *supervisor) checkIdentity(ctx context.Context,
 
 	mac, err := os.ReadFile(s.cfg.SHA256MacaroonPath)
 	if err != nil {
-		return s.set(sha256Error, "the bridge's macaroon for the "+
+		return s.fail(sha256Error, "the bridge's macaroon for the "+
 			"SHA256 node cannot be read", err)
 	}
 	conn, err := s.dialAdmin(s.cfg, mac)
 	if err != nil {
-		return s.set(sha256Unreachable, "the SHA256 Lightning node "+
+		return s.fail(sha256Unreachable, "the SHA256 Lightning node "+
 			"cannot be reached", err)
 	}
 	defer conn.Close()
 
 	got, err := conn.IdentityPubkey(ctx)
 	if err != nil {
-		return s.set(sha256Unreachable, "the SHA256 Lightning node "+
+		return s.fail(sha256Unreachable, "the SHA256 Lightning node "+
 			"does not answer", err)
 	}
 
 	want, err := Sha256NodeKey(entropy, s.coinType)
 	if err != nil {
-		return s.set(sha256Error, "the SHA256 node's expected identity "+
+		return s.fail(sha256Error, "the SHA256 node's expected identity "+
 			"could not be derived", err)
 	}
 	wantHex := hex.EncodeToString(want.SerializeCompressed())
 	if !strings.EqualFold(got, wantHex) {
-		return s.set(sha256NotOurs, fmt.Sprintf("the SHA256 Lightning "+
+		return s.fail(sha256NotOurs, fmt.Sprintf("the SHA256 Lightning "+
 			"node at %s is not the one this node created (its "+
 			"identity is %s, the derived seed gives %s); the bridge "+
 			"will not use it. If its directory was replaced or "+
 			"restored from another phrase, move %s aside so a "+
-			"node can be created from the right seed", s.cfg.SHA256RPCHost,
-			got, wantHex, s.cfg.SHA256Dir), nil)
+			"node can be created from the right seed",
+			s.cfg.SHA256RPCHost, got, wantHex, s.cfg.SHA256Dir), nil)
 	}
 
-	return s.set(sha256Ready, "ready", nil)
+	return nil
 }
 
-// writeFileAtomic writes a secret whole and renames it into place, so a crash
-// leaves the old file or the new one and never half of either.
+// writeFileAtomic writes a secret whole, flushed to disk, and renames it into
+// place, so neither a crash nor a power cut leaves half of one or an empty
+// file where a password was.
 func writeFileAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 
-	return os.Rename(tmp, path)
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+
+	// The rename is only durable once the directory is.
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	return d.Sync()
 }
 
 // The real clients.

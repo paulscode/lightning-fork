@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gopkg.in/macaroon.v2"
 )
 
 // fakeSha256Node stands in for the stock lnd: its wallet state, what it was
@@ -105,7 +107,34 @@ func (f fakeAdmin) BakeMacaroon(_ context.Context,
 	f.n.bakedPerms = perms
 	f.n.rejectBaked = false
 
-	return []byte("baked-" + string(rune('0'+f.n.bakes))), nil
+	return testMacaroon(f.n.bakes), nil
+}
+
+// testMacaroon is a real, serialised macaroon whose id says which bake it was.
+func testMacaroon(n int) []byte {
+	m, err := macaroon.New([]byte("root key"),
+		[]byte(fmt.Sprintf("baked-%d", n)), "lnd", macaroon.V2)
+	if err != nil {
+		panic(err)
+	}
+	raw, err := m.MarshalBinary()
+	if err != nil {
+		panic(err)
+	}
+
+	return raw
+}
+
+// macaroonID reads which bake a macaroon file holds.
+func macaroonID(t *testing.T, path string) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var m macaroon.Macaroon
+	require.NoError(t, m.UnmarshalBinary(raw))
+
+	return string(m.Id())
 }
 
 func (f fakeAdmin) IdentityPubkey(context.Context) (string, error) {
@@ -223,9 +252,7 @@ func TestSupervisorFirstRun(t *testing.T) {
 		"the wallet must be created from the derived seed")
 
 	require.Equal(t, bridgeMacaroonPermissions, fake.bakedPerms)
-	mac, err := os.ReadFile(cfg.SHA256MacaroonPath)
-	require.NoError(t, err)
-	require.Equal(t, "baked-1", string(mac))
+	require.Equal(t, "baked-1", macaroonID(t, cfg.SHA256MacaroonPath))
 	info, err = os.Stat(cfg.SHA256MacaroonPath)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
@@ -348,9 +375,7 @@ func TestSupervisorRebakesARejectedMacaroon(t *testing.T) {
 	fake.rejectBaked = true
 	require.NoError(t, s.prepare(context.Background()))
 	require.Equal(t, 2, fake.bakes)
-	mac, err := os.ReadFile(cfg.SHA256MacaroonPath)
-	require.NoError(t, err)
-	require.Equal(t, "baked-2", string(mac))
+	require.Equal(t, "baked-2", macaroonID(t, cfg.SHA256MacaroonPath))
 }
 
 // The admin macaroon appears a moment after the wallet; until then the bridge

@@ -159,6 +159,15 @@ func Sha256NodeKey(entropy [aezeed.EntropySize]byte,
 func LndKeyAt(seed []byte, coinType, family,
 	index uint32) (*hdkeychain.ExtendedKey, error) {
 
+	// Family 0 is the exception: btcwallet derives that account when it
+	// creates the scope, from the coin type key it has just derived and
+	// not yet stored, so non-standard at that level too. Nothing here
+	// needs it, so it is refused rather than given a second rule.
+	if family == 0 {
+		return nil, fmt.Errorf("key family 0 is derived differently by " +
+			"btcwallet; LndKeyAt does not cover it")
+	}
+
 	// The network only decides how the key would be serialised.
 	master, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
 	if err != nil {

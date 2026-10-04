@@ -40,7 +40,7 @@ func (s *server) bridgeDeps(
 
 			inv, err := s.invoices.LookupInvoice(ctx, hash)
 			if err != nil {
-				if errors.Is(err, invoices.ErrInvoiceNotFound) {
+				if bridgeInvoiceAbsent(err) {
 					return bridgerpc.InvoiceStatus{}, false,
 						nil
 				}
@@ -114,7 +114,7 @@ func bridgeNetworkName(params string) string {
 func (s *server) forgetBridgeInvoice(ctx context.Context, hash [32]byte) error {
 	inv, err := s.invoices.LookupInvoice(ctx, lntypes.Hash(hash))
 	switch {
-	case errors.Is(err, invoices.ErrInvoiceNotFound):
+	case bridgeInvoiceAbsent(err):
 		return nil
 	case err != nil:
 		return err
@@ -460,4 +460,16 @@ func (s *server) deriveSha256Seed() ([aezeed.EntropySize]byte, error) {
 	}
 
 	return bridgerpc.Sha256SeedEntropy(priv)
+}
+
+// bridgeInvoiceAbsent reports whether a lookup failed because the node has no
+// such invoice.
+//
+// Two errors mean that. A node that has never created an invoice answers every
+// lookup with ErrNoInvoicesCreated rather than ErrInvoiceNotFound, so a bridge
+// on a new node read its first quote's check for an earlier invoice as a
+// failure, and refused every swap until something else had made an invoice.
+func bridgeInvoiceAbsent(err error) bool {
+	return errors.Is(err, invoices.ErrInvoiceNotFound) ||
+		errors.Is(err, invoices.ErrNoInvoicesCreated)
 }
