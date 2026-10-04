@@ -50,7 +50,16 @@ depending on the version picked in its own settings, so the dashboard asks
 rather than assumes. The chosen node is written to `bridge-sha256.conf`
 beside Lightning Fork's data, which the bridge's node reads; choosing
 another restarts only that node. A candidate installed after Lightning Fork
-is found once Lightning Fork restarts.
+is found once Lightning Fork restarts. While the bridge is on, the dashboard
+checks that node every few minutes: if it has moved off the SHA256 chain
+(Bitcoin Knots switched to a BLAKE2b version in its own settings), the
+bridge's node stops reading it, and so stops, rather than follow the wrong
+chain, and the dashboard says so.
+
+To do this the dashboard holds the RPC credentials of each candidate node,
+in its environment and, for the chosen one, in `bridge-sha256.conf`
+(readable by lnd's user only). A main node with a wallet of its own is one
+of them.
 
 Links to the SHA256 chain in the dashboard go to an installed Mempool app on
 that chain, else to mempool.space.
