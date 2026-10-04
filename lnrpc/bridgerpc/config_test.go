@@ -5,6 +5,7 @@ package bridgerpc
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -76,10 +77,13 @@ func TestValidateRefusals(t *testing.T) {
 			want: "macaroonpath",
 		},
 		{
-			// There is no default rate on purpose: a wrong one
-			// loses money on every swap and does it quietly.
-			name: "no rate",
-			edit: func(c *Config) { c.FixedRate = 0 },
+			name: "a rate that is not a number",
+			edit: func(c *Config) { c.FixedRate = math.NaN() },
+			want: "fixedrate",
+		},
+		{
+			name: "an infinite rate",
+			edit: func(c *Config) { c.FixedRate = math.Inf(1) },
 			want: "fixedrate",
 		},
 		{

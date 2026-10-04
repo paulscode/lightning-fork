@@ -8,9 +8,11 @@ import (
 	"math"
 	"time"
 
+	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/invoices"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/bridgerpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
@@ -66,6 +68,8 @@ func (s *server) bridgeDeps(
 		),
 
 		Network: bridgeNetworkName(s.cfg.ActiveNetParams.Params.Name),
+
+		DeriveSha256Seed: s.deriveSha256Seed,
 
 		DecodeInvoice: func(_ context.Context,
 			invoice string) (*zpay32.Invoice, error) {
@@ -432,4 +436,28 @@ func spendableOutbound(channels []*channeldb.OpenChannel,
 	}
 
 	return outbound
+}
+
+// deriveSha256Seed is the supervised SHA256 node's seed entropy: HKDF over the
+// private key this wallet holds at the bridge's own key family (see
+// lnrpc/bridgerpc/seed.go and docs/bridge-sha256-node.md).
+//
+// A remote signer holds no private keys here, and refusing is the right answer
+// for it: the derivation is only reproducible from the wallet that has them.
+func (s *server) deriveSha256Seed() ([aezeed.EntropySize]byte, error) {
+	var none [aezeed.EntropySize]byte
+
+	priv, err := s.cc.KeyRing.DerivePrivKey(keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			Family: bridgerpc.Sha256SeedFamily,
+			Index:  bridgerpc.Sha256SeedIndex,
+		},
+	})
+	if err != nil {
+		return none, fmt.Errorf("deriving the key the SHA256 node's "+
+			"seed comes from (a remote signer cannot run a "+
+			"supervised SHA256 node): %w", err)
+	}
+
+	return bridgerpc.Sha256SeedEntropy(priv)
 }

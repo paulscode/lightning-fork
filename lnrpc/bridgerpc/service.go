@@ -732,8 +732,9 @@ func (s *service) directionInfo(ctx context.Context, sd *side) *DirectionInfo {
 		MinMsat: policy.MinSwapMsat,
 		MaxMsat: policy.MaxSwapMsat,
 	}
-	_, setAt := s.rates.current()
-	out.RateSetAt = setAt.Unix()
+	if _, setAt := s.rates.current(); !setAt.IsZero() {
+		out.RateSetAt = setAt.Unix()
+	}
 
 	shut := func(err error) *DirectionInfo {
 		out.Open = false

@@ -106,6 +106,39 @@
         ]
       }
     },
+    "/v2/bridge/sha256seed": {
+      "post": {
+        "summary": "lncli: `bridge sha256seed`\nExportSha256Seed shows how to restore the SHA256 node this node runs for\nthe bridge, outside Lightning Fork: a 24-word aezeed phrase and the\nequivalent BIP32 root key. Neither is stored anywhere; both are derived\nfrom this node's own wallet, so the operator's one recovery phrase is\nenough. Only for a supervised node, and only for an admin macaroon.",
+        "operationId": "Bridge_ExportSha256Seed",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/bridgerpcExportSha256SeedResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/bridgerpcExportSha256SeedRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Bridge"
+        ]
+      }
+    },
     "/v2/bridge/status": {
       "get": {
         "summary": "lncli: `bridge status`\nStatus reports whether this node is in a position to serve swaps: which\ndirections are enabled, whether both chains can be measured, whether a\nusable price is available, and how many swaps are in flight.",
@@ -206,6 +239,38 @@
         "max_msat": {
           "type": "string",
           "format": "uint64"
+        }
+      }
+    },
+    "bridgerpcExportSha256SeedRequest": {
+      "type": "object"
+    },
+    "bridgerpcExportSha256SeedResponse": {
+      "type": "object",
+      "properties": {
+        "mnemonic": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The 24-word aezeed phrase, with no passphrase. Each call salts it afresh,\nso the words differ from call to call; every one restores the same node."
+        },
+        "extended_master_key": {
+          "type": "string",
+          "description": "The same seed as a BIP32 root key (xprv on mainnet), which\n`lncli create` also accepts."
+        },
+        "birthday": {
+          "type": "string",
+          "format": "int64",
+          "description": "The wallet birthday, as a Unix timestamp: where a restore rescans from."
+        },
+        "identity_pubkey": {
+          "type": "string",
+          "description": "The identity key a node restored from either will have, hex."
+        },
+        "derivation": {
+          "type": "string",
+          "description": "How the seed is derived, so it can be checked without this code."
         }
       }
     },
@@ -322,6 +387,78 @@
         }
       }
     },
+    "bridgerpcSha256Node": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "description": "supervised when this node runs it for the bridge, external when it is a\nnode the operator already ran."
+        },
+        "state": {
+          "type": "string",
+          "description": "Where that node is, as a stable code: starting, creating_wallet, locked,\nsyncing, ready, unreachable, not_ours or error."
+        },
+        "detail": {
+          "type": "string",
+          "description": "The same in a sentence, including what to do about it."
+        },
+        "identity_pubkey": {
+          "type": "string",
+          "description": "Its identity key, hex, and the addresses it can be reached at."
+        },
+        "uris": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "synced_to_chain": {
+          "type": "boolean"
+        },
+        "block_height": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "onchain_confirmed_sat": {
+          "type": "string",
+          "format": "int64",
+          "description": "Its on-chain wallet: what can be spent now, and what is still\nconfirming."
+        },
+        "onchain_unconfirmed_sat": {
+          "type": "string",
+          "format": "int64"
+        },
+        "active_channels": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "inactive_channels": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "pending_channels": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "outbound_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "What its channels could send and receive now, in millisatoshis. Sending\nis what the bridge pays out with on the SHA256 chain."
+        },
+        "inbound_msat": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "peers": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "version": {
+          "type": "string",
+          "description": "The lnd version it runs."
+        }
+      }
+    },
     "bridgerpcStatusResponse": {
       "type": "object",
       "properties": {
@@ -369,6 +506,10 @@
             "type": "string"
           },
           "description": "Swaps that need the operator: ones that ended lost (paid out and the\nclaim on the money coming in could not be settled) or that the bridge\nstopped driving because it must not decide them alone. Each is the\npayment hash, the state and why. The bridge keeps quoting; these are for\na person to look at."
+        },
+        "sha256_node": {
+          "$ref": "#/definitions/bridgerpcSha256Node",
+          "description": "The Lightning node on the SHA256 chain: how far it has got and what it\nholds. Present whenever the bridge is enabled, including while it cannot\nstart, since that node is usually why."
         }
       }
     },

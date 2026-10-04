@@ -6,6 +6,7 @@ package bridgerpc
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/paulscode/lightning-fork-bridge/chainrate"
@@ -59,6 +60,31 @@ type Config struct {
 	// SHA256MacaroonPath is a macaroon for that node.
 	SHA256MacaroonPath string `long:"sha256.macaroonpath" description:"Path to a macaroon for the SHA256 node. It needs invoice and offchain write."`
 
+	// Supervised says the SHA256 node is the one this node runs for the
+	// operator, rather than one they already had.
+	//
+	// The platform starts that node's process; this node gives it its
+	// identity. Its seed is derived from this wallet (seed.go), so there
+	// is nothing new to write down; this node creates its wallet, keeps
+	// its unlock password, and bakes the narrow macaroon the bridge uses.
+	// The address, certificate and macaroon settings above then default
+	// to where that node keeps them, so turning this on is the whole of
+	// the configuration.
+	Supervised bool `long:"sha256.supervised" description:"Run the bridge's SHA256 Lightning node for the operator: its seed is derived from this node's wallet (nothing new to write down) and this node creates its wallet and credentials. The platform starts its process; see docs/bridge-sha256-node.md."`
+
+	// SHA256Dir is the supervised node's lnd directory, as this process
+	// sees it. It defaults to sha256-node under this node's own lnd
+	// directory, so that whatever backs this node up takes that one too.
+	SHA256Dir string `long:"sha256.dir" description:"The supervised SHA256 node's lnd directory, as this node sees it. Default: sha256-node under this node's lnd directory."`
+
+	// SHA256PasswordFile and SHA256AdminMacaroonPath are where the
+	// supervised node's unlock password and its own admin macaroon are.
+	// They are derived, not configured: the platform starts that node with
+	// the password file and the operator's tools reach it with the admin
+	// macaroon, so both have to be where the documentation says.
+	SHA256PasswordFile      string
+	SHA256AdminMacaroonPath string
+
 	// Journal is where swaps are recorded.
 	//
 	// It holds preimages and the state of anything in flight, so it must be
@@ -80,7 +106,7 @@ type Config struct {
 	// swap and does it quietly, so the bridge refuses to guess one; for a
 	// market this thin an operator's own posted rate is the price, and it
 	// has to be their number.
-	FixedRate float64 `long:"fixedrate" description:"What you will trade at, as SHA256 coin per BLAKE2b coin. There is no default: a wrong rate loses money silently, so this must be set deliberately."`
+	FixedRate float64 `long:"fixedrate" description:"What you will trade at, as SHA256 coin per BLAKE2b coin. There is no default: a wrong rate loses money silently, so until one is set here or with lncli bridge setrate the bridge quotes nothing."`
 
 	// Spread is the fraction charged on top of the rate.
 	Spread float64 `long:"spread" description:"The fraction you keep, on top of the rate. Routing fees come out of this. Default 0.01 (1%)."`
@@ -175,6 +201,32 @@ const maxSpread = 0.2
 // DefaultJournalName is where the journal lives under the network directory
 // when the operator names no path.
 const DefaultJournalName = "bridge/swaps.journal"
+
+// Where the supervised SHA256 node lives, and where this node keeps what it
+// holds for it. These are part of the contract with the platform packages,
+// which start that node with the password file and hand its admin macaroon to
+// the operator's tools, and with docs/bridge-sha256-node.md.
+const (
+	// DefaultSha256DirName is the supervised node's lnd directory, under
+	// this node's own.
+	DefaultSha256DirName = "sha256-node"
+
+	// Sha256SecretsDir is under the network directory, beside the
+	// journal: the password and the bridge's macaroon for that node.
+	Sha256SecretsDir = "bridge/sha256"
+
+	// Sha256PasswordName is the supervised node's wallet unlock password.
+	Sha256PasswordName = "wallet.password"
+
+	// Sha256MacaroonName is the macaroon the bridge uses for it, baked
+	// with only what the bridge calls (see bridgeMacaroonPermissions).
+	Sha256MacaroonName = "bridge.macaroon"
+
+	// DefaultSupervisedRPCHost is where the supervised node's gRPC listens
+	// when it shares this node's network namespace, as both platform
+	// packages run it. Clear of lnd's own 10009.
+	DefaultSupervisedRPCHost = "127.0.0.1:10019"
+)
 
 // resolved is a Config with every derived value filled in.
 //
@@ -294,6 +346,11 @@ func (c *Config) Validate() error {
 			"bridgerpc.tosha256, bridgerpc.toblake2b, or both",
 			ErrConfig)
 	}
+	if c.Supervised && c.SHA256PasswordFile == "" {
+		return fmt.Errorf("%w: the supervised SHA256 node's paths were "+
+			"not derived; this is a bug in how the bridge was "+
+			"configured, not something to set", ErrConfig)
+	}
 	if c.SHA256RPCHost == "" {
 		return fmt.Errorf("%w: no Lightning node on the SHA256 chain; "+
 			"set bridgerpc.sha256.rpchost to the node that holds "+
@@ -303,11 +360,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%w: no macaroon for the SHA256 node; set "+
 			"bridgerpc.sha256.macaroonpath", ErrConfig)
 	}
-	if c.FixedRate <= 0 {
-		return fmt.Errorf("%w: no rate; set bridgerpc.fixedrate to "+
-			"what you will trade at, in SHA256 coin per BLAKE2b "+
-			"coin. There is no default because a wrong one loses "+
-			"money on every swap and does it quietly", ErrConfig)
+	if c.FixedRate < 0 || math.IsNaN(c.FixedRate) ||
+		math.IsInf(c.FixedRate, 0) {
+
+		return fmt.Errorf("%w: bridgerpc.fixedrate must be a positive "+
+			"number of SHA256 coin per BLAKE2b coin, or left out to "+
+			"set it later (lncli bridge setrate); got %g", ErrConfig,
+			c.FixedRate)
 	}
 	if c.RateMaxAge < 0 || c.FundedGrace < 0 || c.MaxUnpaid < 0 ||
 		c.MaxInProgress < 0 || c.PerMinute < 0 {

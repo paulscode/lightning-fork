@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -56,6 +57,13 @@ type Deps struct {
 	// Network is this node's network as lnd's GetInfo names it (mainnet,
 	// testnet, regtest, ...). The SHA256 node must be on the same one.
 	Network string
+
+	// DeriveSha256Seed is the supervised SHA256 node's aezeed entropy,
+	// derived from this node's wallet as seed.go specifies.
+	//
+	// The entropy and not the key it comes from: the key is this wallet's,
+	// and nothing in the bridge needs it beyond this one use.
+	DeriveSha256Seed func() ([aezeed.EntropySize]byte, error)
 
 	// DecodeInvoice reads a payment request with this node's own decoder
 	// and network parameters.

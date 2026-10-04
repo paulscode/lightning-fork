@@ -72,6 +72,21 @@ var (
 		// only the operator's own (admin) macaroon carries.
 		// Participants' macaroons are scoped to the payer calls by URI
 		// and never reach this.
+		// The SHA256 node's seed controls its funds, so only a
+		// macaroon that could already move this node's may see it.
+		"/bridgerpc.Bridge/ExportSha256Seed": {{
+			Entity: "onchain",
+			Action: "write",
+		}, {
+			Entity: "offchain",
+			Action: "write",
+		}, {
+			Entity: "macaroon",
+			Action: "generate",
+		}, {
+			Entity: "signer",
+			Action: "generate",
+		}},
 		"/bridgerpc.Bridge/SetRate": {{
 			Entity: "offchain",
 			Action: "write",
@@ -122,6 +137,10 @@ type Server struct {
 	// trying. Guarded by mu.
 	startErr error
 
+	// sup prepares the SHA256 node when this node runs it for the bridge
+	// (bridgerpc.sha256.supervised), and is nil otherwise.
+	sup *supervisor
+
 	// info is the last Info answer and when it was made, shared for
 	// infoFresh. Guarded by infoMu, which also lets one caller at a time
 	// make a new one.
@@ -152,10 +171,15 @@ var _ BridgeServer = (*Server)(nil)
 // we'll create them on start up. If we're unable to locate, or create the
 // macaroons we need, then we'll return with an error.
 func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
-	return &Server{
+	s := &Server{
 		cfg:   cfg,
 		local: NewLocal(cfg.Deps),
-	}, macPermissions, nil
+	}
+	if cfg.Enabled && cfg.Supervised {
+		s.sup = newSupervisor(cfg)
+	}
+
+	return s, macPermissions, nil
 }
 
 // Start launches any helper goroutines required for the Server to function.
@@ -200,20 +224,30 @@ var errStarting = errors.New("still connecting to both nodes")
 // retryInterval is how often a bridge that could not start tries again.
 const retryInterval = time.Minute
 
+// pendingRetryInterval is how often it tries while a supervised SHA256 node is
+// on its way up. Those steps follow one another within seconds, and a minute
+// between each would make a first start take several for no reason.
+const pendingRetryInterval = 10 * time.Second
+
 // retry brings the bridge up, trying at once and then every retryInterval
 // until it is up or the node stops.
 func (s *Server) retry() {
 	defer s.wg.Done()
 
-	tick := time.NewTicker(retryInterval)
-	defer tick.Stop()
-
 	for first := true; ; first = false {
 		err := s.connect()
 		s.setStartErr(err)
+
+		wait := retryInterval
+		pending := errors.Is(err, errSha256Pending)
+		if pending {
+			wait = pendingRetryInterval
+		}
 		switch {
 		case err == nil:
 			return
+		case pending:
+			log.Infof("Bridge waiting for its SHA256 node: %v", err)
 		case first:
 			log.Warnf("Bridge did not start, retrying every %v: %v",
 				retryInterval, err)
@@ -224,7 +258,7 @@ func (s *Server) retry() {
 		select {
 		case <-s.quit:
 			return
-		case <-tick.C:
+		case <-time.After(wait):
 		}
 	}
 }
@@ -240,6 +274,20 @@ func (s *Server) setStartErr(err error) {
 // connect dials the SHA256 node, checks both nodes, and starts the bridge. On
 // any failure nothing is left running or open.
 func (s *Server) connect() error {
+	// A supervised node is brought to where it can be used first: wallet
+	// created from the derived seed, macaroon baked, identity checked.
+	// Until that holds there is nothing to dial.
+	if s.sup != nil {
+		ctx, cancel := context.WithTimeout(
+			context.Background(), sha256ReadyWait+dialTimeout,
+		)
+		err := s.sup.prepare(ctx)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+
 	conn, dialErr := dialSHA256Node(s.cfg)
 	if dialErr != nil {
 		return dialErr
@@ -592,6 +640,10 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		return resp, nil
 	}
 
+	// The SHA256 node first and whatever the bridge's own state: it is
+	// the usual reason the bridge is not up.
+	resp.Sha256Node = s.sha256Summary(ctx)
+
 	// Whether each node can be used at all comes first, and runs even when
 	// the bridge failed to start, because an unsynced or unreachable node
 	// is frequently the reason it did.
@@ -635,7 +687,9 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 
 	rate, setAt := svc.rates.current()
 	resp.Rate = rate
-	resp.RateSetAt = setAt.Unix()
+	if !setAt.IsZero() {
+		resp.RateSetAt = setAt.Unix()
+	}
 	if exp := svc.rates.expiresAt(); !exp.IsZero() {
 		resp.RateExpiresAt = exp.Unix()
 	}

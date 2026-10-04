@@ -37,6 +37,7 @@ func bridgeCommands() []cli.Command {
 				bridgeQuoteCommand,
 				bridgeSwapCommand,
 				bridgeCodeCommand,
+				bridgeSha256SeedCommand,
 			},
 		},
 	}
@@ -113,6 +114,36 @@ var bridgeSetRateCommand = cli.Command{
 
 		resp, err := client.SetRate(getContext(),
 			&bridgerpc.SetRateRequest{Rate: rate})
+		if err != nil {
+			return err
+		}
+		printRespJSON(resp)
+
+		return nil
+	}),
+}
+
+var bridgeSha256SeedCommand = cli.Command{
+	Name:  "sha256seed",
+	Usage: "Show how to restore the bridge's SHA256 node without Lightning Fork.",
+	Description: `
+	The SHA256 Lightning node this node runs for the bridge has a seed of
+	its own, derived from this node's wallet, so this node's recovery
+	phrase is the only one to keep. This prints that node's seed in the
+	two forms a stock lnd accepts at 'lncli create': a 24-word aezeed
+	phrase (no passphrase; the words differ on every call and each one
+	restores the same node) and a BIP32 root key. Also the identity key
+	the restored node must report, which is how to know the restore is
+	right.
+
+	Anyone holding either can spend what that node holds. Needs an admin
+	macaroon.`,
+	Action: actionDecorator(func(ctx *cli.Context) error {
+		client, cleanUp := getBridgeClient(ctx)
+		defer cleanUp()
+
+		resp, err := client.ExportSha256Seed(getContext(),
+			&bridgerpc.ExportSha256SeedRequest{})
 		if err != nil {
 			return err
 		}

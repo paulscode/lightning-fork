@@ -51,6 +51,13 @@ type BridgeClient interface {
 	// again, because a rate nobody has looked at in a moving market is a loss
 	// waiting to be taken.
 	SetRate(ctx context.Context, in *SetRateRequest, opts ...grpc.CallOption) (*SetRateResponse, error)
+	// lncli: `bridge sha256seed`
+	// ExportSha256Seed shows how to restore the SHA256 node this node runs for
+	// the bridge, outside Lightning Fork: a 24-word aezeed phrase and the
+	// equivalent BIP32 root key. Neither is stored anywhere; both are derived
+	// from this node's own wallet, so the operator's one recovery phrase is
+	// enough. Only for a supervised node, and only for an admin macaroon.
+	ExportSha256Seed(ctx context.Context, in *ExportSha256SeedRequest, opts ...grpc.CallOption) (*ExportSha256SeedResponse, error)
 }
 
 type bridgeClient struct {
@@ -106,6 +113,15 @@ func (c *bridgeClient) SetRate(ctx context.Context, in *SetRateRequest, opts ...
 	return out, nil
 }
 
+func (c *bridgeClient) ExportSha256Seed(ctx context.Context, in *ExportSha256SeedRequest, opts ...grpc.CallOption) (*ExportSha256SeedResponse, error) {
+	out := new(ExportSha256SeedResponse)
+	err := c.cc.Invoke(ctx, "/bridgerpc.Bridge/ExportSha256Seed", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BridgeServer is the server API for Bridge service.
 // All implementations must embed UnimplementedBridgeServer
 // for forward compatibility
@@ -143,6 +159,13 @@ type BridgeServer interface {
 	// again, because a rate nobody has looked at in a moving market is a loss
 	// waiting to be taken.
 	SetRate(context.Context, *SetRateRequest) (*SetRateResponse, error)
+	// lncli: `bridge sha256seed`
+	// ExportSha256Seed shows how to restore the SHA256 node this node runs for
+	// the bridge, outside Lightning Fork: a 24-word aezeed phrase and the
+	// equivalent BIP32 root key. Neither is stored anywhere; both are derived
+	// from this node's own wallet, so the operator's one recovery phrase is
+	// enough. Only for a supervised node, and only for an admin macaroon.
+	ExportSha256Seed(context.Context, *ExportSha256SeedRequest) (*ExportSha256SeedResponse, error)
 	mustEmbedUnimplementedBridgeServer()
 }
 
@@ -164,6 +187,9 @@ func (UnimplementedBridgeServer) Info(context.Context, *InfoRequest) (*InfoRespo
 }
 func (UnimplementedBridgeServer) SetRate(context.Context, *SetRateRequest) (*SetRateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetRate not implemented")
+}
+func (UnimplementedBridgeServer) ExportSha256Seed(context.Context, *ExportSha256SeedRequest) (*ExportSha256SeedResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExportSha256Seed not implemented")
 }
 func (UnimplementedBridgeServer) mustEmbedUnimplementedBridgeServer() {}
 
@@ -268,6 +294,24 @@ func _Bridge_SetRate_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Bridge_ExportSha256Seed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExportSha256SeedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BridgeServer).ExportSha256Seed(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/bridgerpc.Bridge/ExportSha256Seed",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BridgeServer).ExportSha256Seed(ctx, req.(*ExportSha256SeedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Bridge_ServiceDesc is the grpc.ServiceDesc for Bridge service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -294,6 +338,10 @@ var Bridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetRate",
 			Handler:    _Bridge_SetRate_Handler,
+		},
+		{
+			MethodName: "ExportSha256Seed",
+			Handler:    _Bridge_ExportSha256Seed_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

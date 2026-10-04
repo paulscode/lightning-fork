@@ -72,6 +72,16 @@ service Bridge {
     waiting to be taken.
     */
     rpc SetRate (SetRateRequest) returns (SetRateResponse);
+
+    /* lncli: `bridge sha256seed`
+    ExportSha256Seed shows how to restore the SHA256 node this node runs for
+    the bridge, outside Lightning Fork: a 24-word aezeed phrase and the
+    equivalent BIP32 root key. Neither is stored anywhere; both are derived
+    from this node's own wallet, so the operator's one recovery phrase is
+    enough. Only for a supervised node, and only for an admin macaroon.
+    */
+    rpc ExportSha256Seed (ExportSha256SeedRequest)
+        returns (ExportSha256SeedResponse);
 }
 
 message QuoteRequest {
@@ -195,6 +205,82 @@ message StatusResponse {
     a person to look at.
     */
     repeated string needs_operator = 8;
+
+    /*
+    The Lightning node on the SHA256 chain: how far it has got and what it
+    holds. Present whenever the bridge is enabled, including while it cannot
+    start, since that node is usually why.
+    */
+    Sha256Node sha256_node = 9;
+}
+
+message Sha256Node {
+    /*
+    supervised when this node runs it for the bridge, external when it is a
+    node the operator already ran.
+    */
+    string mode = 1;
+
+    /*
+    Where that node is, as a stable code: starting, creating_wallet, locked,
+    syncing, ready, unreachable, not_ours or error.
+    */
+    string state = 2;
+
+    // The same in a sentence, including what to do about it.
+    string detail = 3;
+
+    // Its identity key, hex, and the addresses it can be reached at.
+    string identity_pubkey = 4;
+    repeated string uris = 5;
+
+    bool synced_to_chain = 6;
+    uint32 block_height = 7;
+
+    // Its on-chain wallet: what can be spent now, and what is still
+    // confirming.
+    int64 onchain_confirmed_sat = 8;
+    int64 onchain_unconfirmed_sat = 9;
+
+    uint32 active_channels = 10;
+    uint32 inactive_channels = 11;
+    uint32 pending_channels = 12;
+
+    /*
+    What its channels could send and receive now, in millisatoshis. Sending
+    is what the bridge pays out with on the SHA256 chain.
+    */
+    uint64 outbound_msat = 13;
+    uint64 inbound_msat = 14;
+
+    uint32 peers = 15;
+
+    // The lnd version it runs.
+    string version = 16;
+}
+
+message ExportSha256SeedRequest {
+}
+
+message ExportSha256SeedResponse {
+    /*
+    The 24-word aezeed phrase, with no passphrase. Each call salts it afresh,
+    so the words differ from call to call; every one restores the same node.
+    */
+    repeated string mnemonic = 1;
+
+    // The same seed as a BIP32 root key (xprv on mainnet), which
+    // `lncli create` also accepts.
+    string extended_master_key = 2;
+
+    // The wallet birthday, as a Unix timestamp: where a restore rescans from.
+    int64 birthday = 3;
+
+    // The identity key a node restored from either will have, hex.
+    string identity_pubkey = 4;
+
+    // How the seed is derived, so it can be checked without this code.
+    string derivation = 5;
 }
 
 message InfoRequest {

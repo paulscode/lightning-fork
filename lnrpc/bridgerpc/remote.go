@@ -515,8 +515,19 @@ func (r *Remote) CheckChain(ctx context.Context, network,
 	if localKey != "" && strings.EqualFold(info.GetIdentityPubkey(),
 		localKey) {
 
-		return fmt.Errorf("%w: the SHA256 address reaches this node "+
-			"itself", ErrConfig)
+		// Same identity key: this node itself, or a node created from
+		// the same seed. The second is the dangerous one. A seed from
+		// before the fork controls coins that exist on both chains, and
+		// the SHA256 node's plain SIGHASH_ALL spends of them replay
+		// onto this chain, so the two must never share one.
+		return fmt.Errorf("%w: the SHA256 address reaches a node with "+
+			"this node's own identity: either this node itself, or "+
+			"one created from the same seed. The two must not share "+
+			"a seed (coins from before the fork exist on both "+
+			"chains, and the SHA256 node's spends of them replay "+
+			"onto this one); give the SHA256 node a seed of its "+
+			"own, or use bridgerpc.sha256.supervised, which derives "+
+			"one", ErrConfig)
 	}
 
 	var got string

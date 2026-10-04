@@ -382,6 +382,10 @@ type StatusResponse struct {
 	// payment hash, the state and why. The bridge keeps quoting; these are for
 	// a person to look at.
 	NeedsOperator []string `protobuf:"bytes,8,rep,name=needs_operator,json=needsOperator,proto3" json:"needs_operator,omitempty"`
+	// The Lightning node on the SHA256 chain: how far it has got and what it
+	// holds. Present whenever the bridge is enabled, including while it cannot
+	// start, since that node is usually why.
+	Sha256Node    *Sha256Node `protobuf:"bytes,9,opt,name=sha256_node,json=sha256Node,proto3" json:"sha256_node,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -472,6 +476,307 @@ func (x *StatusResponse) GetNeedsOperator() []string {
 	return nil
 }
 
+func (x *StatusResponse) GetSha256Node() *Sha256Node {
+	if x != nil {
+		return x.Sha256Node
+	}
+	return nil
+}
+
+type Sha256Node struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// supervised when this node runs it for the bridge, external when it is a
+	// node the operator already ran.
+	Mode string `protobuf:"bytes,1,opt,name=mode,proto3" json:"mode,omitempty"`
+	// Where that node is, as a stable code: starting, creating_wallet, locked,
+	// syncing, ready, unreachable, not_ours or error.
+	State string `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	// The same in a sentence, including what to do about it.
+	Detail string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	// Its identity key, hex, and the addresses it can be reached at.
+	IdentityPubkey string   `protobuf:"bytes,4,opt,name=identity_pubkey,json=identityPubkey,proto3" json:"identity_pubkey,omitempty"`
+	Uris           []string `protobuf:"bytes,5,rep,name=uris,proto3" json:"uris,omitempty"`
+	SyncedToChain  bool     `protobuf:"varint,6,opt,name=synced_to_chain,json=syncedToChain,proto3" json:"synced_to_chain,omitempty"`
+	BlockHeight    uint32   `protobuf:"varint,7,opt,name=block_height,json=blockHeight,proto3" json:"block_height,omitempty"`
+	// Its on-chain wallet: what can be spent now, and what is still
+	// confirming.
+	OnchainConfirmedSat   int64  `protobuf:"varint,8,opt,name=onchain_confirmed_sat,json=onchainConfirmedSat,proto3" json:"onchain_confirmed_sat,omitempty"`
+	OnchainUnconfirmedSat int64  `protobuf:"varint,9,opt,name=onchain_unconfirmed_sat,json=onchainUnconfirmedSat,proto3" json:"onchain_unconfirmed_sat,omitempty"`
+	ActiveChannels        uint32 `protobuf:"varint,10,opt,name=active_channels,json=activeChannels,proto3" json:"active_channels,omitempty"`
+	InactiveChannels      uint32 `protobuf:"varint,11,opt,name=inactive_channels,json=inactiveChannels,proto3" json:"inactive_channels,omitempty"`
+	PendingChannels       uint32 `protobuf:"varint,12,opt,name=pending_channels,json=pendingChannels,proto3" json:"pending_channels,omitempty"`
+	// What its channels could send and receive now, in millisatoshis. Sending
+	// is what the bridge pays out with on the SHA256 chain.
+	OutboundMsat uint64 `protobuf:"varint,13,opt,name=outbound_msat,json=outboundMsat,proto3" json:"outbound_msat,omitempty"`
+	InboundMsat  uint64 `protobuf:"varint,14,opt,name=inbound_msat,json=inboundMsat,proto3" json:"inbound_msat,omitempty"`
+	Peers        uint32 `protobuf:"varint,15,opt,name=peers,proto3" json:"peers,omitempty"`
+	// The lnd version it runs.
+	Version       string `protobuf:"bytes,16,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Sha256Node) Reset() {
+	*x = Sha256Node{}
+	mi := &file_bridgerpc_bridge_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Sha256Node) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Sha256Node) ProtoMessage() {}
+
+func (x *Sha256Node) ProtoReflect() protoreflect.Message {
+	mi := &file_bridgerpc_bridge_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Sha256Node.ProtoReflect.Descriptor instead.
+func (*Sha256Node) Descriptor() ([]byte, []int) {
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *Sha256Node) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *Sha256Node) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *Sha256Node) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *Sha256Node) GetIdentityPubkey() string {
+	if x != nil {
+		return x.IdentityPubkey
+	}
+	return ""
+}
+
+func (x *Sha256Node) GetUris() []string {
+	if x != nil {
+		return x.Uris
+	}
+	return nil
+}
+
+func (x *Sha256Node) GetSyncedToChain() bool {
+	if x != nil {
+		return x.SyncedToChain
+	}
+	return false
+}
+
+func (x *Sha256Node) GetBlockHeight() uint32 {
+	if x != nil {
+		return x.BlockHeight
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetOnchainConfirmedSat() int64 {
+	if x != nil {
+		return x.OnchainConfirmedSat
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetOnchainUnconfirmedSat() int64 {
+	if x != nil {
+		return x.OnchainUnconfirmedSat
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetActiveChannels() uint32 {
+	if x != nil {
+		return x.ActiveChannels
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetInactiveChannels() uint32 {
+	if x != nil {
+		return x.InactiveChannels
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetPendingChannels() uint32 {
+	if x != nil {
+		return x.PendingChannels
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetOutboundMsat() uint64 {
+	if x != nil {
+		return x.OutboundMsat
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetInboundMsat() uint64 {
+	if x != nil {
+		return x.InboundMsat
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetPeers() uint32 {
+	if x != nil {
+		return x.Peers
+	}
+	return 0
+}
+
+func (x *Sha256Node) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+type ExportSha256SeedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExportSha256SeedRequest) Reset() {
+	*x = ExportSha256SeedRequest{}
+	mi := &file_bridgerpc_bridge_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExportSha256SeedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExportSha256SeedRequest) ProtoMessage() {}
+
+func (x *ExportSha256SeedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bridgerpc_bridge_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExportSha256SeedRequest.ProtoReflect.Descriptor instead.
+func (*ExportSha256SeedRequest) Descriptor() ([]byte, []int) {
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{7}
+}
+
+type ExportSha256SeedResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The 24-word aezeed phrase, with no passphrase. Each call salts it afresh,
+	// so the words differ from call to call; every one restores the same node.
+	Mnemonic []string `protobuf:"bytes,1,rep,name=mnemonic,proto3" json:"mnemonic,omitempty"`
+	// The same seed as a BIP32 root key (xprv on mainnet), which
+	// `lncli create` also accepts.
+	ExtendedMasterKey string `protobuf:"bytes,2,opt,name=extended_master_key,json=extendedMasterKey,proto3" json:"extended_master_key,omitempty"`
+	// The wallet birthday, as a Unix timestamp: where a restore rescans from.
+	Birthday int64 `protobuf:"varint,3,opt,name=birthday,proto3" json:"birthday,omitempty"`
+	// The identity key a node restored from either will have, hex.
+	IdentityPubkey string `protobuf:"bytes,4,opt,name=identity_pubkey,json=identityPubkey,proto3" json:"identity_pubkey,omitempty"`
+	// How the seed is derived, so it can be checked without this code.
+	Derivation    string `protobuf:"bytes,5,opt,name=derivation,proto3" json:"derivation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExportSha256SeedResponse) Reset() {
+	*x = ExportSha256SeedResponse{}
+	mi := &file_bridgerpc_bridge_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExportSha256SeedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExportSha256SeedResponse) ProtoMessage() {}
+
+func (x *ExportSha256SeedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bridgerpc_bridge_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExportSha256SeedResponse.ProtoReflect.Descriptor instead.
+func (*ExportSha256SeedResponse) Descriptor() ([]byte, []int) {
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ExportSha256SeedResponse) GetMnemonic() []string {
+	if x != nil {
+		return x.Mnemonic
+	}
+	return nil
+}
+
+func (x *ExportSha256SeedResponse) GetExtendedMasterKey() string {
+	if x != nil {
+		return x.ExtendedMasterKey
+	}
+	return ""
+}
+
+func (x *ExportSha256SeedResponse) GetBirthday() int64 {
+	if x != nil {
+		return x.Birthday
+	}
+	return 0
+}
+
+func (x *ExportSha256SeedResponse) GetIdentityPubkey() string {
+	if x != nil {
+		return x.IdentityPubkey
+	}
+	return ""
+}
+
+func (x *ExportSha256SeedResponse) GetDerivation() string {
+	if x != nil {
+		return x.Derivation
+	}
+	return ""
+}
+
 type InfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -480,7 +785,7 @@ type InfoRequest struct {
 
 func (x *InfoRequest) Reset() {
 	*x = InfoRequest{}
-	mi := &file_bridgerpc_bridge_proto_msgTypes[6]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -492,7 +797,7 @@ func (x *InfoRequest) String() string {
 func (*InfoRequest) ProtoMessage() {}
 
 func (x *InfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bridgerpc_bridge_proto_msgTypes[6]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -505,7 +810,7 @@ func (x *InfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoRequest.ProtoReflect.Descriptor instead.
 func (*InfoRequest) Descriptor() ([]byte, []int) {
-	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{6}
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{9}
 }
 
 type DirectionInfo struct {
@@ -534,7 +839,7 @@ type DirectionInfo struct {
 
 func (x *DirectionInfo) Reset() {
 	*x = DirectionInfo{}
-	mi := &file_bridgerpc_bridge_proto_msgTypes[7]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -546,7 +851,7 @@ func (x *DirectionInfo) String() string {
 func (*DirectionInfo) ProtoMessage() {}
 
 func (x *DirectionInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_bridgerpc_bridge_proto_msgTypes[7]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -559,7 +864,7 @@ func (x *DirectionInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DirectionInfo.ProtoReflect.Descriptor instead.
 func (*DirectionInfo) Descriptor() ([]byte, []int) {
-	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{7}
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DirectionInfo) GetName() string {
@@ -640,7 +945,7 @@ type InfoResponse struct {
 
 func (x *InfoResponse) Reset() {
 	*x = InfoResponse{}
-	mi := &file_bridgerpc_bridge_proto_msgTypes[8]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -652,7 +957,7 @@ func (x *InfoResponse) String() string {
 func (*InfoResponse) ProtoMessage() {}
 
 func (x *InfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bridgerpc_bridge_proto_msgTypes[8]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -665,7 +970,7 @@ func (x *InfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoResponse.ProtoReflect.Descriptor instead.
 func (*InfoResponse) Descriptor() ([]byte, []int) {
-	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{8}
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *InfoResponse) GetVersion() uint32 {
@@ -699,7 +1004,7 @@ type SetRateRequest struct {
 
 func (x *SetRateRequest) Reset() {
 	*x = SetRateRequest{}
-	mi := &file_bridgerpc_bridge_proto_msgTypes[9]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -711,7 +1016,7 @@ func (x *SetRateRequest) String() string {
 func (*SetRateRequest) ProtoMessage() {}
 
 func (x *SetRateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bridgerpc_bridge_proto_msgTypes[9]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -724,7 +1029,7 @@ func (x *SetRateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRateRequest.ProtoReflect.Descriptor instead.
 func (*SetRateRequest) Descriptor() ([]byte, []int) {
-	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{9}
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SetRateRequest) GetRate() float64 {
@@ -745,7 +1050,7 @@ type SetRateResponse struct {
 
 func (x *SetRateResponse) Reset() {
 	*x = SetRateResponse{}
-	mi := &file_bridgerpc_bridge_proto_msgTypes[10]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -757,7 +1062,7 @@ func (x *SetRateResponse) String() string {
 func (*SetRateResponse) ProtoMessage() {}
 
 func (x *SetRateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bridgerpc_bridge_proto_msgTypes[10]
+	mi := &file_bridgerpc_bridge_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -770,7 +1075,7 @@ func (x *SetRateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRateResponse.ProtoReflect.Descriptor instead.
 func (*SetRateResponse) Descriptor() ([]byte, []int) {
-	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{10}
+	return file_bridgerpc_bridge_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SetRateResponse) GetRate() float64 {
@@ -814,7 +1119,7 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\rincoming_msat\x18\x03 \x01(\x04R\fincomingMsat\x12#\n" +
 	"\routgoing_msat\x18\x04 \x01(\x04R\foutgoingMsat\x12\x1a\n" +
 	"\bpreimage\x18\x05 \x01(\fR\bpreimage\"\x0f\n" +
-	"\rStatusRequest\"\x91\x02\n" +
+	"\rStatusRequest\"\xc9\x02\n" +
 	"\x0eStatusResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1e\n" +
 	"\n" +
@@ -825,7 +1130,37 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\x04rate\x18\x05 \x01(\x01R\x04rate\x12\x1e\n" +
 	"\vrate_set_at\x18\x06 \x01(\x03R\trateSetAt\x12&\n" +
 	"\x0frate_expires_at\x18\a \x01(\x03R\rrateExpiresAt\x12%\n" +
-	"\x0eneeds_operator\x18\b \x03(\tR\rneedsOperator\"\r\n" +
+	"\x0eneeds_operator\x18\b \x03(\tR\rneedsOperator\x126\n" +
+	"\vsha256_node\x18\t \x01(\v2\x15.bridgerpc.Sha256NodeR\n" +
+	"sha256Node\"\xbb\x04\n" +
+	"\n" +
+	"Sha256Node\x12\x12\n" +
+	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x14\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\x12\x16\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\x12'\n" +
+	"\x0fidentity_pubkey\x18\x04 \x01(\tR\x0eidentityPubkey\x12\x12\n" +
+	"\x04uris\x18\x05 \x03(\tR\x04uris\x12&\n" +
+	"\x0fsynced_to_chain\x18\x06 \x01(\bR\rsyncedToChain\x12!\n" +
+	"\fblock_height\x18\a \x01(\rR\vblockHeight\x122\n" +
+	"\x15onchain_confirmed_sat\x18\b \x01(\x03R\x13onchainConfirmedSat\x126\n" +
+	"\x17onchain_unconfirmed_sat\x18\t \x01(\x03R\x15onchainUnconfirmedSat\x12'\n" +
+	"\x0factive_channels\x18\n" +
+	" \x01(\rR\x0eactiveChannels\x12+\n" +
+	"\x11inactive_channels\x18\v \x01(\rR\x10inactiveChannels\x12)\n" +
+	"\x10pending_channels\x18\f \x01(\rR\x0fpendingChannels\x12#\n" +
+	"\routbound_msat\x18\r \x01(\x04R\foutboundMsat\x12!\n" +
+	"\finbound_msat\x18\x0e \x01(\x04R\vinboundMsat\x12\x14\n" +
+	"\x05peers\x18\x0f \x01(\rR\x05peers\x12\x18\n" +
+	"\aversion\x18\x10 \x01(\tR\aversion\"\x19\n" +
+	"\x17ExportSha256SeedRequest\"\xcb\x01\n" +
+	"\x18ExportSha256SeedResponse\x12\x1a\n" +
+	"\bmnemonic\x18\x01 \x03(\tR\bmnemonic\x12.\n" +
+	"\x13extended_master_key\x18\x02 \x01(\tR\x11extendedMasterKey\x12\x1a\n" +
+	"\bbirthday\x18\x03 \x01(\x03R\bbirthday\x12'\n" +
+	"\x0fidentity_pubkey\x18\x04 \x01(\tR\x0eidentityPubkey\x12\x1e\n" +
+	"\n" +
+	"derivation\x18\x05 \x01(\tR\n" +
+	"derivation\"\r\n" +
 	"\vInfoRequest\"\xf6\x01\n" +
 	"\rDirectionInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
@@ -847,14 +1182,15 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\x04rate\x18\x01 \x01(\x01R\x04rate\"E\n" +
 	"\x0fSetRateResponse\x12\x12\n" +
 	"\x04rate\x18\x01 \x01(\x01R\x04rate\x12\x1e\n" +
-	"\vrate_set_at\x18\x02 \x01(\x03R\trateSetAt2\xbb\x02\n" +
+	"\vrate_set_at\x18\x02 \x01(\x03R\trateSetAt2\x98\x03\n" +
 	"\x06Bridge\x12:\n" +
 	"\x05Quote\x12\x17.bridgerpc.QuoteRequest\x1a\x18.bridgerpc.QuoteResponse\x12;\n" +
 	"\n" +
 	"LookupSwap\x12\x1c.bridgerpc.LookupSwapRequest\x1a\x0f.bridgerpc.Swap\x12=\n" +
 	"\x06Status\x12\x18.bridgerpc.StatusRequest\x1a\x19.bridgerpc.StatusResponse\x127\n" +
 	"\x04Info\x12\x16.bridgerpc.InfoRequest\x1a\x17.bridgerpc.InfoResponse\x12@\n" +
-	"\aSetRate\x12\x19.bridgerpc.SetRateRequest\x1a\x1a.bridgerpc.SetRateResponseB1Z/github.com/lightningnetwork/lnd/lnrpc/bridgerpcb\x06proto3"
+	"\aSetRate\x12\x19.bridgerpc.SetRateRequest\x1a\x1a.bridgerpc.SetRateResponse\x12[\n" +
+	"\x10ExportSha256Seed\x12\".bridgerpc.ExportSha256SeedRequest\x1a#.bridgerpc.ExportSha256SeedResponseB1Z/github.com/lightningnetwork/lnd/lnrpc/bridgerpcb\x06proto3"
 
 var (
 	file_bridgerpc_bridge_proto_rawDescOnce sync.Once
@@ -868,37 +1204,43 @@ func file_bridgerpc_bridge_proto_rawDescGZIP() []byte {
 	return file_bridgerpc_bridge_proto_rawDescData
 }
 
-var file_bridgerpc_bridge_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_bridgerpc_bridge_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_bridgerpc_bridge_proto_goTypes = []any{
-	(*QuoteRequest)(nil),      // 0: bridgerpc.QuoteRequest
-	(*QuoteResponse)(nil),     // 1: bridgerpc.QuoteResponse
-	(*LookupSwapRequest)(nil), // 2: bridgerpc.LookupSwapRequest
-	(*Swap)(nil),              // 3: bridgerpc.Swap
-	(*StatusRequest)(nil),     // 4: bridgerpc.StatusRequest
-	(*StatusResponse)(nil),    // 5: bridgerpc.StatusResponse
-	(*InfoRequest)(nil),       // 6: bridgerpc.InfoRequest
-	(*DirectionInfo)(nil),     // 7: bridgerpc.DirectionInfo
-	(*InfoResponse)(nil),      // 8: bridgerpc.InfoResponse
-	(*SetRateRequest)(nil),    // 9: bridgerpc.SetRateRequest
-	(*SetRateResponse)(nil),   // 10: bridgerpc.SetRateResponse
+	(*QuoteRequest)(nil),             // 0: bridgerpc.QuoteRequest
+	(*QuoteResponse)(nil),            // 1: bridgerpc.QuoteResponse
+	(*LookupSwapRequest)(nil),        // 2: bridgerpc.LookupSwapRequest
+	(*Swap)(nil),                     // 3: bridgerpc.Swap
+	(*StatusRequest)(nil),            // 4: bridgerpc.StatusRequest
+	(*StatusResponse)(nil),           // 5: bridgerpc.StatusResponse
+	(*Sha256Node)(nil),               // 6: bridgerpc.Sha256Node
+	(*ExportSha256SeedRequest)(nil),  // 7: bridgerpc.ExportSha256SeedRequest
+	(*ExportSha256SeedResponse)(nil), // 8: bridgerpc.ExportSha256SeedResponse
+	(*InfoRequest)(nil),              // 9: bridgerpc.InfoRequest
+	(*DirectionInfo)(nil),            // 10: bridgerpc.DirectionInfo
+	(*InfoResponse)(nil),             // 11: bridgerpc.InfoResponse
+	(*SetRateRequest)(nil),           // 12: bridgerpc.SetRateRequest
+	(*SetRateResponse)(nil),          // 13: bridgerpc.SetRateResponse
 }
 var file_bridgerpc_bridge_proto_depIdxs = []int32{
-	7,  // 0: bridgerpc.InfoResponse.directions:type_name -> bridgerpc.DirectionInfo
-	0,  // 1: bridgerpc.Bridge.Quote:input_type -> bridgerpc.QuoteRequest
-	2,  // 2: bridgerpc.Bridge.LookupSwap:input_type -> bridgerpc.LookupSwapRequest
-	4,  // 3: bridgerpc.Bridge.Status:input_type -> bridgerpc.StatusRequest
-	6,  // 4: bridgerpc.Bridge.Info:input_type -> bridgerpc.InfoRequest
-	9,  // 5: bridgerpc.Bridge.SetRate:input_type -> bridgerpc.SetRateRequest
-	1,  // 6: bridgerpc.Bridge.Quote:output_type -> bridgerpc.QuoteResponse
-	3,  // 7: bridgerpc.Bridge.LookupSwap:output_type -> bridgerpc.Swap
-	5,  // 8: bridgerpc.Bridge.Status:output_type -> bridgerpc.StatusResponse
-	8,  // 9: bridgerpc.Bridge.Info:output_type -> bridgerpc.InfoResponse
-	10, // 10: bridgerpc.Bridge.SetRate:output_type -> bridgerpc.SetRateResponse
-	6,  // [6:11] is the sub-list for method output_type
-	1,  // [1:6] is the sub-list for method input_type
-	1,  // [1:1] is the sub-list for extension type_name
-	1,  // [1:1] is the sub-list for extension extendee
-	0,  // [0:1] is the sub-list for field type_name
+	6,  // 0: bridgerpc.StatusResponse.sha256_node:type_name -> bridgerpc.Sha256Node
+	10, // 1: bridgerpc.InfoResponse.directions:type_name -> bridgerpc.DirectionInfo
+	0,  // 2: bridgerpc.Bridge.Quote:input_type -> bridgerpc.QuoteRequest
+	2,  // 3: bridgerpc.Bridge.LookupSwap:input_type -> bridgerpc.LookupSwapRequest
+	4,  // 4: bridgerpc.Bridge.Status:input_type -> bridgerpc.StatusRequest
+	9,  // 5: bridgerpc.Bridge.Info:input_type -> bridgerpc.InfoRequest
+	12, // 6: bridgerpc.Bridge.SetRate:input_type -> bridgerpc.SetRateRequest
+	7,  // 7: bridgerpc.Bridge.ExportSha256Seed:input_type -> bridgerpc.ExportSha256SeedRequest
+	1,  // 8: bridgerpc.Bridge.Quote:output_type -> bridgerpc.QuoteResponse
+	3,  // 9: bridgerpc.Bridge.LookupSwap:output_type -> bridgerpc.Swap
+	5,  // 10: bridgerpc.Bridge.Status:output_type -> bridgerpc.StatusResponse
+	11, // 11: bridgerpc.Bridge.Info:output_type -> bridgerpc.InfoResponse
+	13, // 12: bridgerpc.Bridge.SetRate:output_type -> bridgerpc.SetRateResponse
+	8,  // 13: bridgerpc.Bridge.ExportSha256Seed:output_type -> bridgerpc.ExportSha256SeedResponse
+	8,  // [8:14] is the sub-list for method output_type
+	2,  // [2:8] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_bridgerpc_bridge_proto_init() }
@@ -912,7 +1254,7 @@ func file_bridgerpc_bridge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bridgerpc_bridge_proto_rawDesc), len(file_bridgerpc_bridge_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

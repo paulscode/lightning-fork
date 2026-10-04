@@ -64,9 +64,23 @@ func openRatebook(dir string, configured float64, maxAge time.Duration,
 		now: now, rate: configured, setAt: now(),
 	}
 
+	// No configured rate means the operator has not chosen one yet, which
+	// is a state the bridge starts in rather than one that stops the node:
+	// someone turning the bridge on from a UI sets the rate afterwards, on
+	// the same screen that shows them the market. Until then nothing is
+	// quoted (usable says why), and nothing is written, because a file
+	// holding no rate is one the next start would rightly refuse.
+	if configured == 0 {
+		b.setAt = time.Time{}
+	}
+
 	raw, err := os.ReadFile(b.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
+		if configured == 0 {
+			return b, nil
+		}
+
 		return b, b.save(configured)
 
 	case err != nil:
@@ -89,7 +103,10 @@ func openRatebook(dir string, configured float64, maxAge time.Duration,
 			b.path)
 	}
 
-	if f.Configured == configured {
+	// A rate set at runtime is kept when the configuration names none:
+	// having no configured rate is not a decision to discard the one the
+	// operator set since.
+	if f.Configured == configured || configured == 0 {
 		b.rate, b.setAt = f.Rate, f.SetAt
 
 		return b, nil
@@ -170,14 +187,28 @@ func (b *ratebook) expiresAt() time.Time {
 		return time.Time{}
 	}
 	_, at := b.current()
+	if at.IsZero() {
+		return time.Time{}
+	}
 
 	return at.Add(b.maxAge)
 }
+
+// ErrNoRate is why nothing is quoted before the operator has set a rate. It
+// is a kind of rate.ErrStale, so a payer is told the same thing as for a rate
+// that has expired: nothing current to quote on.
+var ErrNoRate = fmt.Errorf("%w: no rate has been set yet; set the rate you "+
+	"will trade at, as SHA256 coin per BLAKE2b coin (lncli bridge "+
+	"setrate, or the Bridge page). There is no default, because a wrong "+
+	"one loses money on every swap", rate.ErrStale)
 
 // usable is the rate to quote at, or rate.ErrStale once it is older than the
 // limit.
 func (b *ratebook) usable() (float64, time.Time, error) {
 	r, at := b.current()
+	if !usableRate(r) {
+		return 0, at, ErrNoRate
+	}
 	if b.maxAge > 0 {
 		if age := b.now().Sub(at); age > b.maxAge {
 			return 0, at, fmt.Errorf("%w: the rate was set %v ago and "+

@@ -16,3 +16,6 @@ http:
     - selector: bridgerpc.Bridge.SetRate
       post: "/v2/bridge/rate"
       body: "*"
+    - selector: bridgerpc.Bridge.ExportSha256Seed
+      post: "/v2/bridge/sha256seed"
+      body: "*"
