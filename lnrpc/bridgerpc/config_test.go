@@ -411,7 +411,9 @@ func TestEveryAcceptedSpreadProducesAUsablePolicy(t *testing.T) {
 	t.Parallel()
 
 	for _, spread := range []float64{
-		0.003, 0.005, 0.01, 0.02, 0.05, 0.1, 0.19,
+		// Not 0.003: a spread equal to the routing budget refuses every
+		// swap, and is refused here.
+		0.004, 0.005, 0.01, 0.02, 0.05, 0.1, 0.19,
 	} {
 		c := usable()
 		c.Spread = spread

@@ -669,6 +669,15 @@ func (s *Server) connect() error {
 	s.wg.Add(1)
 	go s.watchChain(svc, remoteNode, cert)
 
+	// A market reading that arrived while this service was being built
+	// found no service to bring toBLAKE2b up in; it is up to this one.
+	if market != nil && svc.heldForRate {
+		if r, _ := market.last(); usableRate(r) {
+			s.rebuild(svc, "now that the market's rate is known, to "+
+				"bring up toBLAKE2b")
+		}
+	}
+
 	return nil
 }
 
@@ -684,6 +693,10 @@ func (s *Server) remoteNode() *Remote {
 // retry loop, if svc is still the one running: two callers that saw the same
 // service (two SetRate calls at once) rebuild it once, not into two bridges.
 func (s *Server) rebuild(svc *service, why string) {
+	// Not once Stop has begun: its wait would not cover this one.
+	if atomic.LoadInt32(&s.shutdown) != 0 {
+		return
+	}
 	s.mu.Lock()
 	if s.svc != svc || svc == nil {
 		s.mu.Unlock()
@@ -839,9 +852,10 @@ func (s *Server) Stop() error {
 	s.wg.Wait()
 
 	// Swaps in flight are waited for before the connection they are
-	// talking over is closed. The node tears down the invoice registry and
-	// the router after this returns, and a swap still driving would find
-	// them gone mid-HTLC.
+	// talking over is closed. The node may already have begun tearing
+	// down its invoice registry and router (lnd stops its server before
+	// the RPC sub-servers), so a swap cut off here can find them gone; the
+	// journal resumes it on the next start, which is what makes that safe.
 	if svc := s.service(); svc != nil {
 		svc.stop()
 	}

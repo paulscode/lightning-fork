@@ -254,6 +254,15 @@ func (f *feed) read(ctx context.Context) {
 	if cross > 0 {
 		f.cross = cross
 	}
+	if unsafe {
+		// A refusal on the numbers (the books disagree, the breaker
+		// tripped, a ticker stopped) voids the readings before it: a
+		// fetch that merely fails next must not bring the pre-move
+		// price back while it is still fresh. The next good reading
+		// starts the median again, and the breaker, kept by the
+		// oracle, refuses until it clears.
+		f.readings = nil
+	}
 	if err == nil {
 		f.readings = append(f.readings, r)
 		// Twice the window is all the median and Status need.

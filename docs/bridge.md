@@ -94,8 +94,9 @@ seconds, through Tor when this node uses Tor:
 - **Your fee is widened by the market's own movement** over the last ten
   minutes, as payers' wallets allow for it.
 - **Just before paying,** the bridge checks the swap again at the rate then. If
-  the market has moved against it by more than the fee since the quote, what
-  the payer sent is given back instead of paying out at a loss.
+  what the payer sent no longer covers the payout and its routing budget at
+  that rate (the market moved against the bridge by more than what it
+  charged), it is given back instead of paying out at a loss.
 
 `lncli bridge status` shows the rate, the cross-check (`rate_cross_check`),
 the market's movement (`rate_volatility`) and, when nothing is quoted, why.
@@ -136,13 +137,17 @@ direction makes sense when you want the coin the other one brings in.
 
 ## Routes
 
-Before quoting, the bridge asks its paying node for a route to the invoice's
-destination within two budgets:
+Before quoting a payout on the SHA256 chain, the bridge asks its SHA256 node
+for a route to the invoice's destination within two budgets (payouts on this
+chain are sized to their whole budget, without asking first):
 
 - **Fees:** 0.3% of the payout, and at least 10 sats; it comes out of the fee.
   A payout too small for its fee to cover that is refused.
 - **Time-lock:** at most 390 blocks for a payout on the SHA256 chain (220 on
-  this chain), `bridgerpc.outgoingcltvlimit` to change both.
+  this chain), or fewer when the chains' current pace allows less;
+  `bridgerpc.outgoingcltvlimit` changes the ceiling for both. A value from
+  an earlier version above about 220 with `toblake2b` on now stops the node
+  starting, and says so: lower it, or leave it out.
 
 With no such route the quote is refused (`no_route`) and nothing is held.
 With one, the swap is sized to that route plus 40 blocks of slack, not to the
@@ -165,10 +170,12 @@ Each person you serve gets a **bridge code**: a credential that can only ask
 this node for prices and quotes, under a root key of its own.
 
 ```
-lncli bridge code --url https://<this node's onion>:8080 --label "Alice"
+lncli bridge code --url https://<this node's onion>:8080
 ```
 
-prints the code and its root key id. They add it in their dashboard under
+prints the code and its root key id. The code carries this node's alias as
+the name the participant sees for the service (`--label` to give another);
+keep your own note of whom each root key id is for. They add it in their dashboard under
 "Paying SHA256 invoices". To revoke it:
 
 ```

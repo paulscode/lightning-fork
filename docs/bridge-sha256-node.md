@@ -69,7 +69,7 @@ that chain, else to mempool.space.
 | Who | Does |
 | --- | --- |
 | The platform | Runs the stock lnd, from the official image, once the bridge is on, and keeps it running after the bridge is turned off while it has a wallet (it may hold channels). Starts it with `--wallet-unlock-password-file` and `--wallet-unlock-allow-create`, so it waits for its wallet to be created and unlocks itself after that. Restarts it if it stops. |
-| Lightning Fork | Writes that password (random, kept beside the bridge's journal). Creates the node's wallet, once, from a seed derived from its own. Bakes a macaroon with only the 14 calls the bridge makes, and uses that, never the admin one. Refuses the node unless its identity is the one the derived seed gives. |
+| Lightning Fork | Writes that password (random, kept beside the bridge's journal). Creates the node's wallet, once, from a seed derived from its own. Bakes a macaroon with only the 15 calls the bridge makes, and uses that, never the admin one. Refuses the node unless its identity is the one the derived seed gives. |
 
 Every step Lightning Fork takes is repeated before each connection attempt and
 does nothing when already done, so a restart of either node at any moment
@@ -89,7 +89,7 @@ Umbrel):
 | `sha256-node/data/chain/bitcoin/mainnet/channel.backup` | That node's static channel backup. |
 | `data/chain/bitcoin/mainnet/bridge/sha256/wallet.password` | Its wallet password. |
 | `data/chain/bitcoin/mainnet/bridge/sha256/bridge.macaroon` | The narrow macaroon the bridge uses. |
-| `data/chain/bitcoin/mainnet/bridge/sha256/operator.macaroon` | A second narrow macaroon, for the operator's console (the dashboard): balances, channels, deposit address, opening and closing channels, sending on chain, and the channel backup. No message signing, no policy changes, no baking. Baked again when Lightning Fork's list for it changes, and while the bridge is off too. |
+| `data/chain/bitcoin/mainnet/bridge/sha256/operator.macaroon` | A second narrow macaroon, for the operator's console (the dashboard): balances, channels, deposit address, opening and closing channels, sending on chain, the channel backup, and paying a SHA256 invoice from this node (the operator paying from their own bridge). No message signing, no policy changes, no baking. Baked again when Lightning Fork's list for it changes, and while the bridge is off too. |
 
 Both nodes live in one data directory, so a platform backup of Lightning
 Fork carries both. For the SHA256 node it carries the channel backup and not
@@ -100,8 +100,8 @@ so its on-chain coins are found again, and once the node is known to follow
 the SHA256 chain it restores the channels from that backup: their peers
 close them and the funds return to the wallet. The backup is first copied to
 `channel.backup.restored` beside the wallet password, because the node
-rewrites its own file as soon as it starts; the restore is retried every
-minute until it works (a peer may be offline), `lncli bridge status` says so
+rewrites its own file as soon as it starts; the restore is retried, at
+growing intervals up to half an hour, until it works (a peer may be offline), `lncli bridge status` says so
 meanwhile, and `channel.backup.restored.done` marks it finished.
 
 A platform backup is only as recent as the last time it ran. Keep a current

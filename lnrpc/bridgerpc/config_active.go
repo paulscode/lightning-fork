@@ -58,7 +58,7 @@ type Config struct {
 	SHA256TLSCertPath string `long:"sha256.tlscertpath" description:"Path to the SHA256 node's TLS certificate."`
 
 	// SHA256MacaroonPath is a macaroon for that node.
-	SHA256MacaroonPath string `long:"sha256.macaroonpath" description:"Path to a macaroon for the SHA256 node. It needs invoice and offchain write."`
+	SHA256MacaroonPath string `long:"sha256.macaroonpath" description:"Path to a macaroon for the SHA256 node: its admin.macaroon, or one with info and onchain read, invoices, and offchain read and write."`
 
 	// Supervised says the SHA256 node is the one this node runs for the
 	// operator, rather than one they already had.
@@ -570,9 +570,9 @@ func (c *Config) Validate() error {
 
 	// The spread the operator asked for must be one the bridge can
 	// actually charge. Under it, every swap loses the difference.
-	if c.Spread > 0 && c.Spread < r.quote.FeeFraction {
-		return fmt.Errorf("%w: a spread of %g is below the %g this "+
-			"bridge budgets for routing fees, so it would lose "+
+	if c.Spread > 0 && c.Spread <= r.quote.FeeFraction {
+		return fmt.Errorf("%w: a spread of %g does not cover the %g "+
+			"this bridge budgets for routing fees, so it would lose "+
 			"money on every swap", ErrConfig, c.Spread,
 			r.quote.FeeFraction)
 	}

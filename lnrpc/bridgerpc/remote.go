@@ -671,10 +671,17 @@ func (r *Remote) FindRoute(ctx context.Context, invoice string,
 	if err != nil {
 		// lnd answers a search that found nothing with an error, not
 		// an empty list: "unable to find a path to destination".
-		if strings.Contains(err.Error(), "unable to find a path") ||
-			strings.Contains(err.Error(), "no route") {
+		// The other ways lnd says the payment cannot go (too little
+		// to send, a destination needing a feature it lacks) are as
+		// final for this quote.
+		msg := strings.ToLower(err.Error())
+		for _, no := range []string{"unable to find a path", "no route",
+			"insufficient", "not enough", "feature"} {
 
-			return node.Route{}, node.ErrNoRoute
+			if strings.Contains(msg, no) {
+				return node.Route{}, fmt.Errorf("%w: %v",
+					node.ErrNoRoute, err)
+			}
 		}
 
 		return node.Route{}, fmt.Errorf("finding a route: %w", err)

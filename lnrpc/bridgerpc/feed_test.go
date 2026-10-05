@@ -570,3 +570,59 @@ func TestStatusReportsTheMarketBeforeTheBridgeIsUp(t *testing.T) {
 			resp.RateCrossCheck)
 	}
 }
+
+// A breaker that tripped is not undone by a fetch that fails next: the
+// pre-move price must not come back while still fresh.
+func TestAFailedFetchDoesNotUndoTheBreaker(t *testing.T) {
+	m := newMarket(feedStart)
+	f := testFeed(t, m)
+	f.read(context.Background())
+
+	m.set(pairDirect, 0.0075, 0.0075, 0.0075)
+	m.set(pairUSDC, 637.5, 637.5, 637.5)
+	m.advance(20 * time.Second)
+	f.read(context.Background())
+	if _, err := f.quoteRate(); !errors.Is(err, rate.ErrBroken) {
+		t.Fatalf("want the breaker, got %v", err)
+	}
+
+	m.fail(neoxaTickerURL + pairDirect)
+	m.advance(20 * time.Second)
+	f.read(context.Background())
+	if got, err := f.quoteRate(); err == nil {
+		t.Fatalf("quoted %g, the price from before the move", got.rate)
+	}
+}
+
+// The same for a disagreement between the books.
+func TestAFailedFetchDoesNotUndoADisagreement(t *testing.T) {
+	m := newMarket(feedStart)
+	f := testFeed(t, m)
+	f.read(context.Background())
+
+	m.set(pairUSDC, 561, 561, 561)
+	m.advance(20 * time.Second)
+	f.read(context.Background())
+	m.fail(neoxaTickerURL + pairDirect)
+	m.advance(20 * time.Second)
+	f.read(context.Background())
+	if got, err := f.quoteRate(); err == nil {
+		t.Fatalf("quoted %g after the books disagreed", got.rate)
+	}
+}
+
+// toBLAKE2b built before there was a rate quotes nothing: its bounds are not
+// converted yet.
+func TestAHeldDirectionQuotesNothing(t *testing.T) {
+	t.Parallel()
+
+	cfg := usable()
+	cfg.RateSource = RateSourceNeoxa
+	mkt := testFeed(t, newMarket(feedStart))
+	svc := serviceForMarket(t, cfg, &fakeNode{synced: true}, mkt)
+	_, rev := sidesOf(t, svc)
+	if !svc.heldForRate || rev.quoting() {
+		t.Fatalf("held %v, toBLAKE2b quoting %v", svc.heldForRate,
+			rev.quoting())
+	}
+}

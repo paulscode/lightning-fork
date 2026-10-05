@@ -488,17 +488,17 @@
         "rate": {
           "type": "number",
           "format": "double",
-          "description": "The rate in force, as SHA256 coin per BLAKE2b coin."
+          "description": "The rate in force, as SHA256 coin per BLAKE2b coin: the market's last\nreading (rate_source neoxa) or the operator's own (fixed)."
         },
         "rate_set_at": {
           "type": "string",
           "format": "int64",
-          "description": "When it was set, as a Unix timestamp in seconds."
+          "description": "When it was set or read, as a Unix timestamp in seconds."
         },
         "rate_expires_at": {
           "type": "string",
           "format": "int64",
-          "description": "When it stops being used, as a Unix timestamp in seconds, or zero if the\nbridge allows a rate of any age."
+          "description": "When it stops being used, as a Unix timestamp in seconds, or zero if the\nbridge allows a rate of any age. Following the market, a reading is used\nfor a short while and replaced by the next."
         },
         "needs_operator": {
           "type": "array",

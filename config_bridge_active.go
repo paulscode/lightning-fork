@@ -49,7 +49,7 @@ func validateBridgeConfig(cfg *Config, networkDir string) error {
 	// bridge can tell, since the rate it checks against is that same
 	// number. So it is refused here, where it can only have been set by
 	// hand, rather than allowed to trade.
-	if sub.RateSource == bridgerpc.RateSourceFixed &&
+	if sub.Enabled && sub.RateSource == bridgerpc.RateSourceFixed &&
 		cfg.ActiveNetParams.Params.Name == "mainnet" {
 
 		return fmt.Errorf("%w: bridgerpc.ratesource=fixed is for test "+

@@ -87,11 +87,17 @@ type side struct {
 	// to finish the swaps of its own still in the journal. It quotes
 	// nothing and is not offered.
 	finishing bool
+
+	// held is set on toBLAKE2b built before there was a rate: its swap
+	// bounds are in SHA256 msat, not yet converted, so it drives the swaps
+	// of its own in the journal and quotes nothing until the bridge is
+	// rebuilt with a rate.
+	held bool
 }
 
 // quoting is whether this direction takes new swaps.
 func (sd *side) quoting() bool {
-	return !sd.finishing
+	return !sd.finishing && !sd.held
 }
 
 // policy is this side's inventory policy, copied under the lock.
@@ -245,9 +251,21 @@ func newServiceWith(cfg *Config, local *Local, remote *Remote,
 	if s.rates, err = openRatebook(filepath.Dir(cfg.Journal),
 		cfg.FixedRate, s.res.rateMaxAge, nil); err != nil {
 
-		s.close()
+		if s.res.rateSource == RateSourceFixed {
+			s.close()
 
-		return nil, err
+			return nil, err
+		}
+		// Following the market the file is not used: one that cannot
+		// be read must not keep the bridge down, nor a draining one
+		// from finishing its swaps.
+		log.Warnf("Bridge ignoring its fixed-rate file, which the "+
+			"market's rate makes unused: %v", err)
+		s.rates = &ratebook{
+			path: filepath.Join(filepath.Dir(cfg.Journal),
+				rateFileName),
+			maxAge: s.res.rateMaxAge, now: time.Now,
+		}
 	}
 	s.prices = s.rates
 	if s.res.rateSource == RateSourceNeoxa {
@@ -348,10 +366,12 @@ func newServiceWith(cfg *Config, local *Local, remote *Remote,
 		}
 		// The rate is posted as SHA256 coin per BLAKE2b coin, so the
 		// direction that pays out in BTCB2 quotes its reciprocal.
-		s.sides = append(s.sides, s.build(
+		sd := s.build(
 			"toBLAKE2b", remote, local, local.Balance,
 			inventory.Replenishing, true,
-		))
+		)
+		sd.held = s.heldForRate
+		s.sides = append(s.sides, sd)
 	} else {
 		s.disabled = append(s.disabled, "toBLAKE2b")
 	}
@@ -536,9 +556,11 @@ func (s *service) pricer(sd *side) quote.Pricer {
 		if err != nil {
 			return rate.Reading{}, err
 		}
-		if pos.Spread > r.Spread {
-			r.Spread = pos.Spread
-		}
+		// The inventory policy's spread is the fee moved by the
+		// position: wider on the side running low, narrower (down to the
+		// routing budget and a little) on the side that refills it. The
+		// market's own movement is added on top of either.
+		r.Spread = pos.Spread + moved
 
 		return r, nil
 	}
