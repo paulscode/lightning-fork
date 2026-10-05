@@ -280,8 +280,10 @@ var bridgeCodeCommand = cli.Command{
 			Usage: "the REST address participants reach this node at",
 		},
 		cli.StringFlag{
-			Name:  "label",
-			Usage: "a name the participant will see for this service",
+			Name: "label",
+			Usage: "a name the participant will see for this service; " +
+				"default is this node's alias. Not the participant's " +
+				"name: they see it as the name of who pays for them",
 		},
 		cli.StringFlag{
 			Name: "cert",
@@ -357,9 +359,13 @@ func bridgeCode(ctx *cli.Context) error {
 		return err
 	}
 
+	label := strings.TrimSpace(ctx.String("label"))
+	if label == "" {
+		label = info.GetAlias()
+	}
 	body := map[string]any{
 		"v":        1,
-		"label":    ctx.String("label"),
+		"label":    label,
 		"url":      strings.TrimSuffix(raw, "/"),
 		"node":     info.GetIdentityPubkey(),
 		"macaroon": mac.GetMacaroon(),
