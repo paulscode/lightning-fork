@@ -380,6 +380,10 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 	// to the outgoing leg, which is BTCB2 on this direction. One number
 	// used raw for both would cap two different amounts of value.
 	policy := s.res.quote
+	policy.OutgoingCLTVLimit = s.res.cltvToSHA256
+	if invert {
+		policy.OutgoingCLTVLimit = s.res.cltvToB2B
+	}
 	if invert {
 		policy.MinSwapMsat = s.inBLAKE2bMsat(policy.MinSwapMsat)
 		policy.MaxSwapMsat = s.inBLAKE2bMsat(policy.MaxSwapMsat)

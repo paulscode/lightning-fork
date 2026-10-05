@@ -456,3 +456,39 @@ func TestAnImplausibleSpreadIsRefusedAsAUnitsMistake(t *testing.T) {
 		}
 	}
 }
+
+// The default route budgets are the largest the margin policy carries within
+// the incoming cap at target spacing: one block more and the direction would
+// refuse every swap.
+func TestTheCLTVBudgetsAreTheLargestThatFit(t *testing.T) {
+	t.Parallel()
+
+	for _, dir := range []struct {
+		name   string
+		budget uint32
+		enable func(*Config)
+	}{
+		{"toSHA256", DefaultOutgoingCLTVLimitToSHA256, func(c *Config) {
+			c.ToSHA256, c.ToBLAKE2b = true, false
+		}},
+		{"toBLAKE2b", DefaultOutgoingCLTVLimitToBLAKE2b, func(c *Config) {
+			c.ToSHA256, c.ToBLAKE2b = false, true
+		}},
+	} {
+		c := usable()
+		dir.enable(&c)
+		if err := c.Validate(); err != nil {
+			t.Errorf("%s: the default budget %d refuses: %v", dir.name,
+				dir.budget, err)
+		}
+		c.OutgoingCLTVLimit = dir.budget + 1
+		if err := c.Validate(); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: %d blocks still fit, so %d is not the largest",
+				dir.name, dir.budget+1, dir.budget)
+		}
+	}
+	if DefaultMaxIncomingBlocks+payerRouteAllowance != 2016 {
+		t.Error("the incoming cap no longer leaves the payer's route " +
+			"inside lnd's 2016 blocks")
+	}
+}

@@ -624,6 +624,77 @@ func (r *Remote) BestBlock(ctx context.Context) (BlockInfo, error) {
 	return out, nil
 }
 
+// FindRoute asks the SHA256 node for a route to the invoice's destination
+// within a routing budget and a CLTV limit, before a quote commits anything.
+// node.ErrNoRoute when it has none. The route's CLTV is counted from the
+// node's height, as the payment's limit is.
+//
+// The invoice is read by the node again for what pathfinding needs (its
+// destination, final CLTV, route hints and features): a route to a private
+// destination exists only through its hints.
+func (r *Remote) FindRoute(ctx context.Context, invoice string,
+	maxFeeMsat uint64, cltvLimit uint32) (node.Route, error) {
+
+	if maxFeeMsat > math.MaxInt64 || cltvLimit > math.MaxInt32 {
+		return node.Route{}, fmt.Errorf("limits %d msat, %d blocks do "+
+			"not fit", maxFeeMsat, cltvLimit)
+	}
+	req, err := r.main.DecodePayReq(
+		ctx, &lnrpc.PayReqString{PayReq: invoice},
+	)
+	if err != nil {
+		return node.Route{}, fmt.Errorf("%w: %w", ErrInvoice, err)
+	}
+	height, err := r.BlockHeight(ctx)
+	if err != nil {
+		return node.Route{}, err
+	}
+
+	features := make([]lnrpc.FeatureBit, 0, len(req.GetFeatures()))
+	for bit := range req.GetFeatures() {
+		features = append(features, lnrpc.FeatureBit(bit))
+	}
+	res, err := r.main.QueryRoutes(ctx, &lnrpc.QueryRoutesRequest{
+		PubKey:         req.GetDestination(),
+		AmtMsat:        req.GetNumMsat(),
+		FinalCltvDelta: int32(req.GetCltvExpiry()),
+		FeeLimit: &lnrpc.FeeLimit{
+			Limit: &lnrpc.FeeLimit_FixedMsat{
+				FixedMsat: int64(maxFeeMsat),
+			},
+		},
+		CltvLimit:         cltvLimit,
+		RouteHints:        req.GetRouteHints(),
+		DestFeatures:      features,
+		UseMissionControl: true,
+	})
+	if err != nil {
+		// lnd answers a search that found nothing with an error, not
+		// an empty list: "unable to find a path to destination".
+		if strings.Contains(err.Error(), "unable to find a path") ||
+			strings.Contains(err.Error(), "no route") {
+
+			return node.Route{}, node.ErrNoRoute
+		}
+
+		return node.Route{}, fmt.Errorf("finding a route: %w", err)
+	}
+	if len(res.GetRoutes()) == 0 {
+		return node.Route{}, node.ErrNoRoute
+	}
+
+	route := res.GetRoutes()[0]
+	lock := int64(route.GetTotalTimeLock()) - int64(height)
+	if lock < 0 || lock > math.MaxInt32 {
+		return node.Route{}, fmt.Errorf("a route locking until %d at "+
+			"height %d", route.GetTotalTimeLock(), height)
+	}
+
+	return node.Route{
+		CLTV: uint32(lock), FeeMsat: uint64(route.GetTotalFeesMsat()),
+	}, nil
+}
+
 // BlockAt is a block's header by height, for seeding the chain observer.
 //
 // It goes through ChainKit, which a stock lnd only serves when built with the
@@ -743,3 +814,6 @@ func neverDelivered(err error) bool {
 
 	return false
 }
+
+// A quote asks the SHA256 node for a route before committing anything.
+var _ node.RouteFinder = (*Remote)(nil)

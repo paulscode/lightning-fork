@@ -107,6 +107,7 @@ var bridgeMacaroonPermissions = []string{
 	"/lnrpc.Lightning/GetInfo",
 	"/lnrpc.Lightning/ListChannels",
 	"/lnrpc.Lightning/DecodePayReq",
+	"/lnrpc.Lightning/QueryRoutes",
 	"/lnrpc.Lightning/DeleteCanceledInvoice",
 	"/lnrpc.Lightning/WalletBalance",
 	"/lnrpc.Lightning/ChannelBalance",

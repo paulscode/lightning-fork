@@ -134,6 +134,31 @@ routing is smaller than an ordinary two-minute move of this market, and quotes
 funded a minute or two later are given back more often. A higher fee in one
 direction makes sense when you want the coin the other one brings in.
 
+## Routes
+
+Before quoting, the bridge asks its paying node for a route to the invoice's
+destination within two budgets:
+
+- **Fees:** 0.3% of the payout, and at least 10 sats; it comes out of the fee.
+  A payout too small for its fee to cover that is refused.
+- **Time-lock:** at most 390 blocks for a payout on the SHA256 chain (220 on
+  this chain), `bridgerpc.outgoingcltvlimit` to change both.
+
+With no such route the quote is refused (`no_route`) and nothing is held.
+With one, the swap is sized to that route plus 40 blocks of slack, not to the
+whole budget: the payer's payment is held for as long as the bridge's could
+take to resolve, so a short route asks a short hold.
+
+The budgets are the largest the bridge's timing safety allows. The payer's
+hold must outlast the payout even if this chain's blocks come three times
+faster than measured and the SHA256 chain's half again slower (the slowest
+four days in its history, during the 2021 mining ban, ran 1.38 times what
+was measured as they began), plus an hour to settle. The payer's hold is
+capped at 1,776 blocks, leaving room for their own route to the bridge
+inside the 2,016 blocks every lnd allows. SHA256 routes that need more than
+390 blocks cannot be paid; a bridge node with a channel to a well-connected
+peer reaches most destinations in far fewer.
+
 ## Participants
 
 Each person you serve gets a **bridge code**: a credential that can only ask

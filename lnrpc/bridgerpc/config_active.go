@@ -158,7 +158,7 @@ type Config struct {
 	// free: the incoming leg has to outlive the whole budget, so a larger
 	// one demands more incoming CLTV, and past a point no incoming CLTV
 	// within the cap is enough. Validate checks that combination.
-	OutgoingCLTVLimit uint32 `long:"outgoingcltvlimit" description:"The most CLTV a payout route may use, in blocks of the outgoing chain. Must cover the destination's final hop delta plus the hops before it."`
+	OutgoingCLTVLimit uint32 `long:"outgoingcltvlimit" description:"The most CLTV a payout route may use, in blocks of the outgoing chain. Must cover the destination's final hop delta plus the hops before it. Default 390 paying on the SHA256 chain, 220 on this one, the largest the timing margins allow."`
 
 	// InventoryTargetMsat is the working balance each paying side is sized
 	// against, in millisatoshis of that side's chain.
@@ -232,13 +232,31 @@ const discountFloorOverRouting = 0.001
 // the ratio the shipped defaults use.
 const DefaultFloorFraction = 10
 
-// DefaultOutgoingCLTVLimit is the route budget when the operator names none.
+// The route budgets when the operator names none, per direction: the most CLTV
+// a payout's route may use, in blocks of the chain it pays on. Each is the
+// largest the margin policy can carry within DefaultMaxIncomingBlocks with
+// both chains at their target spacing (TestTheCLTVBudgetsAreTheLargestThatFit
+// pins this): the incoming leg must outlive the outgoing one with that chain
+// running SurgeFactor faster and the other StallFactor slower, plus an hour.
 //
-// A stock lnd asks for 80 blocks on the final hop, so the budget has to be
-// comfortably above that to leave room for the hops before it. This is roughly
-// that plus three ordinary hops, and it stays well inside what the incoming
-// leg can be asked to outlive.
-const DefaultOutgoingCLTVLimit = 200
+// toSHA256 pays on SHA256's Lightning network, where routes commonly need
+// 300-800 blocks; 390 reaches most of it. Each swap is sized to the route its
+// node finds (plus slack), not to the budget, so a short route asks a short
+// hold of the payer. toBLAKE2b pays on this chain, whose blocks the policy
+// lets run four times slower, so less fits.
+const (
+	DefaultOutgoingCLTVLimitToSHA256  = 390
+	DefaultOutgoingCLTVLimitToBLAKE2b = 220
+)
+
+// DefaultMaxIncomingBlocks caps the CLTV a swap asks of the payer: lnd's
+// 2016-block max_cltv_expiry, which every node on the payer's route enforces
+// on the whole route, less payerRouteAllowance for the payer's own route to
+// the bridge.
+const DefaultMaxIncomingBlocks = 2016 - payerRouteAllowance
+
+// payerRouteAllowance is three hops at lnd's default 80-block delta.
+const payerRouteAllowance = 240
 
 // maxSpread bounds what an operator may post as a fee.
 //
@@ -297,6 +315,10 @@ type resolved struct {
 	rateSource  string
 	feeToSHA256 float64
 	feeToB2B    float64
+
+	// cltvToSHA256 and cltvToB2B are each direction's route budget.
+	cltvToSHA256 uint32
+	cltvToB2B    uint32
 	b2bChain    chainrate.Params
 	shaChain    chainrate.Params
 	limits      quote.Limits
@@ -335,10 +357,14 @@ func (c *Config) resolve() resolved {
 		r.fundedGrace = c.FundedGrace
 	}
 
-	r.quote.OutgoingCLTVLimit = DefaultOutgoingCLTVLimit
+	r.margin.MaxIncomingBlocks = DefaultMaxIncomingBlocks
+	r.cltvToSHA256 = DefaultOutgoingCLTVLimitToSHA256
+	r.cltvToB2B = DefaultOutgoingCLTVLimitToBLAKE2b
 	if c.OutgoingCLTVLimit != 0 {
-		r.quote.OutgoingCLTVLimit = c.OutgoingCLTVLimit
+		r.cltvToSHA256, r.cltvToB2B = c.OutgoingCLTVLimit,
+			c.OutgoingCLTVLimit
 	}
+	r.quote.OutgoingCLTVLimit = r.cltvToSHA256
 
 	if c.InventoryTargetMsat != 0 {
 		r.inventory.TargetOutgoingMsat = c.InventoryTargetMsat
@@ -599,9 +625,11 @@ func (c *Config) checkReachable(r resolved) error {
 		// pays on. The CLTV budget is spent on the outgoing chain and
 		// has to be outlived on the incoming one.
 		in, out chainrate.Params
+
+		budget uint32
 	}{
-		{"toSHA256", c.ToSHA256, r.b2bChain, r.shaChain},
-		{"toBLAKE2b", c.ToBLAKE2b, r.shaChain, r.b2bChain},
+		{"toSHA256", c.ToSHA256, r.b2bChain, r.shaChain, r.cltvToSHA256},
+		{"toBLAKE2b", c.ToBLAKE2b, r.shaChain, r.b2bChain, r.cltvToB2B},
 	} {
 		if !dir.enabled {
 			continue
@@ -620,7 +648,7 @@ func (c *Config) checkReachable(r resolved) error {
 
 		_, err = margin.RequiredIncomingBlocks(inBounds, margin.Leg{
 			Bounds: outBounds,
-			Blocks: uint32(r.quote.OutgoingCLTVLimit),
+			Blocks: dir.budget,
 		}, r.margin)
 		if err != nil {
 			return fmt.Errorf("%w: %s would refuse every swap: "+
@@ -628,7 +656,7 @@ func (c *Config) checkReachable(r resolved) error {
 				"blocks), shorten the settlement allowance "+
 				"(%v), or raise the incoming block cap (%d)",
 				ErrConfig, dir.name, err,
-				r.quote.OutgoingCLTVLimit,
+				dir.budget,
 				r.margin.Settlement, r.margin.MaxIncomingBlocks)
 		}
 	}

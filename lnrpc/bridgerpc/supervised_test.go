@@ -416,7 +416,9 @@ func TestBridgeMacaroonPermissionsAreNarrow(t *testing.T) {
 				"%s must not be in the bridge's macaroon", uri)
 		}
 	}
-	require.Len(t, bridgeMacaroonPermissions, 14)
+	// QueryRoutes (the route a quote checks for first) only searches the
+	// graph; it moves nothing.
+	require.Len(t, bridgeMacaroonPermissions, 15)
 }
 
 func TestSupervisorWaitsWhileStarting(t *testing.T) {
