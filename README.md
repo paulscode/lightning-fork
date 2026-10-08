@@ -36,6 +36,11 @@ The node mints BOLT 12 offers and serves and pays them over onion
 messages, which is how a mining pool that pays to offers pays a miner.
 Read [docs/bolt12-offers.md](docs/bolt12-offers.md).
 
+To build it from source and run it next to a Bitcoin Knots node on your own
+Linux machine, follow [docs/native-ubuntu.md](docs/native-ubuntu.md)
+(`scripts/native-ubuntu.sh` does the steps for you). On StartOS and Umbrel,
+install it from their app stores.
+
 Everything below this section is the upstream `lnd` README.
 
 The Lightning Network Daemon (`lnd`) - is a complete implementation of a
