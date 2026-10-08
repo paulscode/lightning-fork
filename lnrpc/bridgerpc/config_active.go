@@ -319,11 +319,11 @@ type resolved struct {
 	// cltvToSHA256 and cltvToB2B are each direction's route budget.
 	cltvToSHA256 uint32
 	cltvToB2B    uint32
-	b2bChain    chainrate.Params
-	shaChain    chainrate.Params
-	limits      quote.Limits
-	rateMaxAge  time.Duration
-	fundedGrace time.Duration
+	b2bChain     chainrate.Params
+	shaChain     chainrate.Params
+	limits       quote.Limits
+	rateMaxAge   time.Duration
+	fundedGrace  time.Duration
 }
 
 // resolve applies the defaults and the operator's overrides.
