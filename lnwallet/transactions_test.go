@@ -206,11 +206,7 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 	// hold it off for every other test running beside it.
 	withoutUnifiedSigHash(t)
 
-	vectorSets := []struct {
-		name     string
-		jsonFile string
-		chanType channeldb.ChannelType
-	}{
+	testVectorSets(t, []vectorSet{
 		{
 			name:     "legacy",
 			chanType: channeldb.SingleFunderBit,
@@ -229,8 +225,43 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 				channeldb.ZeroHtlcTxFeeBit,
 			jsonFile: "test_vectors_zero_fee_htlc_tx.json",
 		},
-	}
+	})
+}
 
+// TestCommitmentAndHTLCTransactionsUnified checks the BOLT 03 test vectors
+// for a channel with option_unified_sigs: the commitment transaction and each
+// signature on the second-level HTLC transactions carry SIGHASH_UNIFIED.
+func TestCommitmentAndHTLCTransactionsUnified(t *testing.T) {
+	// Not parallel, for the same reason as above.
+	withUnifiedSigHash(t)
+
+	testVectorSets(t, []vectorSet{
+		{
+			name: "legacy unified",
+			chanType: channeldb.SingleFunderBit |
+				channeldb.UnifiedSigsBit,
+			jsonFile: "test_vectors_legacy_unified.json",
+		},
+		{
+			name: "zero fee htlc tx unified",
+			chanType: channeldb.SingleFunderTweaklessBit |
+				channeldb.AnchorOutputsBit |
+				channeldb.ZeroHtlcTxFeeBit |
+				channeldb.UnifiedSigsBit,
+			jsonFile: "test_vectors_zero_fee_htlc_tx_unified.json",
+		},
+	})
+}
+
+// vectorSet is a file of test vectors and the channel type they apply to.
+type vectorSet struct {
+	name     string
+	jsonFile string
+	chanType channeldb.ChannelType
+}
+
+// testVectorSets runs each test case of the given vector sets.
+func testVectorSets(t *testing.T, vectorSets []vectorSet) {
 	for _, set := range vectorSets {
 		set := set
 
