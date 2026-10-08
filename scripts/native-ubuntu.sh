@@ -15,6 +15,8 @@
 #   scripts/native-ubuntu.sh tor        optional: reach (and be reached by)
 #                                       peers over Tor
 #   scripts/native-ubuntu.sh service    optional: a systemd user service
+#   scripts/native-ubuntu.sh dashboard  optional: the web dashboard, with lnd
+#                                       and it as systemd user services
 #   scripts/native-ubuntu.sh all        deps, go, build, configure
 #
 # Settings (environment variables, all optional):
@@ -28,6 +30,13 @@
 #                    use these instead of the cookie file
 #   GO_DIR           where to unpack Go                    (~/.local/go)
 #   TOR_SOCKS, TOR_CONTROL  Tor proxy and control port (127.0.0.1:9050, :9051)
+#   DASHBOARD_HOST   where the dashboard listens: 127.0.0.1 for this machine
+#                    only, 0.0.0.0 for other devices on your network too
+#                                                          (127.0.0.1)
+#   DASHBOARD_PORT   its port                              (3006)
+#   DASHBOARD_REF    the dashboard release to build        (see below)
+#   MOBILE_PORT      a port for the Lightning Fork phone app to pair and
+#                    connect over your local network, e.g. 3443  (off)
 
 set -euo pipefail
 
@@ -36,6 +45,14 @@ set -euo pipefail
 GO_VERSION=1.26.8
 GO_SHA256_amd64=d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b
 GO_SHA256_arm64=211ffced9dcb9633a55eac6364816ec0ddd951389a740e88fa8b3337971bdda0
+
+# The dashboard (github.com/paulscode/umbrel-lightning-fork) runs on the
+# Node.js its Umbrel and StartOS image uses, with nodejs.org's checksums.
+DASHBOARD_REPO=${DASHBOARD_REPO:-https://github.com/paulscode/umbrel-lightning-fork.git}
+DASHBOARD_REF=${DASHBOARD_REF:-v1.3.2-blake2b.17.1}
+NODE_VERSION=16.20.2
+NODE_SHA256_x64=874463523f26ed528634580247f403d200ba17a31adf2de98a7b124c6eb33d87
+NODE_SHA256_arm64=e88d86154d1ce53dc52fd74d79d4bfdf0b05f58c0bb2639adfa36e9378b770c4
 
 # Block 961640, where the Bitcoin BLAKE2b chain begins. A Knots node on this
 # chain reports this hash; a node on the SHA256 chain reports another one.
@@ -50,6 +67,11 @@ BITCOIN_DIR=${BITCOIN_DIR:-$HOME/.bitcoin}
 BITCOIND_RPCHOST=${BITCOIND_RPCHOST:-127.0.0.1:8332}
 GO_DIR=${GO_DIR:-$HOME/.local/go}
 GOBIN_DIR=$(go env GOPATH 2>/dev/null || echo "$HOME/go")/bin
+DASHBOARD_HOST=${DASHBOARD_HOST:-127.0.0.1}
+DASHBOARD_PORT=${DASHBOARD_PORT:-3006}
+LF_SHARE=$HOME/.local/share/lightning-fork   # the dashboard, its Node.js, its data
+LF_CONF=$HOME/.config/lightning-fork         # its settings and passwords
+UNIT_DIR=$HOME/.config/systemd/user
 
 export PATH="$GO_DIR/bin:$GOBIN_DIR:$PATH"
 
@@ -107,11 +129,11 @@ step_check() {
 step_deps() {
 	say "Packages"
 	local missing=()
-	for p in git make curl ca-certificates; do
+	for p in git make curl ca-certificates unzip jq xz-utils openssh-client; do
 		dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p")
 	done
 	if [ ${#missing[@]} -eq 0 ]; then
-		ok "git, make, curl already installed"
+		ok "all installed already"
 		return
 	fi
 	run $SUDO apt-get update
@@ -333,6 +355,9 @@ next_steps() {
 
 Next (docs/native-ubuntu.md explains each):
 
+  Prefer a web dashboard? Run instead: $0 dashboard
+  (it starts lnd and the dashboard for you, and you create the wallet there).
+
   1. Start lnd in its own terminal (or: $0 service):
        lnd$lnddir_flag
   2. In another terminal, create the wallet. Write the 24 words down on
@@ -389,31 +414,294 @@ EOF
 	ok "restart lnd for this to take effect"
 }
 
-step_service() {
-	say "systemd user service"
-	local unit_dir=$HOME/.config/systemd/user
-	local unit=$unit_dir/lightning-fork.service
-	run mkdir -p "$unit_dir"
-	cat >"$unit" <<EOF
+# lnd's unit. With the dashboard, lnd reads the umbrel-lnd.conf the dashboard
+# writes (your lnd.conf plus what its settings manage) and must come back by
+# itself: the dashboard stops it to apply a change.
+write_lnd_unit() {
+	local args="--lnddir=$LND_DIR" restart=on-failure
+	if [ -f "$LF_CONF/dashboard.env" ]; then
+		args="$args --configfile=$LND_DIR/umbrel-lnd.conf"
+		restart=always
+	fi
+	run mkdir -p "$UNIT_DIR"
+	cat >"$UNIT_DIR/lightning-fork.service" <<EOF
 [Unit]
 Description=Lightning Fork (lnd for the Bitcoin BLAKE2b chain)
 After=network-online.target
 
 [Service]
-ExecStart=$GOBIN_DIR/lnd --lnddir=$LND_DIR
-Restart=on-failure
-RestartSec=30
+ExecStart=$GOBIN_DIR/lnd $args
+Restart=$restart
+RestartSec=10
 TimeoutStopSec=120
 
 [Install]
 WantedBy=default.target
 EOF
-	ok "wrote $unit"
+	ok "wrote $UNIT_DIR/lightning-fork.service"
+}
+
+# An lnd started by hand would hold the wallet the service needs.
+no_stray_lnd() {
+	if pgrep -u "$(id -u)" -x lnd >/dev/null && ! systemctl --user is-active --quiet lightning-fork.service; then
+		die "lnd is running outside the service. Stop it first (Ctrl-C in its terminal, or: lncli stop), then run this again."
+	fi
+}
+
+step_service() {
+	say "systemd user service"
+	no_stray_lnd
+	write_lnd_unit
 	run systemctl --user daemon-reload
-	run systemctl --user enable --now lightning-fork.service
+	run systemctl --user enable lightning-fork.service
+	run systemctl --user restart lightning-fork.service
 	ok "started; logs: journalctl --user -u lightning-fork -f"
 	warn "to keep it running when you are logged out and after a reboot: sudo loginctl enable-linger $USER"
-	warn "after every start the wallet is locked until you run: lncli unlock"
+	if [ ! -f "$LF_CONF/dashboard.env" ]; then
+		warn "after every start the wallet is locked until you run: lncli unlock"
+	fi
+}
+
+# A value from lnd.conf (the last one wins, as in lnd).
+conf_value() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$LND_DIR/lnd.conf" | tail -1
+}
+
+# This machine's address on its network: the one it would send from, not a
+# container bridge.
+lan_ip() {
+	ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}'
+}
+
+random_password() {
+	head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24
+}
+
+# A value for a systemd EnvironmentFile, quoted.
+env_quote() {
+	local v=${1//\\/\\\\}
+	printf '"%s"' "${v//\"/\\\"}"
+}
+
+step_dashboard() {
+	[ -f "$LND_DIR/lnd.conf" ] || die "no $LND_DIR/lnd.conf yet; run: $0 configure"
+	[ -x "$GOBIN_DIR/lnd" ] || die "lnd is not built yet; run: $0 build"
+	check_knots || die "fix the Knots notes above, then run: $0 dashboard"
+	no_stray_lnd
+
+	say "Node.js $NODE_VERSION (for the dashboard)"
+	local node_dir=$LF_SHARE/node
+	if [ "$("$node_dir/bin/node" -v 2>/dev/null)" = "v$NODE_VERSION" ]; then
+		ok "already at $node_dir"
+	else
+		local arch sum tarball tmp
+		case "$(go_arch)" in
+		amd64) arch=x64 sum=$NODE_SHA256_x64 ;;
+		arm64) arch=arm64 sum=$NODE_SHA256_arm64 ;;
+		esac
+		tarball="node-v$NODE_VERSION-linux-$arch.tar.xz"
+		tmp=$(mktemp -d)
+		run curl -fsSL -o "$tmp/$tarball" "https://nodejs.org/dist/v$NODE_VERSION/$tarball"
+		printf '+ echo "%s  %s" | sha256sum -c\n' "$sum" "$tarball"
+		(cd "$tmp" && echo "$sum  $tarball" | sha256sum -c --quiet) ||
+			die "the download does not match nodejs.org's published checksum"
+		run rm -rf "$node_dir"
+		run mkdir -p "$LF_SHARE"
+		run tar -C "$LF_SHARE" -xJf "$tmp/$tarball"
+		run mv "$LF_SHARE/node-v$NODE_VERSION-linux-$arch" "$node_dir"
+		rm -rf "$tmp"
+		ok "$("$node_dir/bin/node" -v)"
+	fi
+	local npath="$node_dir/bin:$PATH"
+
+	say "Dashboard $DASHBOARD_REF"
+	local dash=$LF_SHARE/dashboard
+	if [ -d "$dash/.git" ]; then
+		run git -C "$dash" fetch -q --tags origin
+	else
+		run git clone -q "$DASHBOARD_REPO" "$dash"
+	fi
+	# This copy is the script's own: local edits in it are discarded.
+	run git -C "$dash" -c advice.detachedHead=false checkout -q --force "$DASHBOARD_REF"
+	(cd "$dash" && run env PATH="$npath" npm ci --no-audit --no-fund --loglevel=error)
+	printf '+ (cd %s && npm run build:frontend) > %s/build.log\n' "$dash" "$dash"
+	(cd "$dash" && env PATH="$npath" npm run build:frontend >build.log 2>&1) ||
+		die "the dashboard did not build; see $dash/build.log"
+	ok "built in $dash"
+
+	say "Channel backup helper"
+	# The versions and checksums the dashboard's own image uses.
+	local bin=$LF_SHARE/bin
+	arg() { sed -n "s/^ARG $1=//p" "$dash/Dockerfile" | head -1; }
+	local rclone_v ref agent_sum rclone_sum
+	rclone_v=$(arg RCLONE_VERSION)
+	ref=$(arg BACKUP_AGENT_REF)
+	agent_sum=$(arg BACKUP_AGENT_SHA256)
+	case "$(go_arch)" in
+	amd64) rclone_sum=$(arg RCLONE_SHA256_AMD64) ;;
+	arm64) rclone_sum=$(arg RCLONE_SHA256_ARM64) ;;
+	esac
+	run mkdir -p "$bin"
+	if [ "$("$bin/rclone" version 2>/dev/null | head -1)" != "rclone $rclone_v" ]; then
+		local tmp
+		tmp=$(mktemp -d)
+		run curl -fsSL -o "$tmp/rclone.zip" "https://downloads.rclone.org/$rclone_v/rclone-$rclone_v-linux-$(go_arch).zip"
+		(cd "$tmp" && echo "$rclone_sum  rclone.zip" | sha256sum -c --quiet) ||
+			die "rclone's download does not match the checksum the dashboard pins"
+		run unzip -q -j -o "$tmp/rclone.zip" '*/rclone' -d "$bin"
+		rm -rf "$tmp"
+	fi
+	ok "$("$bin/rclone" version | head -1)"
+	run curl -fsSL -o "$bin/backup-agent.sh" "https://raw.githubusercontent.com/paulscode/lightning-fork-startos/$ref/backup-agent.sh"
+	echo "$agent_sum  $bin/backup-agent.sh" | sha256sum -c --quiet ||
+		die "backup-agent.sh does not match the checksum the dashboard pins"
+	chmod 755 "$bin/backup-agent.sh"
+	ok "backup-agent.sh at $ref"
+
+	say "Dashboard settings"
+	local data=$LF_SHARE/dashboard-data
+	run mkdir -p "$data" "$LF_CONF"
+	chmod 700 "$data" "$LF_CONF"
+	local pwfile=$LF_CONF/dashboard-password.json
+	if [ ! -f "$pwfile" ]; then
+		(umask 077 && printf '{"password": "%s"}\n' "$(random_password)" >"$pwfile")
+		ok "made a sign-in password: $pwfile"
+	fi
+	local env=$LF_CONF/dashboard.env wallet_db=$LND_DIR/data/chain/bitcoin/mainnet/wallet.db
+	if [ -f "$env" ]; then
+		ok "$env exists; keeping it"
+		# The one setting a later run adds: the phone app's port.
+		if [ -n "${MOBILE_PORT:-}" ] && ! grep -q '^MOBILE_TLS_PORT=' "$env"; then
+			printf 'MOBILE_TLS_PORT=%s\nMOBILE_LAN_IP=%s\nDEVICE_DOMAIN_NAME=%s.local\n' \
+				"$MOBILE_PORT" "$(lan_ip)" "$(hostname -s)" >>"$env"
+			ok "added the phone app's port, $MOBILE_PORT"
+		fi
+	else
+		# The dashboard unlocks the wallet after every start, with this password.
+		local wallet_pw
+		if [ -f "$wallet_db" ]; then
+			echo "   A wallet exists already. The dashboard unlocks it after every start, so it needs"
+			echo "   its password (kept in $env, readable only by you)."
+			read -rsp "   Wallet password: " wallet_pw
+			echo
+			[ -n "$wallet_pw" ] || die "no password given"
+			# Its seed was shown when you made it, so the dashboard's first-run
+			# steps (create or restore a wallet) don't apply.
+			[ -f "$data/state.json" ] || (umask 077 && echo '{"onboarding": false}' >"$data/state.json")
+		else
+			wallet_pw=$(random_password)
+		fi
+		local rpchost=${BITCOIND_RPCHOST%:*} rpcport=${BITCOIND_RPCHOST##*:}
+		local grpc rest socks
+		grpc=$(conf_value rpclisten | sed 's/.*://')
+		rest=$(conf_value restlisten | sed 's/.*://')
+		socks=$(conf_value tor.socks)
+		(
+			umask 077
+			{
+				cat <<EOF
+# The dashboard's settings, written by scripts/native-ubuntu.sh.
+DASHBOARD_PLATFORM=native
+HOST=$DASHBOARD_HOST
+PORT=$DASHBOARD_PORT
+DASHBOARD_PASSWORD_FILE=$pwfile
+LND_WALLET_PASSWORD=$(env_quote "$wallet_pw")
+LND_NETWORK=mainnet
+LND_HOST=127.0.0.1
+LND_PORT=${grpc:-10009}
+LND_GRPC_PORT=${grpc:-10009}
+LND_REST_PORT=${rest:-8080}
+LND_DIR=$LND_DIR
+TLS_FILE=$LND_DIR/tls.cert
+MACAROON_DIR=$LND_DIR/data/chain/bitcoin/mainnet/
+CHANNEL_BACKUP_FILE=$LND_DIR/data/chain/bitcoin/mainnet/channel.backup
+LND_CONF_FILEPATH=$LND_DIR/lnd.conf
+UMBREL_LND_CONF_FILEPATH=$LND_DIR/umbrel-lnd.conf
+LND_INITIALIZE_WITH_TOR_ONLY=unset
+JSON_STORE_FILE=$data/state.json
+JSON_SETTINGS_FILE=$data/settings.json
+USER_FILE=$data/user.json
+TERMS_ACKNOWLEDGE_FILE=$data/terms-acknowledge.json
+MANAGED_CHANNELS_FILE=$data/managedChannels.json
+BACKUP_AGENT=$bin/backup-agent.sh
+PATH=$bin:/usr/local/bin:/usr/bin:/bin
+BITCOIN_HOST=$rpchost
+RPC_PORT=$rpcport
+EOF
+			if [ -n "$RPC_COOKIE" ]; then
+				echo "RPC_COOKIE_FILE=$RPC_COOKIE"
+			else
+				echo "RPC_USER=$(env_quote "$RPC_USER")"
+				echo "RPC_PASSWORD=$(env_quote "$RPC_PASS")"
+			fi
+			if [ -n "$socks" ]; then
+				echo "TOR_PROXY_IP=${socks%:*}"
+				echo "TOR_PROXY_PORT=${socks##*:}"
+			fi
+			# The phone app's own TLS listener, on every interface, as on Umbrel;
+			# phones prove themselves with keys made at pairing.
+			if [ -n "${MOBILE_PORT:-}" ]; then
+				echo "MOBILE_TLS_PORT=$MOBILE_PORT"
+				echo "MOBILE_LAN_IP=$(lan_ip)"
+				echo "DEVICE_DOMAIN_NAME=$(hostname -s).local"
+			fi
+			} >"$env"
+		)
+		ok "wrote $env"
+	fi
+	# lnd's first start under the dashboard reads this; the dashboard rewrites
+	# it at its own start and restarts lnd.
+	[ -f "$LND_DIR/umbrel-lnd.conf" ] || run cp "$LND_DIR/lnd.conf" "$LND_DIR/umbrel-lnd.conf"
+
+	say "Services"
+	write_lnd_unit
+	cat >"$UNIT_DIR/lightning-fork-dashboard.service" <<EOF
+[Unit]
+Description=Lightning Fork dashboard
+After=lightning-fork.service
+Wants=lightning-fork.service
+
+[Service]
+WorkingDirectory=$dash/apps/backend
+EnvironmentFile=$env
+ExecStart=$node_dir/bin/node ./bin/www
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+	ok "wrote $UNIT_DIR/lightning-fork-dashboard.service"
+	run systemctl --user daemon-reload
+	run systemctl --user enable lightning-fork.service lightning-fork-dashboard.service
+	run systemctl --user restart lightning-fork.service lightning-fork-dashboard.service
+
+	local url="http://127.0.0.1:$DASHBOARD_PORT"
+	if [ "$DASHBOARD_HOST" != 127.0.0.1 ] && [ "$DASHBOARD_HOST" != localhost ]; then
+		url="$url  (from other devices: http://$(lan_ip):$DASHBOARD_PORT)"
+	fi
+	cat <<EOF
+
+The dashboard is starting (give it half a minute):
+
+  Open:      $url
+  Password:  $(sed -n 's/.*"password": *"\([^"]*\)".*/\1/p' "$pwfile")   (in $pwfile; change it there)
+
+EOF
+	if [ -f "$wallet_db" ]; then
+		echo "It unlocks your wallet itself after every start; no more lncli unlock."
+	else
+		echo "Create your wallet there: it shows 24 words; write them down on paper."
+	fi
+	if grep -q '^MOBILE_TLS_PORT=' "$env"; then
+		echo "Phone app: pair from the dashboard's Mobile app menu, on this network (port $(sed -n 's/^MOBILE_TLS_PORT=//p' "$env"))."
+	fi
+	cat <<EOF
+Logs:      journalctl --user -u lightning-fork-dashboard -f
+           journalctl --user -u lightning-fork -f
+After editing $LND_DIR/lnd.conf: systemctl --user restart lightning-fork-dashboard
+EOF
+	warn "to keep both running when you are logged out and after a reboot: sudo loginctl enable-linger $USER"
 }
 
 case "${1:-}" in
@@ -424,6 +712,7 @@ build) step_build ;;
 configure) step_configure ;;
 tor) step_tor ;;
 service) step_service ;;
+dashboard) step_dashboard ;;
 all)
 	step_deps
 	step_go

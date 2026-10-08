@@ -88,6 +88,10 @@ BITCOIND_RPCUSER=lightningfork BITCOIND_RPCPASS='<the password it printed>' \
 
 ## 3. Start it and create the wallet
 
+Want the web dashboard (the same one as on Umbrel)? Skip this section and go
+to [section 6](#6-the-web-dashboard): it starts lnd for you, and you create
+the wallet in the browser.
+
 ```sh
 lnd                 # leave this running in its own terminal
 ```
@@ -190,6 +194,85 @@ scripts/native-ubuntu.sh build
 systemctl --user restart lightning-fork)
 ```
 
+## 6. The web dashboard
+
+The dashboard is the Lightning Fork app you would see on Umbrel: balances,
+channels, sending and receiving, peers, offers, the bridge, Advanced
+Settings, channel backups to SFTP, Nextcloud, Dropbox or Google Drive, and
+recovery. It is a separate project
+(`github.com/paulscode/umbrel-lightning-fork`); the script fetches and builds
+it:
+
+```sh
+scripts/native-ubuntu.sh dashboard
+```
+
+That step:
+
+- downloads Node.js 16 (the version the dashboard's Umbrel and StartOS image
+  uses) into `~/.local/share/lightning-fork/node`, checked against
+  nodejs.org's checksum;
+- clones the dashboard into `~/.local/share/lightning-fork/dashboard` and
+  builds it (about a minute);
+- installs the channel backup helper and `rclone`, at the versions and
+  checksums the dashboard pins;
+- writes its settings to `~/.config/lightning-fork/` (readable only by you),
+  including a sign-in password;
+- runs lnd and the dashboard as two systemd user services, and prints the
+  address to open and the password.
+
+Open `http://127.0.0.1:3006` and sign in. On a new node, choose **Setup a
+new node** and write the 24 words down on paper (or restore from words you
+already have). If you made the wallet earlier with `lncli create`, the step
+asks for its password instead, once.
+
+From then on:
+
+- **The dashboard unlocks the wallet itself** after every start, with a
+  password it keeps in `~/.config/lightning-fork/dashboard.env`. Anyone who
+  can read that file (you, and root) can unlock your wallet.
+- **Advanced Settings writes lnd's settings.** lnd reads
+  `~/.lnd/umbrel-lnd.conf`, which the dashboard builds from your `lnd.conf`
+  plus what you set in the dashboard, and the dashboard restarts lnd to apply
+  a change. Keep editing `lnd.conf` for anything else, then run
+  `systemctl --user restart lightning-fork-dashboard` so it rebuilds the file.
+- The sign-in password is in `~/.config/lightning-fork/dashboard-password.json`;
+  edit it there to change it.
+- `sudo loginctl enable-linger $USER` keeps both running after you log out
+  and across reboots.
+
+```sh
+systemctl --user status lightning-fork lightning-fork-dashboard
+journalctl --user -u lightning-fork-dashboard -f
+```
+
+By default the dashboard answers only on this machine. To open it from
+another computer, the safest way is an SSH tunnel from that computer:
+`ssh -L 3006:127.0.0.1:3006 you@this-machine`, then open
+`http://127.0.0.1:3006` there. (Setting `DASHBOARD_HOST=0.0.0.0` before
+running the step makes it listen on your network directly, but over plain
+HTTP.)
+
+To use the Lightning Fork phone app, run the step with a port for it, so
+phones on your network can pair and connect (they prove themselves with keys
+made at pairing; if your firewall is on, allow the port):
+
+```sh
+MOBILE_PORT=3443 scripts/native-ubuntu.sh dashboard
+```
+
+This works the same if you ran the step before: it keeps your settings and
+adds the port. Never delete `~/.config/lightning-fork/dashboard.env`: when
+the dashboard made your wallet, the wallet password is kept only there.
+
+What Umbrel does that a plain machine doesn't: the bridge can't run its own
+SHA256 node here (a bridge through an LND you run yourself, set in
+`lnd.conf`, still works), and the phone app reaches your node away from home
+only through an onion address you would set up in Tor yourself.
+
+To update the dashboard later, run the step again; it keeps your settings
+and passwords.
+
 ## When something goes wrong
 
 | You see | It means |
@@ -201,7 +284,8 @@ systemctl --user restart lightning-fork)
 | `port 9735 is in use` | Another Lightning node runs here. Change `listen`, `rpclisten` and `restlisten` in `lnd.conf`, and use `lncli --rpcserver=127.0.0.1:<rpc port>`. |
 | `chain-identity.json` says `refused` | lnd checked your node and it is not on the BLAKE2b chain; the `reason` field says why. |
 | `no addresses found` in the log | Normal until you connect to a first peer (section 5). |
-| `wallet locked` errors | Run `lncli unlock`. |
+| `wallet locked` errors | Run `lncli unlock` (with the dashboard, it does that itself; check its log). |
+| The dashboard says the wallet can't be unlocked | The password in `~/.config/lightning-fork/dashboard.env` is not the wallet's. Fix `LND_WALLET_PASSWORD` there and `systemctl --user restart lightning-fork-dashboard`. |
 
 Everything else is standard `lnd`: see `sample-lnd.conf` for every option,
 and [blake2b.md](blake2b.md) for what Lightning Fork changes.
