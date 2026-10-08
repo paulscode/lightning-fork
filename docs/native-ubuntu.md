@@ -163,10 +163,17 @@ Lightning Fork has no DNS seeds, so a new node knows nobody and logs
 give it one peer. One is enough: from that peer it learns the network and
 connects to more nodes by itself.
 
+PaulsCode Start9 Pruned, a well-connected node run by Lightning Fork's
+maintainer, is a good first peer. It is reachable over Tor only, so do
+section 4 first:
+
 ```sh
-lncli connect <node public key>@<address>:<port>
+lncli connect 039c6be4053a51c3ca1b10dbea660467989b0ab85889e7345fabb52c96688dd066@c5h2lxsvx6j42jtrnac36gle7wbwykqngwt2phbu2oxz3qubmol6m4qd.onion:9737
 lncli getnetworkinfo        # num_nodes and num_channels grow within a minute
 ```
+
+Any other node's `<public key>@<address>:<port>` works the same way. With the
+dashboard, use **Peers** in its menu instead.
 
 To open a channel, fund the wallet and open one to a well-connected node:
 
