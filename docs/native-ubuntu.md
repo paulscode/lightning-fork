@@ -204,9 +204,10 @@ systemctl --user restart lightning-fork)
 ## 6. The web dashboard
 
 The dashboard is the Lightning Fork app you would see on Umbrel: balances,
-channels, sending and receiving, peers, offers, the bridge, Advanced
-Settings, channel backups to SFTP, Nextcloud, Dropbox or Google Drive, and
-recovery. It is a separate project
+channels, sending and receiving, peers, offers, the bridge, macaroons for
+other apps (each with only the access you choose, revocable on its own),
+Advanced Settings, channel backups to SFTP, Nextcloud, Dropbox or Google
+Drive, and recovery. It is a separate project
 (`github.com/paulscode/umbrel-lightning-fork`); the script fetches and builds
 it:
 
