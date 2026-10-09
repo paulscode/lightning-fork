@@ -1363,10 +1363,36 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 			channel.FundingOutpoint, err)
 	}
 
-	if blockchain.IsCoinBaseTx(confChannel.fundingTx) {
-		// If it's a coinbase transaction, we need to wait for it to
+	// A fundee refuses a channel funded by a coinbase (BOLT 2
+	// channel_ready). Its commitment transactions could not be broadcast
+	// until the coinbase matures under the relay policy, thousands of
+	// blocks, while HTLCs on it expire; and waiting that out left gaps:
+	// channel_ready at the negotiated depth, the fundee's own funding
+	// timeout firing inside the window, and a figure that is policy and
+	// may change. The fundee has nothing of its own in the channel, and
+	// the miner can fund an ordinary channel once the reward matures.
+	// Zero-conf channels, which already rest on trust in the funder,
+	// returned above and are not affected.
+	coinbase := blockchain.IsCoinBaseTx(confChannel.fundingTx)
+	if coinbase && !channel.IsInitiator {
+		log.Warnf("ChannelPoint(%v) is funded by a coinbase; "+
+			"refusing the channel", channel.FundingOutpoint)
+
+		return f.forgetPendingChannel(
+			channel, pendingChanID, fmt.Errorf("funding "+
+				"transaction of ChannelPoint(%v) is a "+
+				"coinbase, which this node does not accept "+
+				"for a channel", channel.FundingOutpoint),
+		)
+	}
+
+	if coinbase {
+		// As the funder, the coinbase is our own: we wait for it to
 		// mature. We wait out an additional MinAcceptDepth on top of
-		// the coinbase maturity as an extra margin of safety.
+		// the coinbase maturity as an extra margin of safety. (A
+		// fundee following these rules will have refused the channel,
+		// so it does not come to anything with one; a peer that has
+		// not upgraded may still take it.)
 		//
 		// The relay depth rather than the consensus one, because a
 		// channel is only usable once we can spend the funding output,
@@ -3027,6 +3053,16 @@ func (f *Manager) fundingTimeout(c *channeldb.OpenChannel,
 	// We'll get a timeout if the number of blocks mined since the channel
 	// was initiated reaches MaxWaitNumBlocksFundingConf and we are not the
 	// channel initiator.
+	return f.forgetPendingChannel(c, pendingID, fmt.Errorf("timeout "+
+		"waiting for funding tx (%v) to confirm", c.FundingOutpoint))
+}
+
+// forgetPendingChannel closes a pending channel this node did not fund as
+// canceled, and tells the peer why once it is online: a funding that never
+// confirmed, or one the node refuses. It returns reason.
+func (f *Manager) forgetPendingChannel(c *channeldb.OpenChannel,
+	pendingID PendingChanID, reason error) error {
+
 	localBalance := c.LocalCommitment.LocalBalance.ToSatoshis()
 	closeInfo := &channeldb.ChannelCloseSummary{
 		ChainHash:               c.ChainHash,
@@ -3040,8 +3076,8 @@ func (f *Manager) fundingTimeout(c *channeldb.OpenChannel,
 		LocalChanConfig:         c.LocalChanCfg,
 	}
 
-	// Close the channel with us as the initiator because we are timing the
-	// channel out.
+	// Close the channel with us as the initiator because we are the one
+	// giving up on it.
 	if err := c.CloseChannel(
 		closeInfo, channeldb.ChanStatusLocalCloseInitiator,
 	); err != nil {
@@ -3049,11 +3085,9 @@ func (f *Manager) fundingTimeout(c *channeldb.OpenChannel,
 			c.FundingOutpoint, err)
 	}
 
-	// Notify other subsystems about the funding timeout.
+	// Notify other subsystems, as for a funding timeout: the pending
+	// channel is gone.
 	f.cfg.NotifyFundingTimeout(c.FundingOutpoint, c.IdentityPub)
-
-	timeoutErr := fmt.Errorf("timeout waiting for funding tx (%v) to "+
-		"confirm", c.FundingOutpoint)
 
 	// When the peer comes online, we'll notify it that we are now
 	// considering the channel flow canceled.
@@ -3086,10 +3120,10 @@ func (f *Manager) fundingTimeout(c *channeldb.OpenChannel,
 
 		// The reservation won't exist at this point, but we'll send an
 		// Error message over anyways with ChanID set to pendingID.
-		f.failFundingFlow(peer, cid, timeoutErr)
+		f.failFundingFlow(peer, cid, reason)
 	}()
 
-	return timeoutErr
+	return reason
 }
 
 // waitForFundingWithTimeout is a wrapper around waitForFundingConfirmation and

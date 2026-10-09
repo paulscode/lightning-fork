@@ -371,11 +371,21 @@ Two consequences that surprise people:
 
 ### What this node does
 
-`funding/manager.go` waits the relay depth, not the consensus depth, before
-marking a channel funded by a coinbase transaction as usable. Waiting the
-shorter of the two would let you open a channel whose commitment and close
-transactions cannot relay, and a channel you cannot close on time is worse than
-one you cannot open yet. The depth comes from
+A channel funded by a coinbase transaction is refused by the side that did
+not fund it, as BOLT 2 requires of a node following these rules: once the
+funding confirms, `funding/manager.go` forgets the channel and tells the peer,
+the way it does when a funding never confirms. For the whole relay wait no
+commitment transaction of such a channel could be broadcast while its HTLCs
+expired, and the node not funding it has nothing in it to lose. Zero-conf
+channels are exempt, since they already rest on trust in the funder.
+
+As the funder, the coinbase is this node's own, and `funding/manager.go`
+waits the relay depth, not the consensus depth, before marking the channel
+usable. Waiting the shorter of the two would let you open a channel whose
+commitment and close transactions cannot relay, and a channel you cannot
+close on time is worse than one you cannot open yet. A peer following these
+rules refuses such a channel anyway, so in practice the coins are better
+spent on an ordinary channel once they mature. The depth comes from
 `chaincfg.Params.RelayCoinbaseMaturity()` in btcd-blake2b, which returns the
 ordinary 100 blocks on any network without the deployment.
 

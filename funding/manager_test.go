@@ -5042,8 +5042,10 @@ func TestFundingManagerZeroConf(t *testing.T) {
 	}
 }
 
-// TestFundingManagerCoinbase tests that a coinbase transaction that is also a
-// funding transaction is not used until the coinbase maturity has passed.
+// TestFundingManagerCoinbase tests a channel whose funding transaction is a
+// coinbase: the fundee fails it once it confirms (BOLT 2 channel_ready, under
+// the BLAKE2b rules), while the funder, whose coinbase it is, keeps waiting
+// for it to mature rather than using it early.
 func TestFundingManagerCoinbase(t *testing.T) {
 	t.Parallel()
 
@@ -5182,11 +5184,6 @@ func TestFundingManagerCoinbase(t *testing.T) {
 		chainIO.BestHeight = 1
 	}
 
-	// Notify that the transaction was mined, and check that the
-	// confirmation height is set to 1 for both Alice and Bob.
-	sendAndCheckFirstConfirmation(t, alice, chanID, fundingTx)
-	sendAndCheckFirstConfirmation(t, bob, chanID, fundingTx)
-
 	// Make sure the notification about the pending channel was sent out.
 	select {
 	case <-alice.mockChanEvent.pendingOpenEvent:
@@ -5199,61 +5196,38 @@ func TestFundingManagerCoinbase(t *testing.T) {
 		t.Fatalf("bob did not send pending channel event")
 	}
 
-	// Assert that neither alice nor bob sees the channel as open yet. This
-	// is because the coinbase check is hit and we must wait for more
-	// confirmations.
+	// Notify that the transaction was mined, and check that Alice's
+	// confirmation height is set to 1. Bob forgets the channel as soon as
+	// it confirms, so there is no height of his to check.
+	sendAndCheckFirstConfirmation(t, alice, chanID, fundingTx)
+	bob.mockNotifier.oneUpdateChannel <- chainntnfs.TxUpdateInfo{
+		NumConfsLeft: 0,
+		BlockHeight:  1,
+	}
+	bob.mockNotifier.oneConfChannel <- &chainntnfs.TxConfirmation{
+		Tx:          fundingTx,
+		BlockHeight: 1,
+	}
+
+	// Bob, the fundee, refuses the channel: he tells Alice and forgets it.
+	assertErrorSent(t, bob.msgChan)
+	assertNumPendingChannelsBecomes(t, bob, 0)
+
+	// Alice, whose coinbase it is, does not see the channel as open: she
+	// waits for the coinbase to mature rather than using it early.
 	select {
 	case <-alice.mockChanEvent.openEvent:
 		t.Fatalf("alice sent an open channel event")
 	case <-time.After(time.Second * 5):
 	}
+	assertNumPendingChannelsRemains(t, alice, 1)
 
+	// Bob never treats it as open either.
 	select {
 	case <-bob.mockChanEvent.openEvent:
 		t.Fatalf("bob sent an open channel event")
-	case <-time.After(time.Second * 5):
+	default:
 	}
-
-	// Advance the chain to the height at which the coinbase can be spent
-	// and assert that the open event is sent. The funding confirmed at
-	// height 1, so that height is the relay coinbase maturity, which is
-	// the ordinary hundred blocks on a network without the long rule.
-	maturityHeight := int32(chainreg.BitcoinRegTestNetParams.Params.
-		RelayCoinbaseMaturity())
-
-	alice.mockNotifier.epochChan <- &chainntnfs.BlockEpoch{
-		Height: maturityHeight,
-	}
-
-	bob.mockNotifier.epochChan <- &chainntnfs.BlockEpoch{
-		Height: maturityHeight,
-	}
-
-	assertMarkedOpen(t, alice, bob, fundingOp)
-
-	// After the funding transaction is mined, Alice will send
-	// channelReady to Bob.
-	channelReadyAlice, ok := assertFundingMsgSent(
-		t, alice.msgChan, "ChannelReady",
-	).(*lnwire.ChannelReady)
-	require.True(t, ok)
-
-	// And similarly Bob will send channel_ready to Alice.
-	channelReadyBob, ok := assertFundingMsgSent(
-		t, bob.msgChan, "ChannelReady",
-	).(*lnwire.ChannelReady)
-	require.True(t, ok)
-
-	// Check that the state machine is updated accordingly
-	assertChannelReadySent(t, alice, bob, fundingOp)
-
-	// Exchange the channelReady messages.
-	alice.fundingMgr.ProcessFundingMsg(channelReadyBob, bob)
-	bob.fundingMgr.ProcessFundingMsg(channelReadyAlice, alice)
-
-	// Check that they notify the breach arbiter and peer about the new
-	// channel.
-	assertHandleChannelReady(t, alice, bob)
 }
 
 // TestMapGossipError verifies that mapGossipError correctly translates gossip
