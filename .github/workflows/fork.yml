@@ -33,7 +33,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           # Keep with GO_VERSION in the Makefile; the next step checks.
-          go-version: '1.26.8'
+          go-version: '1.27.1'
           cache: true
       - name: Go version matches the Makefile
         run: test "$(go env GOVERSION)" = "go$(sed -n 's/^GO_VERSION = //p' Makefile)"

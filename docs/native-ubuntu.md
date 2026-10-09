@@ -53,7 +53,7 @@ scripts/native-ubuntu.sh all       # packages, Go, build, configure
 | Step | What it does |
 | --- | --- |
 | `deps` | `sudo apt-get install git make curl ca-certificates unzip jq xz-utils openssh-client` (only what is missing) |
-| `go` | Downloads Go 1.26.8 from go.dev into `~/.local/go`, after checking the file against Go's published SHA-256. Skipped if you already have a new enough Go. |
+| `go` | Downloads Go 1.27.1 from go.dev into `~/.local/go`, after checking the file against Go's published SHA-256. Skipped if you already have a new enough Go. |
 | `build` | `make release-install`: builds `lnd` and `lncli` into `~/go/bin` (about 2 minutes on a recent machine, longer on a Pi) |
 | `configure` | Checks Knots (version, chain, RPC login, ZMQ) and writes `~/.lnd/lnd.conf`. It never overwrites an existing `lnd.conf`. |
 
