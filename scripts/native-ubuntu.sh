@@ -49,7 +49,7 @@ GO_SHA256_arm64=3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec
 # The dashboard (github.com/paulscode/umbrel-lightning-fork) runs on the
 # Node.js its Umbrel and StartOS image uses, with nodejs.org's checksums.
 DASHBOARD_REPO=${DASHBOARD_REPO:-https://github.com/paulscode/umbrel-lightning-fork.git}
-DASHBOARD_REF=${DASHBOARD_REF:-v1.3.2-blake2b.17.1}
+DASHBOARD_REF=${DASHBOARD_REF:-v1.3.2-blake2b.18}
 NODE_VERSION=16.20.2
 NODE_SHA256_x64=874463523f26ed528634580247f403d200ba17a31adf2de98a7b124c6eb33d87
 NODE_SHA256_arm64=e88d86154d1ce53dc52fd74d79d4bfdf0b05f58c0bb2639adfa36e9378b770c4
