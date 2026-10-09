@@ -1,6 +1,7 @@
 package offers
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -53,6 +54,20 @@ func TestOfferForRequest(t *testing.T) {
 	require.NotNil(t, offer)
 	_, _, err = env.manager.OfferForRequest(ir, []byte{1})
 	require.ErrorIs(t, err, ErrWrongPath)
+
+	// The same request with a field in the offer range that the offer
+	// does not have, of a type this node does not know.
+	extra := []byte{0xaa}
+	records := append(ir.AllRecords(), tlv.MakePrimitiveRecord(33, &extra))
+	tlv.SortRecords(records)
+	stream, err := tlv.NewStream(records...)
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	require.NoError(t, stream.Encode(&buf))
+	padded, err := bolt12.DecodeInvoiceRequest(buf.Bytes())
+	require.NoError(t, err)
+	_, _, err = env.manager.OfferForRequest(padded, nil)
+	require.ErrorIs(t, err, ErrNotOurOffer)
 
 	// An offer with paths: only over the path, with its secret.
 	env.paths.paths = []lnwire.BlindedPath{fakeBlindedPath(t)}

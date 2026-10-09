@@ -83,6 +83,8 @@ type env struct {
 	addErr   error
 	added    []addCall
 	settled  map[[32]byte]bool
+	deleted  map[[32]byte]bool
+	delErr   error
 }
 
 type addCall struct {
@@ -122,6 +124,7 @@ func newEnvOn(t *testing.T, chain [32]byte) *env {
 		clock:    clock.NewTestClock(time.Unix(1_800_000_000, 0)),
 		nodeKey:  nodeKey,
 		settled:  make(map[[32]byte]bool),
+		deleted:  make(map[[32]byte]bool),
 	}
 	e.manager, err = offers.NewManager(offers.Config{
 		ChainHash:     chain,
@@ -172,6 +175,16 @@ func newEnvOn(t *testing.T, chain [32]byte) *env {
 			hash [32]byte) (bool, error) {
 
 			return e.settled[hash], nil
+		},
+		DeleteCanceledInvoice: func(_ context.Context,
+			hash [32]byte) error {
+
+			if e.delErr != nil {
+				return e.delErr
+			}
+			e.deleted[hash] = true
+
+			return nil
 		},
 	})
 	require.NoError(t, err)
@@ -774,6 +787,81 @@ func TestRateLimit(t *testing.T) {
 	require.Len(t, e.added, 2, "another peer is not held back")
 }
 
+// TestSharedLimitsAreChargedLast: the limits shared with other requesters are
+// used only by a valid request that needs a new invoice. Garbage and repeats
+// cost nothing, a flood naming one offer leaves the others served, and the
+// invoices still payable are bounded.
+func TestSharedLimitsAreChargedLast(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	ctx := context.Background()
+	newOffer := func(desc string) *bolt12.Offer {
+		rec, _, err := e.manager.CreateOffer(ctx, offers.CreateParams{
+			Description: desc, NoPaths: true,
+		})
+		require.NoError(t, err)
+
+		return e.decodeOffer(rec)
+	}
+	first, second := newOffer("first"), newOffer("second")
+
+	cfg := e.server.cfg
+	cfg.RequestsPerSecond = 0.001
+	cfg.RequestBurst = 3
+	cfg.OfferRequestsPerSecond = 0.001
+	cfg.OfferRequestBurst = 2
+	s, err := New(cfg)
+	require.NoError(t, err)
+
+	// Requests whose signature no longer covers them.
+	for i := 0; i < 10; i++ {
+		ir, _ := e.request(first, 1000, nil)
+		ir.InvreqAmount = tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType82](
+				bolt12.TUint64(2000 + i),
+			),
+		)
+		s.Handle(ctx, e.inbound(ir, nil, true))
+	}
+	require.Empty(t, e.added)
+
+	// One valid request, then the same bytes again: one invoice.
+	ir, _ := e.request(first, 1000, nil)
+	s.Handle(ctx, e.inbound(ir, nil, true))
+	s.Handle(ctx, e.inbound(ir, nil, true))
+	require.Len(t, e.added, 1)
+
+	// The first offer's own limit stops it, and the node's budget is
+	// still there for the second.
+	for i := 0; i < 5; i++ {
+		ir, _ := e.request(first, uint64(3000+i), nil)
+		s.Handle(ctx, e.inbound(ir, nil, true))
+	}
+	require.Len(t, e.added, 2, "two for the first offer")
+	ir, _ = e.request(second, 1000, nil)
+	s.Handle(ctx, e.inbound(ir, nil, true))
+	require.Len(t, e.added, 3, "the second offer is served")
+
+	// The bound on payable invoices, which frees up as they expire.
+	e.added = nil
+	cfg = e.server.cfg
+	cfg.MaxPayableInvoices = 2
+	bounded, err := New(cfg)
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		ir, _ := e.request(first, uint64(4000+i), nil)
+		bounded.Handle(ctx, e.inbound(ir, nil, true))
+	}
+	require.Len(t, e.added, 2)
+	e.clock.SetTime(e.clock.Now().Add(DefaultInvoiceExpiry + time.Second))
+	ir, _ = e.request(first, 5000, nil)
+	msg := e.inbound(ir, nil, true)
+	msg.Peer = [33]byte{3, 3}
+	bounded.Handle(ctx, msg)
+	require.Len(t, e.added, 3)
+}
+
 // TestPrune drops the records of invoices that expired unpaid, after the
 // retention, and keeps settled and recent ones.
 func TestPrune(t *testing.T) {
@@ -797,13 +885,23 @@ func TestPrune(t *testing.T) {
 	put(3, e.clock.Now().Add(-time.Hour)) // recent: kept
 	e.settled[[32]byte{2}] = true
 
+	// A registry invoice that cannot be deleted keeps its record, so it
+	// is tried again.
+	e.delErr = errors.New("not cancelled")
+	e.server.Prune(ctx)
+	_, err = e.invoices.Get([32]byte{1})
+	require.NoError(t, err)
+
+	e.delErr = nil
 	e.server.Prune(ctx)
 	_, err = e.invoices.Get([32]byte{1})
 	require.ErrorIs(t, err, offers.ErrInvoiceNotFound)
+	require.True(t, e.deleted[[32]byte{1}], "registry invoice deleted")
 	_, err = e.invoices.Get([32]byte{2})
 	require.NoError(t, err)
 	_, err = e.invoices.Get([32]byte{3})
 	require.NoError(t, err)
+	require.Len(t, e.deleted, 1)
 
 	// Start and Stop run and end the pruning loop.
 	require.NoError(t, e.server.Start())

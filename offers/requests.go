@@ -73,6 +73,16 @@ func (m *Manager) OfferForRequest(ir *bolt12.InvoiceRequest,
 	if err != nil {
 		return nil, nil, fmt.Errorf("offer id: %w", err)
 	}
+
+	// The request must mirror the offer exactly. The checks above see
+	// only the fields this node knows, so a field of a type it does not
+	// know, added in the offer range, would pass them and then be copied
+	// into an invoice this node signs, as part of an offer it never made.
+	mirrored, err := bolt12.RequestOfferID(ir)
+	if err != nil || mirrored != id {
+		return nil, nil, ErrNotOurOffer
+	}
+
 	record, err := m.ServeableOffer(OfferID(id))
 	if errors.Is(err, ErrOfferNotFound) {
 		record, err = m.RestoreOffer(offer)

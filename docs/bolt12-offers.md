@@ -124,7 +124,9 @@ lncli offer decode lno1...
 decodes an offer, an invoice request (`lnr1...`) or an invoice (`lni1...`)
 and reports whether it names this chain, whether it passes the checks a
 payer makes, and whether this node minted it. An offer that names no chain
-is a Bitcoin mainnet offer and is reported as not for this chain.
+is, by BOLT 12, for the chain that starts at the shared genesis block, so on
+mainnet it is reported as for this chain (and on testnet, signet or regtest
+as not).
 
 ## What the node does with a request
 
@@ -133,19 +135,29 @@ it arrived the way the offer requires (over one of the offer's blinded
 paths when it has them, and not over a blinded path when it has none), and
 the offer is enabled and unexpired. A request that fails a check gets an
 `invoice_error` with a short message; one for an offer that is not this
-node's, or that came the wrong way, is ignored. Requests are answered at
-most ten a second across all peers, and a repeated request gets its earlier
-invoice back rather than a new one, while that invoice lasts.
+node's, or that came the wrong way, is ignored. A repeated request gets its
+earlier invoice back rather than a new one, while that invoice lasts.
 
 Requests without a reply path are ignored, since nothing could be sent
-back, and requests are answered at most five a second across all peers and
-one a second from any one peer. Invoices issued for offers are payable for
-an hour and carry the node's usual blinded payment paths, under the
-`routing.blinding.*` settings. Each invoice is an invoice in the node's
-registry like any other; the records the offer layer keeps for unpaid ones
-are dropped a week after they expire, and
-`gc-canceled-invoices-on-the-fly` keeps the registry from holding on to
-cancelled ones.
+back. Limits keep a flood from filling the node's database:
+
+- one request a second from any one peer (a burst of five);
+- one new invoice a second for any one offer (a burst of ten), so a flood
+  naming one offer leaves the others served;
+- five new invoices a second across all offers (a burst of twenty);
+- at most 2000 invoices issued for offers and still payable at once;
+- two `invoice_error` replies a second, across all peers.
+
+Only a valid request that needs a new invoice counts against the limits
+shared with others, so neither malformed requests nor repeats use them up.
+A requester over a limit is told so, now and then, rather than left to time
+out.
+
+Invoices issued for offers are payable for an hour and carry the node's
+usual blinded payment paths, under the `routing.blinding.*` settings. Each
+invoice is an invoice in the node's registry like any other. A week after an
+unpaid one expires, the node deletes it from the registry along with the
+record the offer layer keeps for it.
 
 ## Settings
 

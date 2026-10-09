@@ -51,21 +51,11 @@ func PaymentIntent(ctx context.Context, inv *bolt12.Invoice,
 	params PaymentParams, hooks IntentHooks) (*routing.LightningPayment,
 	error) {
 
-	var paths lnwire.BlindedPaths
-	inv.InvoicePaths.WhenSome(
-		func(r tlv.RecordT[tlv.TlvType160, lnwire.BlindedPaths]) {
-			paths = r.Val
-		},
-	)
-	var infos bolt12.BlindedPayInfos
-	inv.InvoiceBlindedPay.WhenSome(
-		func(r tlv.RecordT[tlv.TlvType162, bolt12.BlindedPayInfos]) {
-			infos = r.Val
-		},
-	)
-	if len(paths.Paths) == 0 || len(paths.Paths) != len(infos.Infos) {
-		return nil, errors.New("invoice paths and payment info do " +
-			"not match")
+	// Only the paths a reader may use: a payinfo asking for a feature
+	// this node does not know rules its path out.
+	usable := inv.UsablePaths(invoiceFeatures.Blinded)
+	if len(usable) == 0 {
+		return nil, errors.New("invoice has no usable blinded paths")
 	}
 
 	var hash [32]byte
@@ -77,9 +67,9 @@ func PaymentIntent(ctx context.Context, inv *bolt12.Invoice,
 		return nil, errors.New("invoice without an amount")
 	}
 
-	payments := make([]*routing.BlindedPayment, 0, len(paths.Paths))
-	for i := range paths.Paths {
-		path, info := paths.Paths[i], infos.Infos[i]
+	payments := make([]*routing.BlindedPayment, 0, len(usable))
+	for i, u := range usable {
+		path, info := u.Path, u.PayInfo
 		intro, err := resolveIntro(
 			ctx, path.IntroductionNode, hooks.ResolveIntro,
 		)

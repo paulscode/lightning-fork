@@ -1011,6 +1011,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 
 			return inv.State == invoices.ContractSettled, nil
 		},
+		DeleteCanceledInvoice: s.deleteCanceledOfferInvoice,
 	})
 	if err != nil {
 		return nil, err
@@ -5853,6 +5854,34 @@ func (s *server) unreceivablePeers(amt lnwire.MilliSatoshi) []route.Vertex {
 // a registry invoice with blinded payment paths under the node's blinded
 // path settings, whose paths are read back for the BOLT 12 invoice to
 // carry.
+// deleteCanceledOfferInvoice deletes an offer's expired invoice from the
+// registry, as gc-canceled-invoices-on-the-fly would. One that is not
+// cancelled is left alone and reported, and one already gone is not an error.
+func (s *server) deleteCanceledOfferInvoice(ctx context.Context,
+	hash [32]byte) error {
+
+	inv, err := s.invoices.LookupInvoice(ctx, hash)
+	switch {
+	case errors.Is(err, invoices.ErrInvoiceNotFound):
+		return nil
+	case err != nil:
+		return err
+	case inv.State != invoices.ContractCanceled:
+		return invoices.ErrInvoiceNotCanceled
+	}
+
+	ref := invoices.InvoiceDeleteRef{
+		PayHash:     hash,
+		AddIndex:    inv.AddIndex,
+		SettleIndex: inv.SettleIndex,
+	}
+	if inv.Terms.PaymentAddr != invoices.BlankPayAddr {
+		ref.PayAddr = &inv.Terms.PaymentAddr
+	}
+
+	return s.invoicesDB.DeleteInvoice(ctx, []invoices.InvoiceDeleteRef{ref})
+}
+
 func (s *server) addOfferInvoice(ctx context.Context, amountMsat uint64,
 	description string, expiry time.Duration) (*offerserve.CreatedInvoice,
 	error) {

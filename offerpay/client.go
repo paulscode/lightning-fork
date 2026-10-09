@@ -511,6 +511,13 @@ func (c *Client) checkInvoice(inv *bolt12.Invoice, ir *bolt12.InvoiceRequest,
 	return nil
 }
 
+// invoiceFeatures are the feature bits this node understands in an invoice,
+// and in its blinded paths' payinfo, where none are defined yet: a path asking
+// for any is not used.
+var invoiceFeatures = bolt12.InvoiceFeatureCatalogues{
+	Invoice: bolt12.Blake2bFeatures,
+}
+
 // CheckInvoice makes the checks a payer makes on an invoice it did not just
 // fetch: the signature, the reader checks for the chain, and that it has
 // not expired. The invoice's request is not at hand, so it is not checked
@@ -520,9 +527,7 @@ func CheckInvoice(inv *bolt12.Invoice, chain [32]byte, now time.Time) error {
 		return err
 	}
 	if err := bolt12.ValidateInvoiceRead(
-		inv, chain, bolt12.InvoiceFeatureCatalogues{
-			Invoice: bolt12.Blake2bFeatures,
-		},
+		inv, chain, invoiceFeatures,
 	); err != nil {
 		return err
 	}

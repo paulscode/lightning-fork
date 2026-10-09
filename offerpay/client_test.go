@@ -797,6 +797,38 @@ func TestPaymentIntent(t *testing.T) {
 	_, err = PaymentIntent(context.Background(), broken, PaymentParams{},
 		IntentHooks{})
 	require.Error(t, err)
+
+	// A path whose payinfo asks for a feature this node does not know is
+	// not used: the channel-named one is never resolved.
+	unknown := e.invoiceFor(ir, 123_000, func(inv *bolt12.Invoice) {
+		var paths lnwire.BlindedPaths
+		inv.InvoicePaths.WhenSome(
+			func(r tlv.RecordT[tlv.TlvType160, lnwire.BlindedPaths]) {
+				paths = r.Val
+			},
+		)
+		second := paths.Paths[0]
+		second.IntroductionNode = sciddir
+		paths.Paths = append(paths.Paths, second)
+		inv.InvoicePaths = tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType160](paths),
+		)
+		var infos bolt12.BlindedPayInfos
+		inv.InvoiceBlindedPay.WhenSome(
+			func(r tlv.RecordT[tlv.TlvType162, bolt12.BlindedPayInfos]) {
+				infos = r.Val
+			},
+		)
+		info := infos.Infos[0]
+		info.Features = *lnwire.NewRawFeatureVector(100)
+		infos.Infos = append(infos.Infos, info)
+		inv.InvoiceBlindedPay = tlv.SomeRecordT(
+			tlv.NewRecordT[tlv.TlvType162](infos),
+		)
+	})
+	_, err = PaymentIntent(context.Background(), unknown, PaymentParams{},
+		IntentHooks{})
+	require.NoError(t, err)
 }
 
 // TestNewRequirements checks the configuration checks and defaults.

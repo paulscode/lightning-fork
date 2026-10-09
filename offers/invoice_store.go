@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -164,11 +165,9 @@ func (s *InvoiceStore) list(id *OfferID) ([]*IssuedInvoice, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].CreatedAt.Before(out[j-1].CreatedAt); j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
 
 	return out, nil
 }

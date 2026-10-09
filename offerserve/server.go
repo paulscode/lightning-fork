@@ -41,6 +41,28 @@ const (
 	DefaultPeerRequestsPerSecond = 1
 	DefaultPeerRequestBurst      = 5
 
+	// DefaultOfferRequestsPerSecond and DefaultOfferRequestBurst bound the
+	// invoices made for one offer, so a flood naming one offer leaves the
+	// node's budget to the others.
+	DefaultOfferRequestsPerSecond = 1
+	DefaultOfferRequestBurst      = 10
+
+	// DefaultMaxPayableInvoices bounds the invoices issued for offers that
+	// are still payable, over all offers. Each is an invoice in the
+	// registry, and requests cost the requester nothing, so this is what
+	// keeps a patient flood from growing the database without end.
+	DefaultMaxPayableInvoices = 2000
+
+	// errorsPerSecond and errorBurst bound the invoice_errors sent, over
+	// all peers. Each goes out along a path the requester chose, so
+	// without a bound of their own, requests arriving through many peers
+	// would have this node send as many messages as it receives.
+	errorsPerSecond = 2
+	errorBurst      = 10
+
+	// offerLimiters is how many offers' limiters are remembered.
+	offerLimiters = 1000
+
 	// noticeInterval is how often a peer is told that it is being rate
 	// limited. Much slower than the limit itself: the point is to convert
 	// a silent timeout into a fast failure, not to narrate every drop.
@@ -72,6 +94,10 @@ var (
 	// ErrNoReplyPath is logged when a request carries no reply path, so
 	// nothing can be sent back.
 	ErrNoReplyPath = errors.New("request carries no reply path")
+
+	// errRateLimited is returned by answer when a valid request is
+	// dropped by a limit that is not the peer's own.
+	errRateLimited = errors.New("rate limited")
 )
 
 // Messenger is what the server needs from the onion-message layer.
@@ -142,6 +168,12 @@ type Config struct {
 	// were not. Optional: without it nothing is pruned.
 	InvoiceSettled func(ctx context.Context, hash [32]byte) (bool, error)
 
+	// DeleteCanceledInvoice deletes the registry's invoice with the
+	// payment hash if it was cancelled, as it is once it expires unpaid,
+	// when its record is pruned. Optional: without it the registry keeps
+	// those invoices.
+	DeleteCanceledInvoice func(ctx context.Context, hash [32]byte) error
+
 	// Clock is the source of time.
 	Clock clock.Clock
 
@@ -157,6 +189,15 @@ type Config struct {
 	PeerRequestsPerSecond float64
 	PeerRequestBurst      int
 
+	// OfferRequestsPerSecond and OfferRequestBurst bound the invoices made
+	// for one offer. Zero means the defaults.
+	OfferRequestsPerSecond float64
+	OfferRequestBurst      int
+
+	// MaxPayableInvoices bounds the issued invoices still payable; zero
+	// means DefaultMaxPayableInvoices.
+	MaxPayableInvoices int
+
 	// InvoiceRetention is how long the record of an invoice that was not
 	// settled is kept after it expired; zero means the default.
 	InvoiceRetention time.Duration
@@ -167,8 +208,19 @@ type Server struct {
 	cfg     Config
 	limiter *rate.Limiter
 
+	// errLimiter bounds the invoice_errors sent, over all peers.
+	errLimiter *rate.Limiter
+
 	// peers holds a limiter per peer that has sent requests.
 	peers *lru.Cache[[33]byte, *peerLimiter]
+
+	// offers holds a limiter per offer that has been asked for invoices.
+	offers *lru.Cache[offers.OfferID, *offerLimiter]
+
+	// payableMu guards payable: when each issued invoice that may still
+	// be payable expires, oldest first.
+	payableMu sync.Mutex
+	payable   []time.Time
 
 	// recent maps the hash of a request's bytes to the invoice sent for
 	// it, so a repeated request gets the same invoice back.
@@ -195,6 +247,14 @@ type peerLimiter struct {
 
 // Size implements lru.CacheableValue.
 func (p *peerLimiter) Size() (uint64, error) { return 1, nil }
+
+// offerLimiter is one offer's rate limiter.
+type offerLimiter struct {
+	limiter *rate.Limiter
+}
+
+// Size implements lru.CacheableValue.
+func (o *offerLimiter) Size() (uint64, error) { return 1, nil }
 
 // recentInvoice is an invoice sent for a request, kept until it expires.
 type recentInvoice struct {
@@ -236,6 +296,15 @@ func New(cfg Config) (*Server, error) {
 	if cfg.PeerRequestBurst <= 0 {
 		cfg.PeerRequestBurst = DefaultPeerRequestBurst
 	}
+	if cfg.OfferRequestsPerSecond <= 0 {
+		cfg.OfferRequestsPerSecond = DefaultOfferRequestsPerSecond
+	}
+	if cfg.OfferRequestBurst <= 0 {
+		cfg.OfferRequestBurst = DefaultOfferRequestBurst
+	}
+	if cfg.MaxPayableInvoices <= 0 {
+		cfg.MaxPayableInvoices = DefaultMaxPayableInvoices
+	}
 	if cfg.InvoiceRetention <= 0 {
 		cfg.InvoiceRetention = DefaultInvoiceRetention
 	}
@@ -245,7 +314,11 @@ func New(cfg Config) (*Server, error) {
 		limiter: rate.NewLimiter(
 			rate.Limit(cfg.RequestsPerSecond), cfg.RequestBurst,
 		),
-		peers:  lru.NewCache[[33]byte, *peerLimiter](peerLimiters),
+		errLimiter: rate.NewLimiter(errorsPerSecond, errorBurst),
+		peers:      lru.NewCache[[33]byte, *peerLimiter](peerLimiters),
+		offers: lru.NewCache[offers.OfferID, *offerLimiter](
+			offerLimiters,
+		),
 		recent: lru.NewCache[[32]byte, *recentInvoice](recentRequests),
 		quit:   make(chan struct{}),
 	}, nil
@@ -254,6 +327,7 @@ func New(cfg Config) (*Server, error) {
 // Start registers the server with the messenger and starts pruning.
 func (s *Server) Start() error {
 	s.started.Do(func() {
+		s.loadPayable()
 		s.cfg.Messenger.OnInvoiceRequest(s.Handle)
 		if s.cfg.InvoiceSettled != nil {
 			s.wg.Add(1)
@@ -276,7 +350,6 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-// allowPeer applies the per-peer limit.
 // noticeRateLimited reports whether this peer should be told, this time, that
 // its request was dropped for rate limiting.
 func (s *Server) noticeRateLimited(peer [33]byte) bool {
@@ -288,6 +361,7 @@ func (s *Server) noticeRateLimited(peer [33]byte) bool {
 	return l.notices.Allow()
 }
 
+// allowPeer applies the per-peer limit.
 func (s *Server) allowPeer(peer [33]byte) bool {
 	l, err := s.peers.Get(peer)
 	if err != nil {
@@ -304,6 +378,77 @@ func (s *Server) allowPeer(peer [33]byte) bool {
 	}
 
 	return l.limiter.Allow()
+}
+
+// loadPayable counts the issued invoices that may still be payable, so the
+// bound holds across a restart.
+func (s *Server) loadPayable() {
+	issued, err := s.cfg.Invoices.List()
+	if err != nil {
+		log.Errorf("Listing issued invoices: %v", err)
+
+		return
+	}
+	now := s.cfg.Clock.Now()
+
+	s.payableMu.Lock()
+	defer s.payableMu.Unlock()
+	for _, inv := range issued {
+		expiry := inv.CreatedAt.Add(s.cfg.InvoiceExpiry)
+		if expiry.After(now) {
+			s.payable = append(s.payable, expiry)
+		}
+	}
+}
+
+// reserve applies the limits on making an invoice for an offer, once the
+// request has been found valid: the bound on payable invoices, the offer's
+// own limit, and the node's. It is checked in that order so that a request
+// refused by one does not use up the next.
+func (s *Server) reserve(id offers.OfferID) error {
+	now := s.cfg.Clock.Now()
+
+	s.payableMu.Lock()
+	keep := s.payable[:0]
+	for _, expiry := range s.payable {
+		if expiry.After(now) {
+			keep = append(keep, expiry)
+		}
+	}
+	s.payable = keep
+	full := len(s.payable) >= s.cfg.MaxPayableInvoices
+	s.payableMu.Unlock()
+	if full {
+		return fmt.Errorf("%w: %d invoices still payable", errRateLimited,
+			s.cfg.MaxPayableInvoices)
+	}
+
+	l, err := s.offers.Get(id)
+	if err != nil {
+		l = &offerLimiter{
+			limiter: rate.NewLimiter(
+				rate.Limit(s.cfg.OfferRequestsPerSecond),
+				s.cfg.OfferRequestBurst,
+			),
+		}
+		_, _ = s.offers.Put(id, l)
+	}
+	if !l.limiter.Allow() {
+		return fmt.Errorf("%w: offer %v", errRateLimited, id)
+	}
+	if !s.limiter.Allow() {
+		return fmt.Errorf("%w: all offers", errRateLimited)
+	}
+
+	return nil
+}
+
+// issued counts an invoice as payable until it expires.
+func (s *Server) issued(expiry time.Time) {
+	s.payableMu.Lock()
+	defer s.payableMu.Unlock()
+
+	s.payable = append(s.payable, expiry)
 }
 
 // pruneLoop drops the records of invoices that expired unpaid, once they
@@ -346,6 +491,15 @@ func (s *Server) Prune(ctx context.Context) {
 		if err != nil || settled {
 			continue
 		}
+		if s.cfg.DeleteCanceledInvoice != nil {
+			err := s.cfg.DeleteCanceledInvoice(ctx, inv.PaymentHash)
+			if err != nil {
+				log.Errorf("Deleting expired invoice %x: %v",
+					inv.PaymentHash, err)
+
+				continue
+			}
+		}
 		if err := s.cfg.Invoices.Delete(inv.PaymentHash); err != nil {
 			log.Errorf("Pruning issued invoice %x: %v",
 				inv.PaymentHash, err)
@@ -367,26 +521,22 @@ func (s *Server) Handle(ctx context.Context, msg *onionmsg.Inbound) {
 
 		return
 	}
-	if !s.allowPeer(msg.Peer) || !s.limiter.Allow() {
-		log.Warnf("Dropping invoice request from peer %x: rate limit",
-			msg.Peer)
-
-		// Say so, occasionally. A requester that gets nothing back
-		// cannot tell being rate limited from the issuer being gone,
-		// the message being lost, or its own reply path being broken,
-		// so it waits out its whole timeout for something decided
-		// here in microseconds. One invoice_error turns that into an
-		// immediate, legible failure. The notice limiter keeps this
-		// from answering a flood.
-		if s.noticeRateLimited(msg.Peer) {
-			s.sendError(ctx, msg, "rate limited: too many invoice "+
-				"requests, try again shortly")
-		}
+	// The peer's own limit comes first and costs nothing to check. The
+	// limits shared with others are applied in answer, once the request
+	// is known to be valid and to need a new invoice, so that neither
+	// garbage nor a repeated request can use them up.
+	if !s.allowPeer(msg.Peer) {
+		s.rateLimited(ctx, msg, errRateLimited)
 
 		return
 	}
 
 	encoded, err := s.answer(ctx, msg)
+	if errors.Is(err, errRateLimited) {
+		s.rateLimited(ctx, msg, err)
+
+		return
+	}
 	if err != nil {
 		var reject *rejection
 		if errors.As(err, &reject) {
@@ -409,6 +559,25 @@ func (s *Server) Handle(ctx context.Context, msg *onionmsg.Inbound) {
 	if err != nil {
 		log.Warnf("Sending invoice for request from peer %x: %v",
 			msg.Peer, err)
+	}
+}
+
+// rateLimited drops a request over a limit.
+func (s *Server) rateLimited(ctx context.Context, msg *onionmsg.Inbound,
+	cause error) {
+
+	log.Warnf("Dropping invoice request from peer %x: %v", msg.Peer,
+		cause)
+
+	// Say so, occasionally. A requester that gets nothing back cannot
+	// tell being rate limited from the issuer being gone, the message
+	// being lost, or its own reply path being broken, so it waits out its
+	// whole timeout for something decided here in microseconds. One
+	// invoice_error turns that into an immediate, legible failure. The
+	// notice limiter keeps this from answering a flood.
+	if s.noticeRateLimited(msg.Peer) {
+		s.sendError(ctx, msg, "rate limited: too many invoice "+
+			"requests, try again shortly")
 	}
 }
 
@@ -488,6 +657,9 @@ func (s *Server) answer(ctx context.Context,
 	}
 	quantity := uint64(ir.InvreqQuantity.ValOpt().UnwrapOr(0))
 
+	if err := s.reserve(record.ID); err != nil {
+		return nil, err
+	}
 	created, err := s.cfg.AddInvoice(
 		ctx, amount, record.Description, s.cfg.InvoiceExpiry,
 	)
@@ -495,6 +667,7 @@ func (s *Server) answer(ctx context.Context,
 		return nil, reject("cannot issue an invoice right now",
 			fmt.Errorf("add invoice: %w", err))
 	}
+	s.issued(created.CreatedAt.Add(created.Expiry))
 	inv, err := s.buildInvoice(ir, created)
 	if err != nil {
 		return nil, reject("cannot issue an invoice right now",
@@ -708,6 +881,12 @@ func (s *Server) sendError(ctx context.Context, msg *onionmsg.Inbound,
 	text string) {
 
 	if msg.ReplyPath == nil {
+		return
+	}
+	if !s.errLimiter.Allow() {
+		log.Debugf("Not telling peer %x %q: too many invoice errors",
+			msg.Peer, text)
+
 		return
 	}
 	encoded, err := (&onionmsg.InvoiceError{Message: text}).Encode()
