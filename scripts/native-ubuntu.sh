@@ -252,6 +252,14 @@ check_knots() {
 	local auth
 	if [ -n "${BITCOIND_RPCUSER:-}" ]; then
 		RPC_USER=$BITCOIND_RPCUSER RPC_PASS=${BITCOIND_RPCPASS:-}
+		# Neither can hold a control character (bitcoin.conf can't either),
+		# and a line break would end the line lnd.conf and curl read it on.
+		case "$RPC_USER$RPC_PASS" in
+		*[[:cntrl:]]*)
+			warn "BITCOIND_RPCUSER or BITCOIND_RPCPASS contains a control character such as a line break"
+			return 1
+			;;
+		esac
 		auth="$RPC_USER:$RPC_PASS"
 	elif [ -r "$BITCOIN_DIR/.cookie" ]; then
 		RPC_COOKIE=$BITCOIN_DIR/.cookie
@@ -306,7 +314,7 @@ step_configure() {
 	done
 	if [ -f "$conf" ]; then
 		warn "$conf exists; leaving it alone. Compare it with what this step would write:"
-		write_conf /dev/stdout | sed 's/^/     /'
+		write_conf /dev/stdout | sed 's/^\(bitcoind\.rpcpass=\).*/\1(hidden)/; s/^/     /'
 		return
 	fi
 	run mkdir -p "$LND_DIR"
