@@ -120,29 +120,82 @@ func SigHashesFor(tx *wire.MsgTx,
 	}
 }
 
-// OptInPsbtInputs raises the declared hash type of every input that carries
-// a spent output and declares nothing, or one of the library defaults
-// (SIGHASH_ALL for witness v0, SIGHASH_DEFAULT for taproot), to the
-// sole-signer hash type, so that whatever this wallet signs in the packet
-// opts in. The bit is decided by the chain the wallet is on, not by the
-// packet; an input declaring any other hash type was set deliberately and is
-// left alone, as is everything when the opt-in is off or legacy signatures
-// are allowed.
+// OptInPsbtInputs makes whatever this wallet signs in the packet opt in. An
+// input that declares nothing, or one of the library defaults (SIGHASH_ALL
+// for witness v0, SIGHASH_DEFAULT for taproot), gets the sole-signer hash
+// type; any other declared type gets the unified bit added, which keeps what
+// it commits to (NONE, SINGLE, ANYONECANPAY) and only changes the digest. The
+// bit is decided by the chain the wallet is on, not by the packet: in a PSBT
+// workflow the party declaring a hash type is often the counterparty, and a
+// legacy declaration would make this wallet's signature replayable on the
+// SHA256d chain. Nothing changes when the opt-in is off or legacy signatures
+// are allowed, which is how a remote signer is run (it signs exactly what its
+// watch-only node asks for).
+//
+// The spent output comes from the witness UTXO, or failing that from the
+// non-witness UTXO, which is all some packets carry and which the wallet
+// signs from just the same.
 func OptInPsbtInputs(packet *psbt.Packet) {
 	if !UnifiedSigHash() || AllowLegacySigHash() {
 		return
 	}
 	for i := range packet.Inputs {
 		in := &packet.Inputs[i]
-		if in.WitnessUtxo == nil {
+		spent := psbtSpentOutput(packet, i)
+		if spent == nil {
 			continue
 		}
-		taproot := txscript.IsPayToTaproot(in.WitnessUtxo.PkScript)
-		switch in.SighashType {
-		case 0, txscript.SigHashAll:
+		taproot := txscript.IsPayToTaproot(spent.PkScript)
+		switch {
+		case in.SighashType == 0 ||
+			in.SighashType == txscript.SigHashAll:
+
 			in.SighashType = SoleSignerSigHash(taproot)
+
+		case !OptInSigHash(in.SighashType):
+			in.SighashType |= txscript.SigHashUnified
 		}
 	}
+}
+
+// psbtSpentOutput returns the output a packet's input spends, from its
+// witness UTXO or its non-witness UTXO, or nil when it carries neither.
+func psbtSpentOutput(packet *psbt.Packet, i int) *wire.TxOut {
+	in := packet.Inputs[i]
+	if in.WitnessUtxo != nil {
+		return in.WitnessUtxo
+	}
+	if in.NonWitnessUtxo == nil || packet.UnsignedTx == nil ||
+		i >= len(packet.UnsignedTx.TxIn) {
+
+		return nil
+	}
+	index := packet.UnsignedTx.TxIn[i].PreviousOutPoint.Index
+	if int(index) >= len(in.NonWitnessUtxo.TxOut) {
+		return nil
+	}
+
+	return in.NonWitnessUtxo.TxOut[index]
+}
+
+// CheckPsbtInputsSigHashOptIn checks the given inputs of a packet as
+// CheckPsbtSigHashOptIn checks every input: it is run on the inputs a wallet
+// has just signed, so that a signature of its own that does not opt in is
+// never handed back, whatever other signers put in the packet.
+func CheckPsbtInputsSigHashOptIn(packet *psbt.Packet, indices []uint32) error {
+	if !UnifiedSigHash() || AllowLegacySigHash() {
+		return nil
+	}
+	for _, i := range indices {
+		if int(i) >= len(packet.Inputs) {
+			continue
+		}
+		if err := checkPsbtInputOptIn(int(i), packet.Inputs[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // CheckPsbtSigHashOptIn returns an error when the opt-in is on, legacy
@@ -155,53 +208,63 @@ func CheckPsbtSigHashOptIn(packet *psbt.Packet) error {
 	}
 
 	for i, in := range packet.Inputs {
-		if in.SighashType != 0 && !OptInSigHash(in.SighashType) {
-			return fmt.Errorf("input %d declares hash type 0x%x, "+
-				"which does not opt into the unified signature hash; "+
-				"a signature under it would be replayable on the "+
-				"SHA256d chain (set bitcoin.allow-legacy-sighash to "+
-				"finalize anyway)", i, in.SighashType)
+		if err := checkPsbtInputOptIn(i, in); err != nil {
+			return err
 		}
+	}
 
-		// An input another signer finalized carries its signatures in
-		// the final witness or signature script only.
-		witness, err := parseFinalWitness(in.FinalScriptWitness)
+	return nil
+}
+
+// checkPsbtInputOptIn checks one input of a packet: its declared hash type
+// and every signature it carries, partial or final.
+func checkPsbtInputOptIn(i int, in psbt.PInput) error {
+	if in.SighashType != 0 && !OptInSigHash(in.SighashType) {
+		return fmt.Errorf("input %d declares hash type 0x%x, "+
+			"which does not opt into the unified signature hash; "+
+			"a signature under it would be replayable on the "+
+			"SHA256d chain (set bitcoin.allow-legacy-sighash to "+
+			"finalize anyway)", i, in.SighashType)
+	}
+
+	// An input another signer finalized carries its signatures in
+	// the final witness or signature script only.
+	witness, err := parseFinalWitness(in.FinalScriptWitness)
+	if err != nil {
+		return fmt.Errorf("input %d: cannot read the final "+
+			"witness: %w", i, err)
+	}
+	for _, hashType := range witnessSigHashTypes(witness) {
+		if !OptInSigHash(hashType) {
+			return fmt.Errorf("input %d: a finalized witness "+
+				"signature uses hash type 0x%x, which does not "+
+				"opt into the unified signature hash", i, hashType)
+		}
+	}
+	for _, hashType := range sigScriptSigHashTypes(in.FinalScriptSig) {
+		if !OptInSigHash(hashType) {
+			return fmt.Errorf("input %d: a finalized signature "+
+				"script uses hash type 0x%x, which does not opt "+
+				"into the unified signature hash", i, hashType)
+		}
+	}
+
+	for _, sig := range in.PartialSigs {
+		if err := checkSigOptIn(sig.Signature, false); err != nil {
+			return fmt.Errorf("input %d: %w", i, err)
+		}
+	}
+	if in.TaprootKeySpendSig != nil {
+		err := checkSigOptIn(in.TaprootKeySpendSig, true)
 		if err != nil {
-			return fmt.Errorf("input %d: cannot read the final "+
-				"witness: %w", i, err)
+			return fmt.Errorf("input %d: %w", i, err)
 		}
-		for _, hashType := range witnessSigHashTypes(witness) {
-			if !OptInSigHash(hashType) {
-				return fmt.Errorf("input %d: a finalized witness "+
-					"signature uses hash type 0x%x, which does not "+
-					"opt into the unified signature hash", i, hashType)
-			}
-		}
-		for _, hashType := range sigScriptSigHashTypes(in.FinalScriptSig) {
-			if !OptInSigHash(hashType) {
-				return fmt.Errorf("input %d: a finalized signature "+
-					"script uses hash type 0x%x, which does not opt "+
-					"into the unified signature hash", i, hashType)
-			}
-		}
-
-		for _, sig := range in.PartialSigs {
-			if err := checkSigOptIn(sig.Signature, false); err != nil {
-				return fmt.Errorf("input %d: %w", i, err)
-			}
-		}
-		if in.TaprootKeySpendSig != nil {
-			err := checkSigOptIn(in.TaprootKeySpendSig, true)
-			if err != nil {
-				return fmt.Errorf("input %d: %w", i, err)
-			}
-		}
-		for _, sig := range in.TaprootScriptSpendSig {
-			if !OptInSigHash(sig.SigHash) {
-				return fmt.Errorf("input %d: a tapscript signature "+
-					"uses hash type 0x%x, which does not opt into the "+
-					"unified signature hash", i, sig.SigHash)
-			}
+	}
+	for _, sig := range in.TaprootScriptSpendSig {
+		if !OptInSigHash(sig.SigHash) {
+			return fmt.Errorf("input %d: a tapscript signature "+
+				"uses hash type 0x%x, which does not opt into the "+
+				"unified signature hash", i, sig.SigHash)
 		}
 	}
 
@@ -269,15 +332,37 @@ func parseFinalWitness(raw []byte) (wire.TxWitness, error) {
 // elements that merely look like signatures are rare enough that a false
 // refusal, which the operator can override, beats a missed legacy signature.
 func witnessSigHashTypes(witness wire.TxWitness) []txscript.SigHashType {
+	// BIP 341: with two or more elements, a last element starting 0x50 is
+	// the annex, which is not part of the spend.
+	if len(witness) >= 2 {
+		last := witness[len(witness)-1]
+		if len(last) > 0 && last[0] == txscript.TaprootAnnexTag {
+			witness = witness[:len(witness)-1]
+		}
+	}
+
 	if len(witness) == 1 {
-		switch len(witness[0]) {
-		case schnorr.SignatureSize:
-			return []txscript.SigHashType{txscript.SigHashDefault}
-		case schnorr.SignatureSize + 1:
-			return []txscript.SigHashType{
-				txscript.SigHashType(witness[0][schnorr.SignatureSize]),
+		if hashType, ok := schnorrSigHashType(witness[0]); ok {
+			return []txscript.SigHashType{hashType}
+		}
+	}
+
+	// A taproot script-path spend ends with the script and the control
+	// block; the signatures before them are Schnorr, 64 or 65 bytes. A
+	// witness script that merely looks like a control block still has its
+	// DER signatures counted, so a legacy one cannot hide behind it.
+	if len(witness) >= 2 && looksLikeControlBlock(witness[len(witness)-1]) {
+		var types []txscript.SigHashType
+		for _, elem := range witness[:len(witness)-2] {
+			if looksLikeDERSignature(elem) {
+				types = append(types,
+					txscript.SigHashType(elem[len(elem)-1]))
+			} else if hashType, ok := schnorrSigHashType(elem); ok {
+				types = append(types, hashType)
 			}
 		}
+
+		return types
 	}
 
 	var types []txscript.SigHashType
@@ -288,6 +373,29 @@ func witnessSigHashTypes(witness wire.TxWitness) []txscript.SigHashType {
 	}
 
 	return types
+}
+
+// schnorrSigHashType returns the hash type of an element shaped like a
+// Schnorr signature: 64 bytes is SIGHASH_DEFAULT, 65 carries a trailing byte.
+func schnorrSigHashType(elem []byte) (txscript.SigHashType, bool) {
+	switch len(elem) {
+	case schnorr.SignatureSize:
+		return txscript.SigHashDefault, true
+	case schnorr.SignatureSize + 1:
+		return txscript.SigHashType(elem[schnorr.SignatureSize]), true
+	}
+
+	return 0, false
+}
+
+// looksLikeControlBlock is true for a BIP 341 control block: 33 + 32m bytes
+// with a tapscript leaf version in its first byte.
+func looksLikeControlBlock(b []byte) bool {
+	if len(b) < 33 || (len(b)-33)%32 != 0 || len(b) > 33+32*128 {
+		return false
+	}
+
+	return b[0]&txscript.TaprootLeafMask == byte(txscript.BaseLeafVersion)
 }
 
 // sigScriptSigHashTypes returns the hash type of every pushed element of a

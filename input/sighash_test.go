@@ -128,7 +128,9 @@ func TestOptInPsbtInputs(t *testing.T) {
 		require.Equal(t, want, packet.Inputs[0].SighashType)
 		require.Equal(t, want, packet.Inputs[1].SighashType)
 		require.Equal(t, want, packet.Inputs[2].SighashType)
-		require.Equal(t, txscript.SigHashSingle, packet.Inputs[3].SighashType)
+		// A declared type keeps what it commits to and gains the bit.
+		require.Equal(t, txscript.SigHashSingle|txscript.SigHashUnified,
+			packet.Inputs[3].SighashType)
 		require.Equal(t, txscript.SigHashAll, packet.Inputs[4].SighashType)
 	})
 
@@ -257,4 +259,111 @@ func TestSigHashesFor(t *testing.T) {
 		PrevOutputFetcher: txscript.NewCannedPrevOutputFetcher(nil, 0),
 	}
 	require.Same(t, legacyCache, SigHashesFor(multi, desc))
+}
+
+// TestOptInPsbtInputsCounterpartyTypes: a packet whose inputs carry only a
+// non-witness UTXO, or declare a legacy hash type other than the defaults,
+// still has this wallet sign with the opt-in, so a counterparty cannot get a
+// signature from it that is replayable on the SHA256d chain.
+func TestOptInPsbtInputsCounterpartyTypes(t *testing.T) {
+	p2wkh := append([]byte{0x00, 0x14}, make([]byte, 20)...)
+	prev := wire.NewMsgTx(2)
+	prev.AddTxOut(&wire.TxOut{Value: 1, PkScript: []byte{0x6a}})
+	prev.AddTxOut(&wire.TxOut{Value: 2, PkScript: p2wkh})
+
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{PreviousOutPoint: wire.OutPoint{
+		Hash: prev.TxHash(), Index: 1,
+	}})
+	tx.AddTxIn(&wire.TxIn{})
+	tx.AddTxIn(&wire.TxIn{})
+	tx.AddTxIn(&wire.TxIn{PreviousOutPoint: wire.OutPoint{
+		Hash: prev.TxHash(), Index: 7,
+	}})
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	// Only a non-witness UTXO.
+	packet.Inputs[0].NonWitnessUtxo = prev
+	// Legacy types a counterparty might declare.
+	packet.Inputs[1].WitnessUtxo = &wire.TxOut{PkScript: p2wkh}
+	packet.Inputs[1].SighashType = txscript.SigHashAll |
+		txscript.SigHashAnyOneCanPay
+	packet.Inputs[2].WitnessUtxo = &wire.TxOut{PkScript: p2wkh}
+	packet.Inputs[2].SighashType = txscript.SigHashNone
+	// A non-witness UTXO without the output the input spends.
+	packet.Inputs[3].NonWitnessUtxo = prev
+
+	withUnifiedSigHash(t, true, false, func() {
+		OptInPsbtInputs(packet)
+		require.Equal(t, txscript.SigHashAll|txscript.SigHashUnified,
+			packet.Inputs[0].SighashType)
+		require.Equal(t, txscript.SigHashType(0xa1),
+			packet.Inputs[1].SighashType)
+		require.Equal(t, txscript.SigHashType(0x22),
+			packet.Inputs[2].SighashType)
+		require.Equal(t, txscript.SigHashType(0),
+			packet.Inputs[3].SighashType)
+	})
+}
+
+// TestCheckPsbtInputsSigHashOptIn: only the given inputs are checked, so a
+// wallet refuses to hand back a signature of its own that does not opt in
+// while leaving other signers' inputs to whoever finalizes.
+func TestCheckPsbtInputsSigHashOptIn(t *testing.T) {
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{})
+	tx.AddTxIn(&wire.TxIn{})
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+	packet.Inputs[0].PartialSigs = []*psbt.PartialSig{{
+		PubKey: make([]byte, 33), Signature: derSig(0x01),
+	}}
+	packet.Inputs[1].PartialSigs = []*psbt.PartialSig{{
+		PubKey: make([]byte, 33), Signature: derSig(0x21),
+	}}
+
+	withUnifiedSigHash(t, true, false, func() {
+		require.NoError(t, CheckPsbtInputsSigHashOptIn(
+			packet, []uint32{1},
+		))
+		require.Error(t, CheckPsbtInputsSigHashOptIn(
+			packet, []uint32{0, 1},
+		))
+		require.Error(t, CheckPsbtSigHashOptIn(packet))
+	})
+	withUnifiedSigHash(t, true, true, func() {
+		require.NoError(t, CheckPsbtInputsSigHashOptIn(
+			packet, []uint32{0},
+		))
+	})
+}
+
+// TestWitnessSigHashTypesTaproot: an annex is not taken for the spend, and the
+// signatures of a taproot script-path spend are found before its script and
+// control block, DER-shaped ones included.
+func TestWitnessSigHashTypesTaproot(t *testing.T) {
+	sig64 := make([]byte, 64)
+	sig65 := append(make([]byte, 64), 0x01)
+	annex := []byte{0x50, 0x01}
+	script := []byte{0x51}
+	control := append([]byte{0xc0}, make([]byte, 32)...)
+
+	require.Equal(t, []txscript.SigHashType{txscript.SigHashDefault},
+		witnessSigHashTypes(wire.TxWitness{sig64, annex}))
+	require.Equal(t, []txscript.SigHashType{0x01},
+		witnessSigHashTypes(wire.TxWitness{sig65, script, control}))
+	require.Equal(t, []txscript.SigHashType{0x01},
+		witnessSigHashTypes(wire.TxWitness{
+			sig65, script, control, annex,
+		}))
+	require.Equal(t, []txscript.SigHashType{0x01},
+		witnessSigHashTypes(wire.TxWitness{derSig(0x01), script, control}))
+
+	// The script-path signatures are refused by the transaction check.
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{Witness: wire.TxWitness{sig64, script, control}})
+	withUnifiedSigHash(t, true, false, func() {
+		require.Error(t, CheckTxSigHashOptIn(tx))
+	})
 }

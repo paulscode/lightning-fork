@@ -242,6 +242,12 @@ func (r *RPCKeyRing) SignPsbt(packet *psbt.Packet) ([]uint32, error) {
 	packet.Outputs = signedPacket.Outputs
 	packet.Unknowns = signedPacket.Unknowns
 
+	// No signature of this wallet's goes back without the opt-in.
+	err = input.CheckPsbtInputsSigHashOptIn(packet, resp.SignedInputs)
+	if err != nil {
+		return nil, err
+	}
+
 	return resp.SignedInputs, nil
 }
 
@@ -399,7 +405,9 @@ func (r *RPCKeyRing) FinalizePsbt(packet *psbt.Packet, _ string) error {
 		return fmt.Errorf("error finalizing PSBT: %w", err)
 	}
 
-	return nil
+	// Check the finished transaction too, signatures this wallet just
+	// made included.
+	return input.CheckPsbtSigHashOptIn(packet)
 }
 
 // DeriveNextKey attempts to derive the *next* key within the key family

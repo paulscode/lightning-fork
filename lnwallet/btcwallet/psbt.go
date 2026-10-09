@@ -291,6 +291,14 @@ func (b *BtcWallet) SignPsbt(packet *psbt.Packet) ([]uint32, error) {
 		}
 		signedInputs = append(signedInputs, uint32(idx))
 	}
+
+	// No signature of this wallet's goes back without the opt-in, whatever
+	// the packet asked for.
+	err = input.CheckPsbtInputsSigHashOptIn(packet, signedInputs)
+	if err != nil {
+		return nil, err
+	}
+
 	return signedInputs, nil
 }
 
@@ -625,7 +633,13 @@ func (b *BtcWallet) FinalizePsbt(packet *psbt.Packet, accountName string) error 
 		return err
 	}
 
-	return b.wallet.FinalizePsbt(keyScope, accountNum, packet)
+	err := b.wallet.FinalizePsbt(keyScope, accountNum, packet)
+	if err != nil {
+		return err
+	}
+
+	// The library signs what it finds; check what it signed as well.
+	return input.CheckPsbtSigHashOptIn(packet)
 }
 
 // DecorateInputs fetches the UTXO information of all inputs it can identify and
