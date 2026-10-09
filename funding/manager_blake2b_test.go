@@ -242,7 +242,9 @@ func TestRequireBlake2bPeerOffByDefault(t *testing.T) {
 // no channel type refuses an accept_channel whose type carries
 // option_unified_sigs. Without explicit negotiation the reservation signs the
 // ordinary way; a peer signing under the unified hash could never produce a
-// signature it accepts.
+// signature it accepts. Only a node that does not sign under the unified hash
+// opens without a type at all (see TestRequireUnifiedSigsOnOpen), so that is
+// the node here.
 func TestAcceptChannelUnpromptedUnifiedSigs(t *testing.T) {
 	t.Parallel()
 
@@ -283,14 +285,14 @@ func TestAcceptChannelUnpromptedUnifiedSigs(t *testing.T) {
 				tearDownFundingManagers(t, alice, bob)
 			})
 
-			// Both sides support unified signatures but not
-			// explicit channel type negotiation, so Alice proposes
-			// no type and her reservation signs the ordinary way.
+			// Neither side signs under the unified hash nor
+			// negotiates channel types explicitly, so Alice
+			// proposes no type and her reservation signs the
+			// ordinary way.
 			featureBits := []lnwire.FeatureBit{
 				lnwire.StaticRemoteKeyOptional,
 				lnwire.AnchorsZeroFeeHtlcTxOptional,
 				lnwire.Blake2bRequired,
-				lnwire.UnifiedSigsOptional,
 			}
 			alice.localFeatures = featureBits
 			alice.remoteFeatures = featureBits
@@ -443,4 +445,210 @@ func TestResignChannelProofPrivate(t *testing.T) {
 	require.ErrorContains(t, alice.fundingMgr.ResignChannelProof(
 		channels[0].ShortChanID(),
 	), "not public")
+}
+
+// TestRequireUnifiedSigs checks the rule itself: on a node that signs under the
+// unified hash a new channel's type must carry option_unified_sigs, and a node
+// that does not is not held to it.
+func TestRequireUnifiedSigs(t *testing.T) {
+	t.Parallel()
+
+	unified := lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(lnwire.UnifiedSigsOptional),
+		lnwire.Features,
+	)
+	plain := lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(), lnwire.Features,
+	)
+	withBit := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		lnwire.StaticRemoteKeyRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.UnifiedSigsRequired,
+	))
+	without := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		lnwire.StaticRemoteKeyRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+	))
+
+	require.NoError(t, requireUnifiedSigs(&withBit, unified))
+	require.ErrorIs(
+		t, requireUnifiedSigs(&without, unified),
+		errUnifiedSigsRequired,
+	)
+	require.ErrorIs(
+		t, requireUnifiedSigs(nil, unified), errUnifiedSigsRequired,
+	)
+
+	require.NoError(t, requireUnifiedSigs(&without, plain))
+	require.NoError(t, requireUnifiedSigs(nil, plain))
+}
+
+// TestRequireUnifiedSigsOnOpen checks BOLT 2's open_channel requirements on a
+// node that signs under the unified hash: as funder it opens no channel whose
+// type lacks option_unified_sigs, and as fundee it fails an open that names
+// such a type, or none.
+func TestRequireUnifiedSigsOnOpen(t *testing.T) {
+	t.Parallel()
+
+	withUnified := []lnwire.FeatureBit{
+		lnwire.ExplicitChannelTypeOptional,
+		lnwire.StaticRemoteKeyOptional,
+		lnwire.AnchorsZeroFeeHtlcTxOptional,
+		lnwire.SimpleTaprootChannelsOptionalFinal,
+		lnwire.Blake2bRequired,
+		lnwire.UnifiedSigsOptional,
+	}
+	withoutUnified := []lnwire.FeatureBit{
+		lnwire.ExplicitChannelTypeOptional,
+		lnwire.StaticRemoteKeyOptional,
+		lnwire.AnchorsZeroFeeHtlcTxOptional,
+		lnwire.Blake2bRequired,
+	}
+	noExplicit := []lnwire.FeatureBit{
+		lnwire.StaticRemoteKeyOptional,
+		lnwire.AnchorsZeroFeeHtlcTxOptional,
+		lnwire.Blake2bRequired,
+		lnwire.UnifiedSigsOptional,
+	}
+	taproot := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		lnwire.SimpleTaprootChannelsRequiredFinal,
+	))
+
+	// The funder's side: Alice signs under the unified hash.
+	funderCases := []struct {
+		name     string
+		remote   []lnwire.FeatureBit
+		local    []lnwire.FeatureBit
+		chanType *lnwire.ChannelType
+		opens    bool
+	}{{
+		name:   "peer with the bit",
+		local:  withUnified,
+		remote: withUnified,
+		opens:  true,
+	}, {
+		name:   "peer without the bit",
+		local:  withUnified,
+		remote: withoutUnified,
+		opens:  false,
+	}, {
+		name:   "no explicit channel types",
+		local:  noExplicit,
+		remote: noExplicit,
+		opens:  false,
+	}, {
+		name:     "a taproot type",
+		local:    withUnified,
+		remote:   withUnified,
+		chanType: &taproot,
+		opens:    false,
+	}}
+	for _, tc := range funderCases {
+		t.Run("funder: "+tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			alice, bob := setupFundingManagers(t)
+			t.Cleanup(func() {
+				tearDownFundingManagers(t, alice, bob)
+			})
+			// The harness reads a node's own features from the
+			// peer it handles: Alice opening to Bob reads Bob's
+			// fields.
+			bob.localFeatures = tc.local
+			bob.remoteFeatures = tc.remote
+
+			errChan := make(chan error, 1)
+			alice.fundingMgr.InitFundingWorkflow(&InitFundingMsg{
+				Peer:            bob,
+				TargetPubkey:    bob.privKey.PubKey(),
+				ChainHash:       *fundingNetParams.GenesisHash,
+				LocalFundingAmt: 500000,
+				Private:         true,
+				ChannelType:     tc.chanType,
+				Updates: make(
+					chan *lnrpc.OpenStatusUpdate,
+				),
+				Err: errChan,
+			})
+
+			if tc.opens {
+				open := expectOpenChannelMsg(t, alice.msgChan)
+				require.NotNil(t, open.ChannelType)
+				sent := lnwire.RawFeatureVector(
+					*open.ChannelType,
+				)
+				require.True(
+					t, sent.IsSet(lnwire.UnifiedSigsRequired),
+				)
+
+				return
+			}
+
+			select {
+			case err := <-errChan:
+				require.Error(t, err)
+			case msg := <-alice.msgChan:
+				t.Fatalf("expected a local error, got %T", msg)
+			case <-time.After(5 * time.Second):
+				t.Fatalf("timed out waiting for the refusal")
+			}
+		})
+	}
+
+	// The fundee's side: Bob signs under the unified hash, and Alice, who
+	// does not, proposes a type without the bit, or none at all.
+	fundeeCases := []struct {
+		name     string
+		features []lnwire.FeatureBit
+	}{{
+		name:     "a type without the bit",
+		features: withoutUnified,
+	}, {
+		name: "no type",
+		features: []lnwire.FeatureBit{
+			lnwire.StaticRemoteKeyOptional,
+			lnwire.AnchorsZeroFeeHtlcTxOptional,
+			lnwire.Blake2bRequired,
+		},
+	}}
+	for _, tc := range fundeeCases {
+		t.Run("fundee: "+tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			alice, bob := setupFundingManagers(t)
+			t.Cleanup(func() {
+				tearDownFundingManagers(t, alice, bob)
+			})
+			// Alice's features, read while she opens to Bob, and
+			// Bob's, read while he handles her open.
+			bob.localFeatures = tc.features
+			bob.remoteFeatures = withUnified
+			alice.localFeatures = withUnified
+			alice.remoteFeatures = tc.features
+
+			alice.fundingMgr.InitFundingWorkflow(&InitFundingMsg{
+				Peer:            bob,
+				TargetPubkey:    bob.privKey.PubKey(),
+				ChainHash:       *fundingNetParams.GenesisHash,
+				LocalFundingAmt: 500000,
+				Private:         true,
+				Updates: make(
+					chan *lnrpc.OpenStatusUpdate,
+				),
+				Err: make(chan error, 1),
+			})
+			open := expectOpenChannelMsg(t, alice.msgChan)
+			if open.ChannelType != nil {
+				sent := lnwire.RawFeatureVector(
+					*open.ChannelType,
+				)
+				require.False(
+					t, sent.IsSet(lnwire.UnifiedSigsRequired),
+				)
+			}
+
+			bob.fundingMgr.ProcessFundingMsg(open, alice)
+			assertFundingMsgSent(t, bob.msgChan, "Error")
+		})
+	}
 }

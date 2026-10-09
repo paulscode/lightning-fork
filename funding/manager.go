@@ -1637,6 +1637,16 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		return
 	}
 
+	// As the fundee: a type the funder proposed without the unified bit,
+	// or no type at all, is refused (BOLT 2 open_channel).
+	err = requireUnifiedSigs(msg.ChannelType, peer.LocalFeatures())
+	if err != nil {
+		log.Errorf("Refusing channel from %x: %v",
+			peer.IdentityKey().SerializeCompressed(), err)
+		f.failFundingFlow(peer, cid, err)
+		return
+	}
+
 	var scidFeatureVal bool
 	if hasFeatures(
 		peer.LocalFeatures(), peer.RemoteFeatures(),
@@ -5102,6 +5112,17 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	)
 	if err != nil {
 		log.Errorf("channel type negotiation failed: %v", err)
+		msg.Err <- err
+		return
+	}
+
+	// As the funder: no channel without the unified bit, so a peer that
+	// cannot sign under it, or a type that cannot carry it, gets none
+	// (BOLT 2 open_channel).
+	err = requireUnifiedSigs(chanType, msg.Peer.LocalFeatures())
+	if err != nil {
+		log.Errorf("Not opening a channel to %x: %v",
+			msg.Peer.IdentityKey().SerializeCompressed(), err)
 		msg.Err <- err
 		return
 	}

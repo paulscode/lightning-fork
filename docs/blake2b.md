@@ -269,7 +269,11 @@ signs them the way BOLT 3 already says, so a peer that has never heard of the
 opt-in stays able to verify.
 
 That channel type is what closes the replay hole for bilateral signatures, and
-it is negotiated by default with any peer that supports it. It is not the only
+BOLT 2 now requires it on every new channel: a node that signs under the
+opt-in, which is every node on mainnet, opens no channel without it and fails
+an `open_channel` whose `channel_type` lacks it or that has none. A peer that
+cannot sign under it can still connect, route and keep the channels it has, but
+gets no new one. It is not the only
 thing standing in the way, though, for a channel this node funds. Its funding
 inputs are signed with the opt-in like every other on-chain spend, so the
 funding transaction cannot be replayed on the SHA256d chain and the funding
@@ -285,10 +289,10 @@ Simple taproot channels, which are off by default (`--protocol.simple-taproot-ch
 never carry `option_unified_sigs`. Their commitment and closing signatures are
 MuSig2 partial signatures under `SIGHASH_DEFAULT`, which has no hash type byte
 to carry the bit, and opting them in would be a change to the wire format that
-nobody has specified. They are bound to this chain by their funding
-transaction alone: safe for a channel this node funds, for the reason above.
-For one a peer funds, it is the peer's own coins whose twins are at stake, if
-the peer signed its funding inputs without the opt-in.
+nobody has specified. Under the requirement above a node that signs under the
+opt-in therefore neither opens nor accepts a new one, until that change is
+specified; one opened earlier keeps working, bound to this chain by its
+funding transaction alone.
 
 The justice transactions handed to a watchtower are signed the legacy way,
 because the tower reconstructs their witnesses without a hash type byte. That

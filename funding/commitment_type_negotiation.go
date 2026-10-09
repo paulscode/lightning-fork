@@ -13,7 +13,46 @@ var (
 	// peer of the channel does not support it.
 	errUnsupportedChannelType = errors.New("requested channel type " +
 		"not supported")
+
+	// errUnifiedSigsRequired is returned when a new channel's type lacks
+	// option_unified_sigs on a node that signs under the unified hash.
+	errUnifiedSigsRequired = errors.New("a new channel needs " +
+		"option_unified_sigs: the peer does not support it, or the " +
+		"channel type asked for (such as taproot) cannot carry it")
 )
+
+// requireUnifiedSigs refuses a new channel without option_unified_sigs, on a
+// node that follows the BLAKE2b proof of work rules and signs under the
+// unified hash, which is every node that advertises the bit (always on
+// mainnet). BOLT 2 asks this of both ends: the funder MUST include the bit in
+// channel_type, and the fundee MUST fail an open whose type lacks it. A
+// channel without it signs its commitment, HTLC and closing transactions so
+// that they also verify for a node without these rules, and the fundee cannot
+// see where the funder's inputs came from, so the channel type is the one
+// thing either side can check.
+//
+// A nil type is an open without an explicit channel_type, which cannot carry
+// the bit. Taproot types never carry it (see withUnifiedSigs), so they are
+// refused too until the bit is defined for MuSig2 signatures. Existing
+// channels are not affected: this runs only when a channel is opened.
+func requireUnifiedSigs(chanType *lnwire.ChannelType,
+	local *lnwire.FeatureVector) error {
+
+	if !local.HasFeature(lnwire.UnifiedSigsOptional) {
+		return nil
+	}
+
+	if chanType == nil {
+		return errUnifiedSigsRequired
+	}
+
+	features := lnwire.RawFeatureVector(*chanType)
+	if !features.IsSet(lnwire.UnifiedSigsRequired) {
+		return errUnifiedSigsRequired
+	}
+
+	return nil
+}
 
 // withUnifiedSigs returns chanType with option_unified_sigs set, when both
 // peers can do it and the type is one it applies to.
