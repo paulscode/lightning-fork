@@ -338,8 +338,17 @@ func (s *server) payBridgeInvoice(ctx context.Context,
 // bridgePaymentRecorded reports whether the router holds a record of a
 // payment. Anything but a clear "never initiated" counts as recorded, so a
 // lookup that fails keeps the payment in flight.
-func (s *server) bridgePaymentRecorded(ctx context.Context,
+//
+// It is asked after SendPayment returns, whose context may have ended with
+// it (the bridge shutting down, or the payment's deadline), so the lookup
+// has a context of its own: one ended already would fail the lookup and
+// leave a payment that never left reading as in flight until an operator
+// looks.
+func (s *server) bridgePaymentRecorded(_ context.Context,
 	hash [32]byte) bool {
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
 
 	_, err := s.controlTower.FetchPayment(ctx, lntypes.Hash(hash))
 

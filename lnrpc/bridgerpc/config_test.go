@@ -523,3 +523,28 @@ func TestTheBreakerTripsWhereTheFeeStopsWidening(t *testing.T) {
 			r.rate.BreakerMove, r.rate.MaxSpread)
 	}
 }
+
+// The hold expiry delta is the largest of this node's, the SHA256 node's and
+// lnd's default, and one too large for the incoming budget is refused at
+// startup rather than when the first swap is quoted.
+func TestTheHoldExpiryDeltaIsTheLargestKnown(t *testing.T) {
+	t.Parallel()
+
+	c := usable()
+	if got := c.resolve().margin.HoldExpiryDelta; got != 18 {
+		t.Fatalf("default delta %d, want 18", got)
+	}
+	c.SHA256HoldExpiryDelta = 40
+	c.LocalHoldExpiryDelta = 30
+	if got := c.resolve().margin.HoldExpiryDelta; got != 40 {
+		t.Fatalf("delta %d, want the SHA256 node's 40", got)
+	}
+	c.LocalHoldExpiryDelta = 2000
+	err := c.Validate()
+	if !errors.Is(err, ErrConfig) ||
+		!strings.Contains(err.Error(), "holdexpirydelta") {
+
+		t.Fatalf("a delta past the incoming budget should be refused "+
+			"by name, got %v", err)
+	}
+}

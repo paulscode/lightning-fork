@@ -160,12 +160,17 @@ faster than measured and the SHA256 chain's half again slower (the slowest
 four days in its history, during the 2021 mining ban, ran 1.38 times what
 was measured as they began), plus an hour to settle. Only the blocks before
 the bridge's node would give up on the payer's held payment count: lnd
-cancels an accepted hold invoice 18 blocks before its HTLC expires (or
-`invoices.holdexpirydelta`, if set higher), so the quote asks the payer for
-those on top. The payer's hold is capped at 1,776 blocks, leaving room for
-their own route to the bridge inside the 2,016 blocks every lnd allows.
-SHA256 routes that need more than 386 blocks cannot be paid; a bridge node with a channel to a well-connected
-peer reaches most destinations in far fewer.
+cancels an accepted hold invoice 18 blocks before its HTLC expires, so the
+quote asks the payer for those on top. A node set to give up earlier must
+say so: this node's `invoices.holdexpirydelta` is read, and for an SHA256
+node of your own (which holds the payer's payment when the bridge pays
+BLAKE2b invoices) set `bridgerpc.sha256.holdexpirydelta` to its value. The
+supervised SHA256 node keeps lnd's default. A larger delta leaves less room
+for the route, so each quote's route budget shrinks to fit. The payer's
+hold is capped at 1,776 blocks, leaving room for their own route to the
+bridge inside the 2,016 blocks every lnd allows. SHA256 routes that need
+more than 386 blocks cannot be paid; a bridge node with a channel to a
+well-connected peer reaches most destinations in far fewer.
 
 ## Participants
 

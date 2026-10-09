@@ -10,6 +10,10 @@ import (
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
+// ErrPaymentNotSent says a payment never left this node: it was refused
+// before the node wrote any record of it, so nothing can be in flight.
+var ErrPaymentNotSent = errors.New("the payment never left this node")
+
 // Deps is what the bridge sub-server needs from the node it runs inside. It is
 // defined for every build so the root server can hand it over whether or not
 // the sub-server is compiled in.
@@ -21,10 +25,6 @@ import (
 //
 // These are the local node's half of the swap. The bridge needs both halves of
 // both interfaces, and the other half is a SHA256 node reached over gRPC.
-// ErrPaymentNotSent says a payment never left this node: it was refused
-// before the node wrote any record of it, so nothing can be in flight.
-var ErrPaymentNotSent = errors.New("the payment never left this node")
-
 type Deps struct {
 	// CheckPayable reports whether this node would pay an invoice, with
 	// the checks its router makes before it records a payment. Quoting

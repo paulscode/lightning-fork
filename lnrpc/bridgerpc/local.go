@@ -275,7 +275,6 @@ func (l *Local) Balance(ctx context.Context) (uint64, error) {
 	return l.deps.ChannelBalance(ctx)
 }
 
-// Decode reads a payment request with this node's own decoder.
 // Payable reports whether this node would pay the invoice, by the checks its
 // router makes before it records a payment. Asked when quoting, while nothing
 // is held.
@@ -290,6 +289,7 @@ func (l *Local) Payable(ctx context.Context, invoice string) error {
 	return l.deps.CheckPayable(ctx, invoice)
 }
 
+// Decode reads a payment request with this node's own decoder.
 func (l *Local) Decode(ctx context.Context, invoice string) (node.Decoded,
 	error) {
 

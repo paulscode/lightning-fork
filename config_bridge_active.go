@@ -69,6 +69,9 @@ func validateBridgeConfig(cfg *Config, networkDir string) error {
 		)
 	}
 
+	// So that Validate checks the margin with the delta it will run with.
+	sub.LocalHoldExpiryDelta = cfg.Invoices.HoldExpiryDelta
+
 	return sub.Validate()
 }
 

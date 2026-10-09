@@ -54,6 +54,16 @@ type Config struct {
 	// code has no need to answer.
 	SHA256RPCHost string `long:"sha256.rpchost" description:"The Lightning node on the SHA256 chain to bridge through, as host:port. This is a Lightning node, not a second chain node."`
 
+	// SHA256HoldExpiryDelta is the SHA256 node's invoices.holdexpirydelta,
+	// for an operator's own node set above lnd's default. Paying BLAKE2b
+	// invoices, the payer's payment is held on that node, which gives up
+	// on it this many blocks before it expires.
+	SHA256HoldExpiryDelta uint32 `long:"sha256.holdexpirydelta" description:"The SHA256 node's invoices.holdexpirydelta, if it is set higher than lnd's default of 18 there. Paying BLAKE2b invoices, the payer's payment is held on that node, and the bridge must know how early that node gives up on it."`
+
+	// LocalHoldExpiryDelta is this node's own invoices.holdexpirydelta,
+	// set by the daemon before Validate so that the checks there use it.
+	LocalHoldExpiryDelta uint32 `no-flag:"true"`
+
 	// SHA256TLSCertPath is that node's TLS certificate.
 	SHA256TLSCertPath string `long:"sha256.tlscertpath" description:"Path to the SHA256 node's TLS certificate."`
 
@@ -360,11 +370,19 @@ func (c *Config) resolve() resolved {
 	r.margin.MaxIncomingBlocks = DefaultMaxIncomingBlocks
 
 	// The incoming node gives up on a held invoice this many blocks before
-	// its HTLC expires; never assume fewer than lnd's default, which is
-	// what the SHA256 node (supervised, or an operator's own) runs with.
+	// its HTLC expires: this node paying SHA256 invoices, the SHA256 node
+	// paying BLAKE2b ones. One policy serves both directions, so it takes
+	// the larger of the two, and never fewer than lnd's default, which the
+	// supervised SHA256 node runs with.
 	r.margin.HoldExpiryDelta = margin.DefaultHoldExpiryDelta
-	if c.Deps != nil && c.Deps.HoldExpiryDelta > r.margin.HoldExpiryDelta {
-		r.margin.HoldExpiryDelta = c.Deps.HoldExpiryDelta
+	deltas := []uint32{c.LocalHoldExpiryDelta, c.SHA256HoldExpiryDelta}
+	if c.Deps != nil {
+		deltas = append(deltas, c.Deps.HoldExpiryDelta)
+	}
+	for _, d := range deltas {
+		if d > r.margin.HoldExpiryDelta {
+			r.margin.HoldExpiryDelta = d
+		}
 	}
 	r.cltvToSHA256 = DefaultOutgoingCLTVLimitToSHA256
 	r.cltvToB2B = DefaultOutgoingCLTVLimitToBLAKE2b
@@ -582,7 +600,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	if !r.margin.Valid() {
-		return fmt.Errorf("%w: the margin policy is unusable", ErrConfig)
+		return fmt.Errorf("%w: the margin policy is unusable (a hold "+
+			"expiry delta of %d blocks, from invoices.holdexpirydelta "+
+			"or bridgerpc.sha256.holdexpirydelta, must be under %d)",
+			ErrConfig, r.margin.HoldExpiryDelta,
+			r.margin.MaxIncomingBlocks)
 	}
 	for _, fee := range []float64{r.feeToSHA256, r.feeToB2B} {
 		if err := r.inventoryFor(fee).Valid(); err != nil {
@@ -616,6 +638,14 @@ func (c *Config) Validate() error {
 				"fees, so it would lose money on every swap",
 				ErrConfig, f.name, f.v, r.quote.FeeFraction)
 		}
+	}
+
+	// A larger hold expiry delta shrinks each quote's route budget to fit
+	// (MaxOutgoingBlocks), so the default budgets are checked as they stand
+	// with lnd's default delta; budgets the operator chose are checked with
+	// the delta they will run with, since those are meant as given.
+	if c.OutgoingCLTVLimit == 0 {
+		r.margin.HoldExpiryDelta = margin.DefaultHoldExpiryDelta
 	}
 
 	return c.checkReachable(r)
