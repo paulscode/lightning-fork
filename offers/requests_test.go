@@ -55,19 +55,24 @@ func TestOfferForRequest(t *testing.T) {
 	_, _, err = env.manager.OfferForRequest(ir, []byte{1})
 	require.ErrorIs(t, err, ErrWrongPath)
 
-	// The same request with a field in the offer range that the offer
-	// does not have, of a type this node does not know.
-	extra := []byte{0xaa}
-	records := append(ir.AllRecords(), tlv.MakePrimitiveRecord(33, &extra))
-	tlv.SortRecords(records)
-	stream, err := tlv.NewStream(records...)
-	require.NoError(t, err)
-	var buf bytes.Buffer
-	require.NoError(t, stream.Encode(&buf))
-	padded, err := bolt12.DecodeInvoiceRequest(buf.Bytes())
-	require.NoError(t, err)
-	_, _, err = env.manager.OfferForRequest(padded, nil)
-	require.ErrorIs(t, err, ErrNotOurOffer)
+	// The same request with a field in an offer range that the offer
+	// does not have, of a type this node does not know: in the offer
+	// range proper, and in the experimental one.
+	for _, typ := range []tlv.Type{33, 1000000001} {
+		extra := []byte{0xaa}
+		records := append(
+			ir.AllRecords(), tlv.MakePrimitiveRecord(typ, &extra),
+		)
+		tlv.SortRecords(records)
+		stream, err := tlv.NewStream(records...)
+		require.NoError(t, err)
+		var buf bytes.Buffer
+		require.NoError(t, stream.Encode(&buf))
+		padded, err := bolt12.DecodeInvoiceRequest(buf.Bytes())
+		require.NoError(t, err)
+		_, _, err = env.manager.OfferForRequest(padded, nil)
+		require.ErrorIs(t, err, ErrNotOurOffer, "type %d", typ)
+	}
 
 	// An offer with paths: only over the path, with its secret.
 	env.paths.paths = []lnwire.BlindedPath{fakeBlindedPath(t)}

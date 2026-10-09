@@ -13,11 +13,6 @@ import (
 // needs from the codecs, so the ported files can stay byte-identical to
 // upstream. Everything here is a thin wrapper over unexported functions.
 
-// offerFieldsEnd is the first TLV type that is not part of an offer. BOLT 12
-// reserves types 1-79 for the offer, which an invoice_request and an invoice
-// mirror; an offer's identity is the Merkle root of exactly those records.
-const offerFieldsEnd tlv.Type = 80
-
 // DecodeOffer decodes the raw TLV bytes of an offer, as produced by Decode on
 // an lno1... string.
 func DecodeOffer(data []byte) (*Offer, error) {
@@ -34,7 +29,8 @@ func OfferID(o *Offer) ([32]byte, error) {
 }
 
 // RequestOfferID returns the id of the offer an invoice_request mirrors: the
-// digest of the request's records in the offer range (1-79), which equals
+// digest of the request's records in the offer ranges (1-79, and the
+// experimental 1000000000-1999999999), which equals
 // OfferID of the offer when the request mirrors it faithfully. A request
 // that carries no offer fields at all has no offer, and an error is
 // returned.
@@ -60,11 +56,14 @@ func InvoiceOfferID(inv *Invoice) ([32]byte, error) {
 	return tlvDigest(offerRecords)
 }
 
-// offerRange keeps the records in the offer range, types 1 to 79.
+// offerRange keeps the records in the offer ranges: types 1 to 79, and the
+// experimental range 1000000000 to 1999999999, which a reader accepts too.
+// Leaving the latter out would let a request add a field there that the
+// offer does not have and still read as mirroring it.
 func offerRange(records []tlv.Record) []tlv.Record {
 	var out []tlv.Record
 	for _, r := range records {
-		if r.Type() >= 1 && r.Type() < offerFieldsEnd {
+		if offerAllowedRange(r.Type()) {
 			out = append(out, r)
 		}
 	}

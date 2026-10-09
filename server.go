@@ -1004,8 +1004,16 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 		InvoiceSettled: func(ctx context.Context,
 			hash [32]byte) (bool, error) {
 
+			// An invoice the registry no longer has (deleted
+			// on the fly, or by hand) was not settled: its
+			// record is pruned rather than kept for ever.
 			inv, err := s.invoices.LookupInvoice(ctx, hash)
-			if err != nil {
+			switch {
+			case errors.Is(err, invoices.ErrInvoiceNotFound),
+				errors.Is(err, invoices.ErrNoInvoicesCreated):
+
+				return false, nil
+			case err != nil:
 				return false, err
 			}
 
@@ -5850,10 +5858,6 @@ func (s *server) unreceivablePeers(amt lnwire.MilliSatoshi) []route.Vertex {
 	return omitted
 }
 
-// addOfferInvoice creates the Lightning invoice behind a BOLT 12 invoice:
-// a registry invoice with blinded payment paths under the node's blinded
-// path settings, whose paths are read back for the BOLT 12 invoice to
-// carry.
 // deleteCanceledOfferInvoice deletes an offer's expired invoice from the
 // registry, as gc-canceled-invoices-on-the-fly would. One that is not
 // cancelled is left alone and reported, and one already gone is not an error.
@@ -5862,7 +5866,9 @@ func (s *server) deleteCanceledOfferInvoice(ctx context.Context,
 
 	inv, err := s.invoices.LookupInvoice(ctx, hash)
 	switch {
-	case errors.Is(err, invoices.ErrInvoiceNotFound):
+	case errors.Is(err, invoices.ErrInvoiceNotFound),
+		errors.Is(err, invoices.ErrNoInvoicesCreated):
+
 		return nil
 	case err != nil:
 		return err
@@ -5882,6 +5888,10 @@ func (s *server) deleteCanceledOfferInvoice(ctx context.Context,
 	return s.invoicesDB.DeleteInvoice(ctx, []invoices.InvoiceDeleteRef{ref})
 }
 
+// addOfferInvoice creates the Lightning invoice behind a BOLT 12 invoice:
+// a registry invoice with blinded payment paths under the node's blinded
+// path settings, whose paths are read back for the BOLT 12 invoice to
+// carry.
 func (s *server) addOfferInvoice(ctx context.Context, amountMsat uint64,
 	description string, expiry time.Duration) (*offerserve.CreatedInvoice,
 	error) {

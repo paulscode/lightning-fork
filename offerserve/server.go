@@ -217,8 +217,9 @@ type Server struct {
 	// offers holds a limiter per offer that has been asked for invoices.
 	offers *lru.Cache[offers.OfferID, *offerLimiter]
 
-	// payableMu guards payable: when each issued invoice that may still
-	// be payable expires, oldest first.
+	// payableMu guards payable, when each issued invoice that may still be
+	// payable expires, and the choice of an offer's limiter, so that
+	// requests handled at once cannot together pass a bound or a limit.
 	payableMu sync.Mutex
 	payable   []time.Time
 
@@ -404,11 +405,16 @@ func (s *Server) loadPayable() {
 // reserve applies the limits on making an invoice for an offer, once the
 // request has been found valid: the bound on payable invoices, the offer's
 // own limit, and the node's. It is checked in that order so that a request
-// refused by one does not use up the next.
-func (s *Server) reserve(id offers.OfferID) error {
+// refused by one does not use up the next. A request let through holds its
+// place in the bound at once, so requests handled at the same time cannot
+// together pass it; the returned function gives the place back if no invoice
+// is made.
+func (s *Server) reserve(id offers.OfferID) (func(), error) {
 	now := s.cfg.Clock.Now()
 
 	s.payableMu.Lock()
+	defer s.payableMu.Unlock()
+
 	keep := s.payable[:0]
 	for _, expiry := range s.payable {
 		if expiry.After(now) {
@@ -416,11 +422,9 @@ func (s *Server) reserve(id offers.OfferID) error {
 		}
 	}
 	s.payable = keep
-	full := len(s.payable) >= s.cfg.MaxPayableInvoices
-	s.payableMu.Unlock()
-	if full {
-		return fmt.Errorf("%w: %d invoices still payable", errRateLimited,
-			s.cfg.MaxPayableInvoices)
+	if len(s.payable) >= s.cfg.MaxPayableInvoices {
+		return nil, fmt.Errorf("%w: %d invoices still payable",
+			errRateLimited, s.cfg.MaxPayableInvoices)
 	}
 
 	l, err := s.offers.Get(id)
@@ -434,21 +438,29 @@ func (s *Server) reserve(id offers.OfferID) error {
 		_, _ = s.offers.Put(id, l)
 	}
 	if !l.limiter.Allow() {
-		return fmt.Errorf("%w: offer %v", errRateLimited, id)
+		return nil, fmt.Errorf("%w: offer %v", errRateLimited, id)
 	}
 	if !s.limiter.Allow() {
-		return fmt.Errorf("%w: all offers", errRateLimited)
+		return nil, fmt.Errorf("%w: all offers", errRateLimited)
 	}
 
-	return nil
-}
-
-// issued counts an invoice as payable until it expires.
-func (s *Server) issued(expiry time.Time) {
-	s.payableMu.Lock()
-	defer s.payableMu.Unlock()
-
+	// Until the invoice it is for expires, which is InvoiceExpiry after
+	// it is made, a moment from now.
+	expiry := now.Add(s.cfg.InvoiceExpiry)
 	s.payable = append(s.payable, expiry)
+
+	return func() {
+		s.payableMu.Lock()
+		defer s.payableMu.Unlock()
+
+		for i, e := range s.payable {
+			if e.Equal(expiry) {
+				s.payable = append(s.payable[:i], s.payable[i+1:]...)
+
+				return
+			}
+		}
+	}, nil
 }
 
 // pruneLoop drops the records of invoices that expired unpaid, once they
@@ -657,17 +669,19 @@ func (s *Server) answer(ctx context.Context,
 	}
 	quantity := uint64(ir.InvreqQuantity.ValOpt().UnwrapOr(0))
 
-	if err := s.reserve(record.ID); err != nil {
+	release, err := s.reserve(record.ID)
+	if err != nil {
 		return nil, err
 	}
 	created, err := s.cfg.AddInvoice(
 		ctx, amount, record.Description, s.cfg.InvoiceExpiry,
 	)
 	if err != nil {
+		release()
+
 		return nil, reject("cannot issue an invoice right now",
 			fmt.Errorf("add invoice: %w", err))
 	}
-	s.issued(created.CreatedAt.Add(created.Expiry))
 	inv, err := s.buildInvoice(ir, created)
 	if err != nil {
 		return nil, reject("cannot issue an invoice right now",

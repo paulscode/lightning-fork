@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -860,6 +861,46 @@ func TestSharedLimitsAreChargedLast(t *testing.T) {
 	msg.Peer = [33]byte{3, 3}
 	bounded.Handle(ctx, msg)
 	require.Len(t, e.added, 3)
+}
+
+// TestReserveHoldsItsPlace: requests handled at the same time cannot together
+// pass the bound on payable invoices, and a place given back is free again.
+func TestReserveHoldsItsPlace(t *testing.T) {
+	t.Parallel()
+
+	e := newEnv(t)
+	cfg := e.server.cfg
+	cfg.MaxPayableInvoices = 3
+	cfg.OfferRequestsPerSecond = 1000
+	cfg.OfferRequestBurst = 1000
+	s, err := New(cfg)
+	require.NoError(t, err)
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		releases []func()
+	)
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			release, err := s.reserve(offers.OfferID{1})
+			if err == nil {
+				mu.Lock()
+				releases = append(releases, release)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	require.Len(t, releases, 3)
+
+	_, err = s.reserve(offers.OfferID{2})
+	require.ErrorIs(t, err, errRateLimited)
+	releases[0]()
+	_, err = s.reserve(offers.OfferID{2})
+	require.NoError(t, err, "the place given back is free")
 }
 
 // TestPrune drops the records of invoices that expired unpaid, after the

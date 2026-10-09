@@ -143,9 +143,13 @@ back. Limits keep a flood from filling the node's database:
 
 - one request a second from any one peer (a burst of five);
 - one new invoice a second for any one offer (a burst of ten), so a flood
-  naming one offer leaves the others served;
+  naming one offer leaves the others served, until the bound below is
+  reached;
 - five new invoices a second across all offers (a burst of twenty);
-- at most 2000 invoices issued for offers and still payable at once;
+- at most 2000 invoices issued for offers and still payable at once. While
+  that many are outstanding, requests for every offer are refused until some
+  expire, at most an hour: a long flood can make offers unavailable for a
+  while, but cannot fill the node's disk;
 - two `invoice_error` replies a second, across all peers.
 
 Only a valid request that needs a new invoice counts against the limits
