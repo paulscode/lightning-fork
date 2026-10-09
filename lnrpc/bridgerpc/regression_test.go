@@ -22,11 +22,14 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/paulscode/lightning-fork-bridge/chainrate"
 	"github.com/paulscode/lightning-fork-bridge/inventory"
 	"github.com/paulscode/lightning-fork-bridge/node"
+	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/store"
 	"github.com/paulscode/lightning-fork-bridge/swap"
 )
@@ -1018,6 +1021,50 @@ func (f *fakeOutDecoder) Decode(_ context.Context, inv string) (node.Decoded,
 	return node.Decoded{
 		AmountMsat: 1, BLAKE2b: strings.HasPrefix(inv, "sideB-"),
 	}, nil
+}
+
+// payableOut is a paying node that would not pay some invoices.
+type payableOut struct {
+	*fakeOutDecoder
+
+	refuse error
+}
+
+func (p *payableOut) Payable(context.Context, string) error { return p.refuse }
+
+// TestQuotingAsksThePayingNode: an invoice the paying node would not pay is
+// refused as an invalid invoice when quoted, by that node and no other, while
+// routing a swap already under way does not ask.
+func TestQuotingAsksThePayingNode(t *testing.T) {
+	t.Parallel()
+
+	svc := sidedService(t, 10_000_000)
+	for _, sd := range svc.sides {
+		sd.out = &payableOut{
+			fakeOutDecoder: sd.out.(*fakeOutDecoder),
+			refuse:         errors.New("AMP is not supported"),
+		}
+	}
+	svc.sides[1].out.(*payableOut).refuse = nil
+
+	_, _, err := svc.routeQuote(context.Background(), "sideA-payme")
+	require.Equal(t, quote.CodeInvalidInvoice, quote.CodeOf(err))
+	require.Contains(t, err.Error(), "AMP")
+
+	sd, _, err := svc.route(context.Background(), "sideA-payme")
+	require.NoError(t, err)
+	require.Equal(t, "toSHA256", sd.name)
+
+	sd, _, err = svc.routeQuote(context.Background(), "sideB-payme")
+	require.NoError(t, err)
+	require.Equal(t, "toBLAKE2b", sd.name)
+
+	// A paying node that does not answer is unavailable, not a verdict.
+	svc.sides[0].out.(*payableOut).refuse = status.Error(
+		codes.Unavailable, "connection refused",
+	)
+	_, _, err = svc.routeQuote(context.Background(), "sideA-payme")
+	require.Equal(t, quote.CodeUnavailable, quote.CodeOf(err))
 }
 
 func TestHeadroomCountsOnlyItsOwnSide(t *testing.T) {

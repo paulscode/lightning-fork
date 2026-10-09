@@ -118,7 +118,7 @@ func (r *Remote) LookupInvoice(ctx context.Context, hash node.Hash) (
 		},
 	)
 	if err != nil {
-		if status.Code(err) == codes.NotFound {
+		if invoiceAbsent(err) {
 			return node.Invoice{}, fmt.Errorf("%w: %x",
 				node.ErrUnknownHash, hash)
 		}
@@ -270,17 +270,22 @@ func (r *Remote) Decode(ctx context.Context, invoice string) (node.Decoded,
 		}
 	}
 
-	// An invoice this node would refuse to pay is refused now, while
-	// nothing is held: refused at send time, before the node writes any
-	// payment record, it would leave the swap paying with nothing to look
-	// up. One for the other chain is left to the quote, which says so.
-	if !out.BLAKE2b {
-		if err := remotePayable(req); err != nil {
-			return node.Decoded{}, err
-		}
+	return out, nil
+}
+
+// Payable reports whether this node would pay the invoice, by the checks a
+// stock lnd makes before it records a payment. Asked when quoting, while
+// nothing is held: refused at send time, before the node writes any payment
+// record, the swap would be left paying with nothing to look up.
+func (r *Remote) Payable(ctx context.Context, invoice string) error {
+	req, err := r.main.DecodePayReq(
+		ctx, &lnrpc.PayReqString{PayReq: invoice},
+	)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvoice, err)
 	}
 
-	return out, nil
+	return remotePayable(req)
 }
 
 // remotePayable applies the checks a stock lnd makes before it records a
@@ -859,3 +864,12 @@ func neverDelivered(err error) bool {
 
 // A quote asks the SHA256 node for a route before committing anything.
 var _ node.RouteFinder = (*Remote)(nil)
+
+// invoiceAbsent reports whether a lookup failed because the node has no such
+// invoice. lnd answers NotFound for that, except on a node that has never
+// made an invoice at all, which answers "there are no existing invoices" with
+// no code; a new SHA256 node is one, until its first swap.
+func invoiceAbsent(err error) bool {
+	return status.Code(err) == codes.NotFound ||
+		strings.Contains(err.Error(), "there are no existing invoices")
+}

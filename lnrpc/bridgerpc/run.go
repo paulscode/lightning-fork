@@ -277,7 +277,29 @@ func (s *service) routeQuote(ctx context.Context, invoice string) (*side,
 			sd.name)
 	}
 
+	// An invoice the paying node would refuse (no payment address, AMP,
+	// a required feature it does not know) is refused now, while nothing
+	// is held, rather than left paying a payment that never starts.
+	if p, ok := sd.out.(payable); ok {
+		if err := p.Payable(ctx, invoice); err != nil {
+			if notAnswering(err) {
+				return nil, dec, fmt.Errorf("%w: %w: the paying "+
+					"node is not answering: %w",
+					ErrNoDirection, quote.ErrRefused, err)
+			}
+
+			return nil, dec, fmt.Errorf("%w: the paying node would "+
+				"not pay it: %w", quote.ErrInvalidInvoice, err)
+		}
+	}
+
 	return sd, dec, nil
+}
+
+// payable is a paying node that can say, before quoting, whether it would pay
+// an invoice.
+type payable interface {
+	Payable(ctx context.Context, invoice string) error
 }
 
 // notAnswering reports whether a node failed to answer at all, as opposed to

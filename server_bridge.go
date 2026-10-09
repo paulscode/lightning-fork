@@ -89,6 +89,9 @@ func (s *server) bridgeDeps(
 				&routerrpc.SendPaymentRequest{
 					PaymentRequest: invoice,
 					TimeoutSeconds: 60,
+					// The quote refuses those itself, by
+					// name.
+					AllowSelfPayment: true,
 				},
 			)
 

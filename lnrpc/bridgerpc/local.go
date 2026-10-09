@@ -276,6 +276,20 @@ func (l *Local) Balance(ctx context.Context) (uint64, error) {
 }
 
 // Decode reads a payment request with this node's own decoder.
+// Payable reports whether this node would pay the invoice, by the checks its
+// router makes before it records a payment. Asked when quoting, while nothing
+// is held.
+func (l *Local) Payable(ctx context.Context, invoice string) error {
+	if err := l.ready(); err != nil {
+		return err
+	}
+	if l.deps.CheckPayable == nil {
+		return nil
+	}
+
+	return l.deps.CheckPayable(ctx, invoice)
+}
+
 func (l *Local) Decode(ctx context.Context, invoice string) (node.Decoded,
 	error) {
 
@@ -286,12 +300,6 @@ func (l *Local) Decode(ctx context.Context, invoice string) (node.Decoded,
 	pay, err := l.deps.DecodeInvoice(ctx, invoice)
 	if err != nil {
 		return node.Decoded{}, fmt.Errorf("decoding: %w", err)
-	}
-	if l.deps.CheckPayable != nil {
-		if err := l.deps.CheckPayable(ctx, invoice); err != nil {
-			return node.Decoded{}, fmt.Errorf("this node would not "+
-				"pay the invoice: %w", err)
-		}
 	}
 	if pay == nil {
 		return node.Decoded{}, errors.New("decoding: the node " +

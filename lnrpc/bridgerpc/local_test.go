@@ -617,8 +617,13 @@ func TestLocalNotSentAndUnpayable(t *testing.T) {
 	deps.CheckPayable = func(context.Context, string) error {
 		return errors.New("AMP is not supported")
 	}
-	_, err = NewLocal(deps).Decode(context.Background(), "lnbcrt1x")
-	if err == nil || !strings.Contains(err.Error(), "would not pay") {
+	if _, err := NewLocal(deps).Decode(
+		context.Background(), "lnbcrt1x",
+	); err != nil {
+		t.Fatalf("decoding is not the place for it: %v", err)
+	}
+	err = NewLocal(deps).Payable(context.Background(), "lnbcrt1x")
+	if err == nil || !strings.Contains(err.Error(), "AMP") {
 		t.Fatalf("got %v, want a refusal to quote", err)
 	}
 }

@@ -313,15 +313,21 @@ func TestRemoteCancelIsIdempotentByState(t *testing.T) {
 func TestRemoteLookupInvoiceUnknownHash(t *testing.T) {
 	t.Parallel()
 
-	inv := &fakeInvoices{
-		lookupErr: status.Error(codes.NotFound, "no such invoice"),
-	}
+	// The second is what a node that has never made an invoice answers,
+	// with no code: a new SHA256 node, before its first swap.
+	for _, lookupErr := range []error{
+		status.Error(codes.NotFound, "no such invoice"),
+		status.Error(codes.Unknown, "there are no existing invoices"),
+	} {
+		inv := &fakeInvoices{lookupErr: lookupErr}
 
-	_, err := remote(nil, inv, nil).LookupInvoice(
-		context.Background(), node.Hash(hash8(8)),
-	)
-	if !errors.Is(err, node.ErrUnknownHash) {
-		t.Fatalf("wanted ErrUnknownHash, got %v", err)
+		_, err := remote(nil, inv, nil).LookupInvoice(
+			context.Background(), node.Hash(hash8(8)),
+		)
+		if !errors.Is(err, node.ErrUnknownHash) {
+			t.Fatalf("%v: wanted ErrUnknownHash, got %v", lookupErr,
+				err)
+		}
 	}
 }
 
@@ -396,8 +402,29 @@ func TestRemoteDecode(t *testing.T) {
 				CltvExpiry: -1,
 			},
 		},
-		// What a stock lnd refuses before it records a payment, which
-		// would leave the swap paying with nothing to look up.
+	}
+
+	for _, test := range refusals {
+		t.Run("refuses "+test.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := remote(&fakeMain{payReq: test.req}, nil, nil)
+			if _, err := r.Decode(
+				context.Background(), "lnbc1payme",
+			); err == nil {
+
+				t.Fatal("wanted a refusal")
+			}
+		})
+	}
+
+	// What a stock lnd refuses before it records a payment, which would
+	// leave the swap paying with nothing to look up. Such an invoice still
+	// decodes, so it is routed to its direction and refused by name.
+	unpayable := []struct {
+		name string
+		req  *lnrpc.PayReq
+	}{
 		{
 			name: "no payment address",
 			req: &lnrpc.PayReq{
@@ -427,15 +454,17 @@ func TestRemoteDecode(t *testing.T) {
 		},
 	}
 
-	for _, test := range refusals {
-		t.Run("refuses "+test.name, func(t *testing.T) {
+	for _, test := range unpayable {
+		t.Run("would not pay "+test.name, func(t *testing.T) {
 			t.Parallel()
 
 			r := remote(&fakeMain{payReq: test.req}, nil, nil)
-			if _, err := r.Decode(
-				context.Background(), "lnbc1payme",
-			); err == nil {
-
+			_, err := r.Decode(context.Background(), "lnbc1payme")
+			if err != nil {
+				t.Fatalf("decoding: %v", err)
+			}
+			err = r.Payable(context.Background(), "lnbc1payme")
+			if err == nil {
 				t.Fatal("wanted a refusal")
 			}
 		})
