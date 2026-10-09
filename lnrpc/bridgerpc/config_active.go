@@ -158,7 +158,7 @@ type Config struct {
 	// free: the incoming leg has to outlive the whole budget, so a larger
 	// one demands more incoming CLTV, and past a point no incoming CLTV
 	// within the cap is enough. Validate checks that combination.
-	OutgoingCLTVLimit uint32 `long:"outgoingcltvlimit" description:"The most CLTV a payout route may use, in blocks of the outgoing chain. Must cover the destination's final hop delta plus the hops before it. Default 390 paying on the SHA256 chain, 220 on this one, the largest the timing margins allow."`
+	OutgoingCLTVLimit uint32 `long:"outgoingcltvlimit" description:"The most CLTV a payout route may use, in blocks of the outgoing chain. Must cover the destination's final hop delta plus the hops before it. Default 386 paying on the SHA256 chain, 218 on this one, the largest the timing margins allow."`
 
 	// InventoryTargetMsat is the working balance each paying side is sized
 	// against, in millisatoshis of that side's chain.
@@ -184,7 +184,7 @@ type Config struct {
 
 	// FundedGrace is how long a funded swap may wait to be paid past its
 	// quote's expiry before it is given back.
-	FundedGrace time.Duration `long:"fundedgrace" description:"How long a paid-for swap may wait to be delivered past its quote's expiry before the payer's funds are returned instead. Default 10m."`
+	FundedGrace time.Duration `long:"fundedgrace" description:"How long a paid-for swap may wait to be delivered past its quote's expiry before the payer's funds are returned instead. Default 10m, at most 12m."`
 
 	// MaxUnpaid, MaxInProgress and PerMinute limit each participant: a
 	// caller whose macaroon has a root key of its own. The operator's own
@@ -240,13 +240,13 @@ const DefaultFloorFraction = 10
 // running SurgeFactor faster and the other StallFactor slower, plus an hour.
 //
 // toSHA256 pays on SHA256's Lightning network, where routes commonly need
-// 300-800 blocks; 390 reaches most of it. Each swap is sized to the route its
+// 300-800 blocks; 386 reaches most of it. Each swap is sized to the route its
 // node finds (plus slack), not to the budget, so a short route asks a short
 // hold of the payer. toBLAKE2b pays on this chain, whose blocks the policy
 // lets run four times slower, so less fits.
 const (
-	DefaultOutgoingCLTVLimitToSHA256  = 390
-	DefaultOutgoingCLTVLimitToBLAKE2b = 220
+	DefaultOutgoingCLTVLimitToSHA256  = 386
+	DefaultOutgoingCLTVLimitToBLAKE2b = 218
 )
 
 // DefaultMaxIncomingBlocks caps the CLTV a swap asks of the payer: lnd's
@@ -358,6 +358,14 @@ func (c *Config) resolve() resolved {
 	}
 
 	r.margin.MaxIncomingBlocks = DefaultMaxIncomingBlocks
+
+	// The incoming node gives up on a held invoice this many blocks before
+	// its HTLC expires; never assume fewer than lnd's default, which is
+	// what the SHA256 node (supervised, or an operator's own) runs with.
+	r.margin.HoldExpiryDelta = margin.DefaultHoldExpiryDelta
+	if c.Deps != nil && c.Deps.HoldExpiryDelta > r.margin.HoldExpiryDelta {
+		r.margin.HoldExpiryDelta = c.Deps.HoldExpiryDelta
+	}
 	r.cltvToSHA256 = DefaultOutgoingCLTVLimitToSHA256
 	r.cltvToB2B = DefaultOutgoingCLTVLimitToBLAKE2b
 	if c.OutgoingCLTVLimit != 0 {
@@ -391,6 +399,14 @@ func (c *Config) resolve() resolved {
 	// what the market's own movement adds.
 	r.rate.BaseSpread = 0
 	r.rate.MaxSpread = maxVolatilitySpread
+
+	// A move larger than the fee can widen for is not priced at all: the
+	// breaker trips at the widening's cap. With the breaker at 20% and the
+	// widening capped at 10%, a market pushed 10-19% inside the window was
+	// still quoted, at the pushed price, for whoever pushed it.
+	if r.rate.BreakerMove > maxVolatilitySpread {
+		r.rate.BreakerMove = maxVolatilitySpread
+	}
 
 	both := DefaultFee
 	if c.Spread > 0 {
@@ -504,6 +520,18 @@ func (c *Config) Validate() error {
 	if c.Spread < 0 {
 		return fmt.Errorf("%w: a negative spread (%g) pays people to "+
 			"use the bridge", ErrConfig, c.Spread)
+	}
+
+	// A funded swap waits at most the quote's validity plus this before it
+	// is paid or given back, and the invoice it pays must still be payable
+	// then: it was quoted with MinRemainingLife left. Past that, the payout
+	// is refused by the paying node for an expired invoice.
+	maxGrace := quote.DefaultPolicy.MinRemainingLife -
+		quote.DefaultPolicy.Validity - time.Minute
+	if c.FundedGrace > maxGrace {
+		return fmt.Errorf("%w: fundedgrace %v is longer than the invoice "+
+			"being paid is sure to stay payable; at most %v",
+			ErrConfig, c.FundedGrace, maxGrace)
 	}
 	for _, f := range []struct {
 		name string

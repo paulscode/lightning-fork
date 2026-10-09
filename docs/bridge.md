@@ -89,8 +89,8 @@ seconds, through Tor when this node uses Tor:
   (CoinGecko's, or Neoxa's own BTC_USDC market). If the two are more than 5%
   apart, or the cross-check cannot be read, nothing is quoted.
 - **No market, no quotes.** With no reading in the last 90 seconds, or a
-  ticker that has stopped updating, nothing is quoted. A move of 20% within
-  ten minutes stops quoting for half an hour.
+  ticker that has stopped updating, nothing is quoted. A move of 10% within
+  ten minutes (the most the fee widens for) stops quoting for half an hour.
 - **Your fee is widened by the market's own movement** over the last ten
   minutes, as payers' wallets allow for it.
 - **Just before paying,** the bridge checks the swap again at the rate then. If
@@ -143,10 +143,10 @@ chain are sized to their whole budget, without asking first):
 
 - **Fees:** 0.3% of the payout, and at least 10 sats; it comes out of the fee.
   A payout too small for its fee to cover that is refused.
-- **Time-lock:** at most 390 blocks for a payout on the SHA256 chain (220 on
+- **Time-lock:** at most 386 blocks for a payout on the SHA256 chain (218 on
   this chain), or fewer when the chains' current pace allows less;
   `bridgerpc.outgoingcltvlimit` changes the ceiling for both. A value from
-  an earlier version above about 220 with `toblake2b` on now stops the node
+  an earlier version above about 218 with `toblake2b` on now stops the node
   starting, and says so: lower it, or leave it out.
 
 With no such route the quote is refused (`no_route`) and nothing is held.
@@ -158,10 +158,13 @@ The budgets are the largest the bridge's timing safety allows. The payer's
 hold must outlast the payout even if this chain's blocks come three times
 faster than measured and the SHA256 chain's half again slower (the slowest
 four days in its history, during the 2021 mining ban, ran 1.38 times what
-was measured as they began), plus an hour to settle. The payer's hold is
-capped at 1,776 blocks, leaving room for their own route to the bridge
-inside the 2,016 blocks every lnd allows. SHA256 routes that need more than
-390 blocks cannot be paid; a bridge node with a channel to a well-connected
+was measured as they began), plus an hour to settle. Only the blocks before
+the bridge's node would give up on the payer's held payment count: lnd
+cancels an accepted hold invoice 18 blocks before its HTLC expires (or
+`invoices.holdexpirydelta`, if set higher), so the quote asks the payer for
+those on top. The payer's hold is capped at 1,776 blocks, leaving room for
+their own route to the bridge inside the 2,016 blocks every lnd allows.
+SHA256 routes that need more than 386 blocks cannot be paid; a bridge node with a channel to a well-connected
 peer reaches most destinations in far fewer.
 
 ## Participants

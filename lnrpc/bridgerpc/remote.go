@@ -21,6 +21,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/chainrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/rpcperms"
 	"github.com/paulscode/lightning-fork-bridge/node"
 )
@@ -269,7 +270,41 @@ func (r *Remote) Decode(ctx context.Context, invoice string) (node.Decoded,
 		}
 	}
 
+	// An invoice this node would refuse to pay is refused now, while
+	// nothing is held: refused at send time, before the node writes any
+	// payment record, it would leave the swap paying with nothing to look
+	// up. One for the other chain is left to the quote, which says so.
+	if !out.BLAKE2b {
+		if err := remotePayable(req); err != nil {
+			return node.Decoded{}, err
+		}
+	}
+
 	return out, nil
+}
+
+// remotePayable applies the checks a stock lnd makes before it records a
+// payment: a payment address or blinded paths, no AMP, and no required
+// feature it does not know.
+func remotePayable(req *lnrpc.PayReq) error {
+	if len(req.GetPaymentAddr()) == 0 && len(req.GetBlindedPaths()) == 0 {
+		return errors.New("the invoice has no payment address, which " +
+			"the paying node requires")
+	}
+	for bit, f := range req.GetFeatures() {
+		if bit == uint32(lnwire.AMPRequired) ||
+			bit == uint32(lnwire.AMPOptional) {
+
+			return errors.New("the invoice asks for AMP, which the " +
+				"bridge does not pay")
+		}
+		if f.GetIsRequired() && !f.GetIsKnown() {
+			return fmt.Errorf("the invoice requires feature %d, "+
+				"which the paying node does not know", bit)
+		}
+	}
+
+	return nil
 }
 
 // ForgetInvoice deletes a cancelled invoice on the SHA256 node so its hash can

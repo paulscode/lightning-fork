@@ -2,6 +2,7 @@ package bridgerpc
 
 import (
 	"context"
+	"errors"
 	"net"
 	"time"
 
@@ -20,7 +21,22 @@ import (
 //
 // These are the local node's half of the swap. The bridge needs both halves of
 // both interfaces, and the other half is a SHA256 node reached over gRPC.
+// ErrPaymentNotSent says a payment never left this node: it was refused
+// before the node wrote any record of it, so nothing can be in flight.
+var ErrPaymentNotSent = errors.New("the payment never left this node")
+
 type Deps struct {
+	// CheckPayable reports whether this node would pay an invoice, with
+	// the checks its router makes before it records a payment. Quoting
+	// runs it, so an invoice that would be refused at send time is refused
+	// while nothing is held.
+	CheckPayable func(ctx context.Context, invoice string) error
+
+	// HoldExpiryDelta is this node's invoices.holdexpirydelta: how many
+	// blocks before an accepted hold invoice's HTLC expires the node
+	// cancels it. The timing margins count only the blocks before that.
+	HoldExpiryDelta uint32
+
 	// AddHoldInvoice creates an invoice on this node that will not settle
 	// until told to, and returns the payment request.
 	AddHoldInvoice func(ctx context.Context, req HoldInvoiceRequest) (string,

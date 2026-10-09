@@ -34,6 +34,8 @@ func (s *server) bridgeDeps(
 	routerBackend *routerrpc.RouterBackend) *bridgerpc.Deps {
 
 	return &bridgerpc.Deps{
+		HoldExpiryDelta: s.cfg.Invoices.HoldExpiryDelta,
+
 		AddHoldInvoice: s.addBridgeHoldInvoice,
 
 		LookupInvoice: func(ctx context.Context, hash [32]byte) (
@@ -80,6 +82,17 @@ func (s *server) bridgeDeps(
 			return zpay32.Decode(
 				invoice, s.cfg.ActiveNetParams.Params,
 			)
+		},
+
+		CheckPayable: func(_ context.Context, invoice string) error {
+			_, err := routerBackend.ExtractIntent(
+				&routerrpc.SendPaymentRequest{
+					PaymentRequest: invoice,
+					TimeoutSeconds: 60,
+				},
+			)
+
+			return err
 		},
 
 		PayInvoice: func(ctx context.Context, req bridgerpc.PayRequest) (
@@ -280,10 +293,19 @@ func (s *server) payBridgeInvoice(ctx context.Context,
 		},
 	)
 	if err != nil {
-		return bridgerpc.PaymentStatus{}, err
+		return bridgerpc.PaymentStatus{}, fmt.Errorf("%w: %v",
+			bridgerpc.ErrPaymentNotSent, err)
 	}
 
 	preimage, route, err := s.chanRouter.SendPayment(ctx, intent)
+	if err != nil && !s.bridgePaymentRecorded(ctx, intent.Identifier()) {
+		// The router writes its record before it sends anything, so a
+		// payment it holds no record of after the call has returned
+		// never left: it was refused (a blinded path it could not use,
+		// for one) and nothing is in flight.
+		return bridgerpc.PaymentStatus{}, fmt.Errorf("%w: %v",
+			bridgerpc.ErrPaymentNotSent, err)
+	}
 	if err != nil {
 		// Not a failure, and this is the distinction the whole design
 		// turns on. The router gives up on its own deadline, but an
@@ -308,6 +330,17 @@ func (s *server) payBridgeInvoice(ctx context.Context,
 	}
 
 	return status, nil
+}
+
+// bridgePaymentRecorded reports whether the router holds a record of a
+// payment. Anything but a clear "never initiated" counts as recorded, so a
+// lookup that fails keeps the payment in flight.
+func (s *server) bridgePaymentRecorded(ctx context.Context,
+	hash [32]byte) bool {
+
+	_, err := s.controlTower.FetchPayment(ctx, lntypes.Hash(hash))
+
+	return !errors.Is(err, paymentsdb.ErrPaymentNotInitiated)
 }
 
 // lookupBridgePayment reports what became of a payment, keeping "never seen"

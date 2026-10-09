@@ -77,9 +77,28 @@ func participantOf(ctx context.Context) string {
 // refusal turns an error from quoting into a status a payer can act on: a
 // stable code at the front of the message, then the sentence, and an HTTP
 // status through the REST gateway that says whether to try again.
+//
+// Two kinds of error get a fixed sentence instead of their own. A swap that
+// already exists for the hash belongs to whoever quoted it, so another payer
+// holding the same invoice learns only that it exists, not its state. And an
+// internal error can carry paths and database detail that are the operator's
+// business: it goes to the log, and the payer is told to try later.
 func refusal(err error) error {
 	code := quote.CodeOf(err)
 	msg := string(code) + ": " + err.Error()
+
+	switch code {
+	case quote.CodeInProgress:
+		msg = string(code) + ": " + quote.ErrInProgress.Error()
+	case quote.CodeAlreadyPaid:
+		msg = string(code) + ": " + quote.ErrAlreadyPaid.Error()
+	case quote.CodeNeedsOperator:
+		msg = string(code) + ": " + quote.ErrNeedsOperator.Error()
+	case quote.CodeInternal:
+		log.Errorf("Bridge could not quote: %v", err)
+		msg = string(code) + ": the bridge could not quote this " +
+			"invoice; try again later"
+	}
 
 	switch code {
 	case quote.CodeInProgress, quote.CodeAlreadyPaid,

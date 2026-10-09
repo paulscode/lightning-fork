@@ -6,6 +6,7 @@ package bridgerpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -571,5 +572,53 @@ func TestDecodePassesThroughTheDecoderError(t *testing.T) {
 	_, err := l.Decode(context.Background(), "lnbcrt1nope")
 	if err == nil || !strings.Contains(err.Error(), "checksum failed") {
 		t.Fatalf("wanted the decoder's own error, got %v", err)
+	}
+}
+
+// TestLocalNotSentAndUnpayable: a payment the node refused before recording it
+// is reported as never sent, so the swap goes back to funded rather than
+// staying paying with nothing to look up; and an invoice the node would
+// refuse to pay is refused when quoted, while nothing is held.
+func TestLocalNotSentAndUnpayable(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeNode{synced: true}
+	f.payErr = fmt.Errorf("%w: no payment address", ErrPaymentNotSent)
+	deps := f.deps()
+	_, err := NewLocal(deps).Pay(context.Background(), node.PayRequest{
+		Invoice: "lnbcrt1x", CLTVLimit: 40, Timeout: time.Minute,
+	})
+	if !errors.Is(err, node.ErrNotSent) {
+		t.Fatalf("got %v, want ErrNotSent", err)
+	}
+
+	// Any other failure is not proof that nothing left.
+	f.payErr = errors.New("the router gave up")
+	_, err = NewLocal(f.deps()).Pay(context.Background(), node.PayRequest{
+		Invoice: "lnbcrt1x", CLTVLimit: 40, Timeout: time.Minute,
+	})
+	if err == nil || errors.Is(err, node.ErrNotSent) {
+		t.Fatalf("got %v, want an error that is not ErrNotSent", err)
+	}
+
+	// Quoting asks whether the node would pay at all.
+	deps = f.deps()
+	deps.DecodeInvoice = func(context.Context, string) (*zpay32.Invoice,
+		error) {
+
+		amt := lnwire.MilliSatoshi(1000)
+		hash := [32]byte{1}
+
+		return &zpay32.Invoice{
+			PaymentHash: &hash, MilliSat: &amt,
+			Timestamp: time.Now(),
+		}, nil
+	}
+	deps.CheckPayable = func(context.Context, string) error {
+		return errors.New("AMP is not supported")
+	}
+	_, err = NewLocal(deps).Decode(context.Background(), "lnbcrt1x")
+	if err == nil || !strings.Contains(err.Error(), "would not pay") {
+		t.Fatalf("got %v, want a refusal to quote", err)
 	}
 }

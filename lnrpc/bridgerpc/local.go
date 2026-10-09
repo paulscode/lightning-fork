@@ -287,6 +287,12 @@ func (l *Local) Decode(ctx context.Context, invoice string) (node.Decoded,
 	if err != nil {
 		return node.Decoded{}, fmt.Errorf("decoding: %w", err)
 	}
+	if l.deps.CheckPayable != nil {
+		if err := l.deps.CheckPayable(ctx, invoice); err != nil {
+			return node.Decoded{}, fmt.Errorf("this node would not "+
+				"pay the invoice: %w", err)
+		}
+	}
 	if pay == nil {
 		return node.Decoded{}, errors.New("decoding: the node " +
 			"returned nothing")
@@ -357,6 +363,11 @@ func (l *Local) Pay(ctx context.Context, req node.PayRequest) (node.Payment,
 		CLTVLimit:  req.CLTVLimit,
 		Timeout:    req.Timeout,
 	})
+	if errors.Is(err, ErrPaymentNotSent) {
+		// Refused before the node recorded it: the swap can go back to
+		// funded and be decided again.
+		return node.Payment{}, fmt.Errorf("%w: %v", node.ErrNotSent, err)
+	}
 	if err != nil {
 		return node.Payment{}, fmt.Errorf("sending: %w", err)
 	}

@@ -494,3 +494,32 @@ func TestTheCLTVBudgetsAreTheLargestThatFit(t *testing.T) {
 			"inside lnd's 2016 blocks")
 	}
 }
+
+// A funded swap may not wait so long that the invoice it pays has expired:
+// the grace is capped below that invoice's guaranteed life.
+func TestFundedGraceStaysInsideTheInvoicesLife(t *testing.T) {
+	t.Parallel()
+
+	c := usable()
+	c.FundedGrace = 12 * time.Minute
+	if err := c.Validate(); err != nil {
+		t.Fatalf("12 minutes should be accepted: %v", err)
+	}
+	c.FundedGrace = 13 * time.Minute
+	if err := c.Validate(); !errors.Is(err, ErrConfig) {
+		t.Fatalf("13 minutes should be refused, got %v", err)
+	}
+}
+
+// The price breaker trips no later than the fee stops widening, so a move the
+// fee cannot cover is never quoted.
+func TestTheBreakerTripsWhereTheFeeStopsWidening(t *testing.T) {
+	t.Parallel()
+
+	c := usable()
+	r := c.resolve()
+	if r.rate.BreakerMove > r.rate.MaxSpread {
+		t.Fatalf("breaker at %g, fee widening capped at %g",
+			r.rate.BreakerMove, r.rate.MaxSpread)
+	}
+}

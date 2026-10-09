@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -280,6 +281,30 @@ func TestRefusalsCarryTheirCode(t *testing.T) {
 	}
 }
 
+// TestRefusalsKeepOthersDetailsOut: a payer asking about a hash someone else
+// quoted learns neither the swap's state nor the hash echoed back, and an
+// internal error's detail stays in the log.
+func TestRefusalsKeepOthersDetailsOut(t *testing.T) {
+	t.Parallel()
+
+	cases := []error{
+		fmt.Errorf("%w: %w: %w: %x is %v", quote.ErrRefused,
+			quote.ErrDuplicate, quote.ErrInProgress, []byte{0xab, 0xcd},
+			"paying"),
+		fmt.Errorf("%w: %w: %w: %x", quote.ErrRefused,
+			quote.ErrDuplicate, quote.ErrNeedsOperator, []byte{0xab, 0xcd}),
+		fmt.Errorf("opening /secret/bridge.db: paying"),
+	}
+	for _, c := range cases {
+		msg := status.Convert(refusal(c)).Message()
+		if strings.Contains(msg, "abcd") || strings.Contains(msg, "paying") ||
+			strings.Contains(msg, "/secret") {
+
+			t.Errorf("%v: payer sees %q", c, msg)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Direction by chain, and the adapters that report it.
 // ---------------------------------------------------------------------------
@@ -405,7 +430,8 @@ func TestRemoteDecodeReadsTheChainBit(t *testing.T) {
 				PaymentHash: hex.EncodeToString(make([]byte, 32)),
 				NumMsat:     1000, CltvExpiry: 40,
 				Timestamp: time.Now().Unix(), Expiry: 3600,
-				Features: c.features,
+				Features:    c.features,
+				PaymentAddr: make([]byte, 32),
 			}}
 			got, err := remote(m, nil, nil).Decode(
 				context.Background(), "lnbc1x",

@@ -339,6 +339,7 @@ func TestRemoteDecode(t *testing.T) {
 			PaymentHash: hexHash, NumMsat: 150_000,
 			CltvExpiry: 80, Timestamp: created.Unix(),
 			Expiry: 600, Destination: "02aa", Description: "swap",
+			PaymentAddr: make([]byte, 32),
 		}}, nil, nil)
 
 		got, err := r.Decode(context.Background(), "lnbc1payme")
@@ -393,6 +394,35 @@ func TestRemoteDecode(t *testing.T) {
 			req: &lnrpc.PayReq{
 				PaymentHash: hexHash, NumMsat: 1000,
 				CltvExpiry: -1,
+			},
+		},
+		// What a stock lnd refuses before it records a payment, which
+		// would leave the swap paying with nothing to look up.
+		{
+			name: "no payment address",
+			req: &lnrpc.PayReq{
+				PaymentHash: hexHash, NumMsat: 1000,
+			},
+		},
+		{
+			name: "AMP",
+			req: &lnrpc.PayReq{
+				PaymentHash: hexHash, NumMsat: 1000,
+				PaymentAddr: make([]byte, 32),
+				Features: map[uint32]*lnrpc.Feature{
+					30: {Name: "amp", IsRequired: true,
+						IsKnown: true},
+				},
+			},
+		},
+		{
+			name: "an unknown required feature",
+			req: &lnrpc.PayReq{
+				PaymentHash: hexHash, NumMsat: 1000,
+				PaymentAddr: make([]byte, 32),
+				Features: map[uint32]*lnrpc.Feature{
+					100: {IsRequired: true, IsKnown: false},
+				},
 			},
 		},
 	}
