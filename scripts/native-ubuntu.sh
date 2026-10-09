@@ -261,10 +261,13 @@ check_knots() {
 		warn "set BITCOIN_DIR to Knots' data directory, or BITCOIND_RPCUSER/BITCOIND_RPCPASS (see docs/native-ubuntu.md)"
 		return 1
 	fi
+	# The login goes to curl on stdin, not its command line, where any user
+	# on the machine could read it while it runs.
 	local reply
-	reply=$(curl -s -u "$auth" -H 'content-type: text/plain' \
-		--data '{"jsonrpc":"1.0","id":"lf","method":"getblockcount","params":[]}' \
-		"http://$BITCOIND_RPCHOST/" || true)
+	reply=$(printf 'user = "%s"\n' "$(printf '%s' "$auth" | sed 's/\\/\\\\/g; s/"/\\"/g')" |
+		curl -s -K - -H 'content-type: text/plain' \
+			--data '{"jsonrpc":"1.0","id":"lf","method":"getblockcount","params":[]}' \
+			"http://$BITCOIND_RPCHOST/" || true)
 	case "$reply" in
 	*'"result":'[0-9]*) ok "RPC at $BITCOIND_RPCHOST answers with these credentials" ;;
 	*)
@@ -307,7 +310,8 @@ step_configure() {
 		return
 	fi
 	run mkdir -p "$LND_DIR"
-	write_conf "$conf"
+	# Readable by you only from the start: it can hold the RPC password.
+	(umask 077 && write_conf "$conf")
 	run chmod 600 "$conf"
 	ok "wrote $conf"
 	next_steps
@@ -552,10 +556,16 @@ step_dashboard() {
 		rm -rf "$tmp"
 	fi
 	ok "$("$bin/rclone" version | head -1)"
-	run curl -fsSL -o "$bin/backup-agent.sh" "https://raw.githubusercontent.com/paulscode/lightning-fork-startos/$ref/backup-agent.sh"
-	echo "$agent_sum  $bin/backup-agent.sh" | sha256sum -c --quiet ||
+	# Checked before it takes the place of the one the dashboard runs.
+	local agent
+	agent=$(mktemp)
+	run curl -fsSL -o "$agent" "https://raw.githubusercontent.com/paulscode/lightning-fork-startos/$ref/backup-agent.sh"
+	echo "$agent_sum  $agent" | sha256sum -c --quiet || {
+		rm -f "$agent"
 		die "backup-agent.sh does not match the checksum the dashboard pins"
-	chmod 755 "$bin/backup-agent.sh"
+	}
+	run install -m 755 "$agent" "$bin/backup-agent.sh"
+	rm -f "$agent"
 	ok "backup-agent.sh at $ref"
 
 	say "Dashboard settings"

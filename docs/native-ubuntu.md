@@ -244,7 +244,8 @@ From then on:
   a change. Keep editing `lnd.conf` for anything else, then run
   `systemctl --user restart lightning-fork-dashboard` so it rebuilds the file.
 - The sign-in password is in `~/.config/lightning-fork/dashboard-password.json`;
-  edit it there to change it.
+  edit it there to change it. A new password signs out every browser and
+  unpairs every phone, so pair your phone again afterwards.
 - `sudo loginctl enable-linger $USER` keeps both running after you log out
   and across reboots.
 
