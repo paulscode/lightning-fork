@@ -324,12 +324,27 @@ The opt-in is on by default and cannot be turned off on mainnet
 for interoperability testing; a development build, which does not opt in,
 refuses to start on mainnet). The hash type comes from the chain, not from
 the request: a PSBT input that declares nothing or one of the usual
-defaults is signed with the opt-in, whether the wallet funds it, signs it,
-or finalizes it, with a local or a remote signer. A PSBT or funding
+defaults is signed with the opt-in, and one that declares any other hash type
+(`SIGHASH_ALL|ANYONECANPAY`, `NONE`, `SINGLE`) has the bit added, which keeps
+what it commits to. That holds whether the wallet funds it, signs it, or
+finalizes it, and whether the input carries a witness UTXO or only the
+transaction it spends; what the wallet has signed is checked again before it
+is handed back. In a PSBT workflow the party declaring a hash type is often
+the counterparty, and a declaration without the bit would otherwise get it a
+signature replayable on the SHA256d chain. A PSBT or funding
 transaction that arrives with signatures made elsewhere without the bit,
 partial or already finalized, is refused, since the whole transaction
 would be replayable; `--bitcoin.allow-legacy-sighash` overrides that for an
 operator who knows the coins exist on one chain only.
+
+A node used as the remote signer for a watch-only Lightning Fork must run with
+`--bitcoin.allow-legacy-sighash`. The watch-only node decides every hash type,
+and asks for the legacy one on purpose in two places: the justice signatures
+it hands a watchtower, and the commitment signatures of a channel opened
+without `option_unified_sigs`. A signer that raised those to the unified hash
+would return signatures over a digest nobody checks against, so the watch-only
+node compares the hash type of every signature it gets back with the one it
+asked for, and refuses a mismatch with a message that names this option.
 
 Two things stay as they were. Bare and P2SH inputs, which the wallet never
 hands out addresses for, are signed with `SIGHASH_ALL`: the legacy signer
@@ -376,8 +391,10 @@ not fund it, as BOLT 2 requires of a node following these rules: once the
 funding confirms, `funding/manager.go` forgets the channel and tells the peer,
 the way it does when a funding never confirms. For the whole relay wait no
 commitment transaction of such a channel could be broadcast while its HTLCs
-expired, and the node not funding it has nothing in it to lose. Zero-conf
-channels are exempt, since they already rest on trust in the funder.
+expired, and the node not funding it has nothing in it to lose, unless the
+funder pushed it an amount at opening (`push_amt`), which it gives up with the
+channel. Zero-conf channels are exempt, since they already rest on trust in
+the funder.
 
 As the funder, the coinbase is this node's own, and `funding/manager.go`
 waits the relay depth, not the consensus depth, before marking the channel

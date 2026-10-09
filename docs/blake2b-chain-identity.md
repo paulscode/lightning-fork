@@ -176,8 +176,10 @@ named or implicit, whenever both peers support it. Simple taproot channels are
 the exception: a taproot channel type carrying the opt-in is refused, because
 there the commitment signature is a MuSig2 partial signature over a BIP341
 digest, so opting in would be a wire change rather than a hash type, and two
-sides would sign different digests. A taproot channel without it can still be
-opened where `--protocol.simple-taproot-chans` is set.
+sides would sign different digests. Since BOLT 2 requires the opt-in on every
+new channel, a taproot channel can no longer be opened or accepted by a node
+that signs under it, `--protocol.simple-taproot-chans` or not; one opened
+earlier keeps working.
 
 A channel type without the opt-in does not make a channel this node funds
 replayable, whatever coins paid for it: the funding inputs are signed with the
