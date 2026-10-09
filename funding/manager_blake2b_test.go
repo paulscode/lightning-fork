@@ -252,42 +252,40 @@ func TestRequireBlake2bPeerOffByDefault(t *testing.T) {
 	)
 }
 
-// TestAcceptChannelUnpromptedUnifiedSigs checks that a funder which proposed
-// no channel type refuses an accept_channel whose type carries
-// option_unified_sigs. Without explicit negotiation the reservation signs the
-// ordinary way; a peer signing under the unified hash could never produce a
-// signature it accepts. Only a node that does not sign under the unified hash
-// opens without a type at all (see TestRequireUnifiedSigsOnOpen), so that is
-// the node here.
+// TestAcceptChannelUnpromptedUnifiedSigs checks that a funder refuses an
+// accept_channel whose type differs from the one it proposed in the unified
+// bit: a reservation made for a type without option_unified_sigs signs the
+// ordinary way, and a peer signing under the unified hash could never produce
+// a signature it accepts. Every open carries an explicit type (BOLT 2), and
+// the reply must echo it exactly, so a reply that adds the bit, even or odd,
+// or that names no type, is refused. Only a node that does not sign under the
+// unified hash proposes a type without the bit, so that is the node here.
 func TestAcceptChannelUnpromptedUnifiedSigs(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		name    string
-		reply   *lnwire.RawFeatureVector
+		extra   []lnwire.FeatureBit
+		noType  bool
 		refused bool
 	}{
 		{
-			// BOLT 2: no type proposed, none echoed.
-			name:    "no type",
+			name:    "the type echoed",
 			refused: false,
 		},
 		{
-			name: "type with unified sigs",
-			reply: lnwire.NewRawFeatureVector(
-				lnwire.StaticRemoteKeyRequired,
-				lnwire.AnchorsZeroFeeHtlcTxRequired,
-				lnwire.UnifiedSigsRequired,
-			),
+			name:    "no type echoed",
+			noType:  true,
 			refused: true,
 		},
 		{
-			name: "type with the odd unified bit",
-			reply: lnwire.NewRawFeatureVector(
-				lnwire.StaticRemoteKeyRequired,
-				lnwire.AnchorsZeroFeeHtlcTxRequired,
-				lnwire.UnifiedSigsOptional,
-			),
+			name:    "type with unified sigs",
+			extra:   []lnwire.FeatureBit{lnwire.UnifiedSigsRequired},
+			refused: true,
+		},
+		{
+			name:    "type with the odd unified bit",
+			extra:   []lnwire.FeatureBit{lnwire.UnifiedSigsOptional},
 			refused: true,
 		},
 	} {
@@ -299,11 +297,11 @@ func TestAcceptChannelUnpromptedUnifiedSigs(t *testing.T) {
 				tearDownFundingManagers(t, alice, bob)
 			})
 
-			// Neither side signs under the unified hash nor
-			// negotiates channel types explicitly, so Alice
-			// proposes no type and her reservation signs the
-			// ordinary way.
+			// Neither side signs under the unified hash, so Alice
+			// proposes a type without the bit and her reservation
+			// signs the ordinary way.
 			featureBits := []lnwire.FeatureBit{
+				lnwire.ExplicitChannelTypeOptional,
 				lnwire.StaticRemoteKeyOptional,
 				lnwire.AnchorsZeroFeeHtlcTxOptional,
 				lnwire.Blake2bRequired,
@@ -324,7 +322,11 @@ func TestAcceptChannelUnpromptedUnifiedSigs(t *testing.T) {
 				Err: make(chan error, 1),
 			})
 			open := expectOpenChannelMsg(t, alice.msgChan)
-			require.Nil(t, open.ChannelType)
+			require.NotNil(t, open.ChannelType)
+			proposed := lnwire.RawFeatureVector(*open.ChannelType)
+			require.False(
+				t, proposed.IsSet(lnwire.UnifiedSigsRequired),
+			)
 
 			bob.fundingMgr.ProcessFundingMsg(open, alice)
 			accept, ok := assertFundingMsgSent(
@@ -332,8 +334,16 @@ func TestAcceptChannelUnpromptedUnifiedSigs(t *testing.T) {
 			).(*lnwire.AcceptChannel)
 			require.True(t, ok)
 
-			// Bob's reply names a type anyway, or none.
-			accept.ChannelType = (*lnwire.ChannelType)(tc.reply)
+			// Bob's reply: the proposed type, with a bit added, or
+			// none.
+			reply := proposed.Clone()
+			for _, bit := range tc.extra {
+				reply.Set(bit)
+			}
+			accept.ChannelType = (*lnwire.ChannelType)(reply)
+			if tc.noType {
+				accept.ChannelType = nil
+			}
 			alice.fundingMgr.ProcessFundingMsg(accept, bob)
 
 			if tc.refused {
@@ -546,10 +556,13 @@ func TestRequireUnifiedSigsOnOpen(t *testing.T) {
 		remote: withoutUnified,
 		opens:  false,
 	}, {
-		name:   "no explicit channel types",
+		// A peer that does not advertise option_channel_type still
+		// gets an explicit type, which BOLT 2 now requires of every
+		// open, and so the bit.
+		name:   "no option_channel_type",
 		local:  noExplicit,
 		remote: noExplicit,
-		opens:  false,
+		opens:  true,
 	}, {
 		name:     "a taproot type",
 		local:    withUnified,
@@ -667,17 +680,16 @@ func TestRequireUnifiedSigsOnOpen(t *testing.T) {
 	}
 }
 
-// TestRequireUnifiedSigsImplicitProposal checks the fundee against a peer that
-// leaves out option_channel_type yet proposes the implicit default type with
-// option_unified_sigs set: negotiation then falls back to no explicit type,
-// whose reservation would sign the ordinary way, so the open is refused.
-func TestRequireUnifiedSigsImplicitProposal(t *testing.T) {
+// TestRequireUnifiedSigsWithoutChannelTypeFeature checks the fundee against a
+// peer that does not advertise option_channel_type. Before BOLT 2 made the
+// channel type mandatory, such a peer's proposal was negotiated implicitly,
+// with no type, so a reservation for a type carrying option_unified_sigs
+// would have signed the ordinary way; that was refused. Every open now
+// carries an explicit type, negotiated as proposed: with the bit, the channel
+// is accepted and its reservation signs under the unified hash, as the type
+// says; without it, the open is refused.
+func TestRequireUnifiedSigsWithoutChannelTypeFeature(t *testing.T) {
 	t.Parallel()
-
-	alice, bob := setupFundingManagers(t)
-	t.Cleanup(func() {
-		tearDownFundingManagers(t, alice, bob)
-	})
 
 	// Alice's features: no option_channel_type, but the unified bit.
 	attacker := []lnwire.FeatureBit{
@@ -691,34 +703,77 @@ func TestRequireUnifiedSigsImplicitProposal(t *testing.T) {
 		lnwire.ExplicitChannelTypeOptional,
 	}, attacker...)
 
-	// The harness reads a node's own features from the peer it handles.
-	// Alice's funding manager is run without the unified bit so that it
-	// sends the open at all; the message is then shaped as an attacker
-	// would shape it, and Bob sees her advertise the bit.
-	bob.localFeatures = attacker[:3]
-	bob.remoteFeatures = honest
-	alice.localFeatures = honest
-	alice.remoteFeatures = attacker
+	for _, tc := range []struct {
+		name    string
+		bits    []lnwire.FeatureBit
+		accepts bool
+	}{{
+		name: "with the unified bit",
+		bits: []lnwire.FeatureBit{
+			lnwire.StaticRemoteKeyRequired,
+			lnwire.AnchorsZeroFeeHtlcTxRequired,
+			lnwire.UnifiedSigsRequired,
+		},
+		accepts: true,
+	}, {
+		name: "without it",
+		bits: []lnwire.FeatureBit{
+			lnwire.StaticRemoteKeyRequired,
+			lnwire.AnchorsZeroFeeHtlcTxRequired,
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	alice.fundingMgr.InitFundingWorkflow(&InitFundingMsg{
-		Peer:            bob,
-		TargetPubkey:    bob.privKey.PubKey(),
-		ChainHash:       *fundingNetParams.GenesisHash,
-		LocalFundingAmt: 500000,
-		Private:         true,
-		Updates:         make(chan *lnrpc.OpenStatusUpdate),
-		Err:             make(chan error, 1),
-	})
-	open := expectOpenChannelMsg(t, alice.msgChan)
+			alice, bob := setupFundingManagers(t)
+			t.Cleanup(func() {
+				tearDownFundingManagers(t, alice, bob)
+			})
 
-	// The proposal is the implicit default, with the bit.
-	proposed := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
-		lnwire.StaticRemoteKeyRequired,
-		lnwire.AnchorsZeroFeeHtlcTxRequired,
-		lnwire.UnifiedSigsRequired,
-	))
-	open.ChannelType = &proposed
+			// The harness reads a node's own features from the
+			// peer it handles. Alice's funding manager is run
+			// without the unified bit so that it sends the open at
+			// all; the message is then shaped as such a peer would
+			// shape it, and Bob sees her advertise the bit.
+			bob.localFeatures = attacker[:3]
+			bob.remoteFeatures = honest
+			alice.localFeatures = honest
+			alice.remoteFeatures = attacker
 
-	bob.fundingMgr.ProcessFundingMsg(open, alice)
-	assertFundingMsgSent(t, bob.msgChan, "Error")
+			alice.fundingMgr.InitFundingWorkflow(&InitFundingMsg{
+				Peer:            bob,
+				TargetPubkey:    bob.privKey.PubKey(),
+				ChainHash:       *fundingNetParams.GenesisHash,
+				LocalFundingAmt: 500000,
+				Private:         true,
+				Updates: make(
+					chan *lnrpc.OpenStatusUpdate,
+				),
+				Err: make(chan error, 1),
+			})
+			open := expectOpenChannelMsg(t, alice.msgChan)
+
+			proposed := lnwire.ChannelType(
+				*lnwire.NewRawFeatureVector(tc.bits...),
+			)
+			open.ChannelType = &proposed
+
+			bob.fundingMgr.ProcessFundingMsg(open, alice)
+			if !tc.accepts {
+				assertFundingMsgSent(t, bob.msgChan, "Error")
+				return
+			}
+
+			// Accepted with exactly the proposed type, the bit
+			// included, so both sides sign under the unified hash.
+			accept, ok := assertFundingMsgSent(
+				t, bob.msgChan, "AcceptChannel",
+			).(*lnwire.AcceptChannel)
+			require.True(t, ok)
+			require.NotNil(t, accept.ChannelType)
+			echoed := lnwire.RawFeatureVector(*accept.ChannelType)
+			want := lnwire.RawFeatureVector(proposed)
+			require.True(t, echoed.Equals(&want))
+		})
+	}
 }

@@ -1,4 +1,4 @@
-FROM golang:1.26.8
+FROM golang:1.27.1
 
 RUN apt-get update && apt-get install -y git
 ENV GOCACHE=/tmp/build/.cache

@@ -483,6 +483,7 @@ func (d *DB) Path() string {
 
 var dbTopLevelBuckets = [][]byte{
 	openChannelBucket,
+	fwdResponseBucketKey,
 	closedChannelBucket,
 	forwardingLogBucket,
 	fwdPackagesKey,

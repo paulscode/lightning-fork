@@ -172,7 +172,7 @@ produces a transaction that is valid and malleable by a third party.
 
 The opt-in is not a property of the commitment type, and is not the
 operator's to choose: it is added to whatever channel type is negotiated,
-named or implicit, whenever both peers support it. Simple taproot channels are
+named or chosen by default, whenever both peers support it. Simple taproot channels are
 the exception: a taproot channel type carrying the opt-in is refused, because
 there the commitment signature is a MuSig2 partial signature over a BIP341
 digest, so opting in would be a wire change rather than a hash type, and two

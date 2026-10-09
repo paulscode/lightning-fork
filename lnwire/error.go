@@ -35,6 +35,18 @@ const (
 	// Numbered well clear of upstream's, which takes the next ones in
 	// order (0.21.4 adds 3 and 4); only the text goes on the wire.
 	ErrPeerNotBlake2b FundingError = 200
+
+	// ErrChanTypeRequired is returned by a remote peer that receives a
+	// FundingOpen request which doesn't specify an explicit channel type,
+	// as mandated by BOLT-02.
+	ErrChanTypeRequired FundingError = 3
+
+	// ErrChanTypeDeprecated is returned by a remote peer that receives a
+	// FundingOpen request for the legacy commitment type, which it no
+	// longer opens. It is kept terse on purpose: which type the peer
+	// should use instead is our local policy, not something the remote can
+	// act on.
+	ErrChanTypeDeprecated FundingError = 4
 )
 
 // String returns a human readable version of the target FundingError.
@@ -46,6 +58,10 @@ func (e FundingError) String() string {
 		return "channel too large"
 	case ErrPeerNotBlake2b:
 		return "peer does not set option_blake2b"
+	case ErrChanTypeRequired:
+		return "channel type required"
+	case ErrChanTypeDeprecated:
+		return "channel type deprecated"
 	default:
 		return "unknown error"
 	}
