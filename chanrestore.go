@@ -80,10 +80,10 @@ func (e *ErrBackupWrongChain) Error() string {
 // It is not a way onto this node for a channel from the chain that did not
 // upgrade: that chain never advertised these values, and its backups carry the
 // shared genesis hash, which is now also ours. What keeps such a channel off
-// this node is the peer: re-establishing it needs a peer that sets
-// option_blake2b (bit 512), and a funding output that exists on this chain,
-// which a channel funded after the activation by a node without these rules
-// does not have.
+// this node is the peer: this node's init requires option_blake2b (bit 512),
+// so a peer without these rules disconnects before any re-establish, and the
+// funding output must exist on this chain, which a channel funded after the
+// activation by a node without these rules does not have.
 func checkBackupChain(ours chainhash.Hash,
 	backups ...chanbackup.Single) error {
 

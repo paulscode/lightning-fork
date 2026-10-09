@@ -181,7 +181,9 @@ func psbtSpentOutput(packet *psbt.Packet, i int) *wire.TxOut {
 // CheckPsbtInputsSigHashOptIn checks the given inputs of a packet as
 // CheckPsbtSigHashOptIn checks every input: it is run on the inputs a wallet
 // has just signed, so that a signature of its own that does not opt in is
-// never handed back, whatever other signers put in the packet.
+// never handed back. Every signature on those inputs is checked, a
+// co-signer's already there included, so an input another signer has signed
+// without the opt-in is refused here, as finalizing it would be.
 func CheckPsbtInputsSigHashOptIn(packet *psbt.Packet, indices []uint32) error {
 	if !UnifiedSigHash() || AllowLegacySigHash() {
 		return nil
@@ -377,12 +379,20 @@ func witnessSigHashTypes(witness wire.TxWitness) []txscript.SigHashType {
 
 // schnorrSigHashType returns the hash type of an element shaped like a
 // Schnorr signature: 64 bytes is SIGHASH_DEFAULT, 65 carries a trailing byte.
+// A 65-byte element ending in 0x00 is not one: BIP 341 makes an explicit
+// SIGHASH_DEFAULT byte invalid, so it can only be data a script pushes, and
+// reading it as a signature would refuse a valid spend.
 func schnorrSigHashType(elem []byte) (txscript.SigHashType, bool) {
 	switch len(elem) {
 	case schnorr.SignatureSize:
 		return txscript.SigHashDefault, true
 	case schnorr.SignatureSize + 1:
-		return txscript.SigHashType(elem[schnorr.SignatureSize]), true
+		hashType := txscript.SigHashType(elem[schnorr.SignatureSize])
+		if hashType == txscript.SigHashDefault {
+			return 0, false
+		}
+
+		return hashType, true
 	}
 
 	return 0, false

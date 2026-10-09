@@ -5228,6 +5228,26 @@ func TestFundingManagerCoinbase(t *testing.T) {
 		t.Fatalf("bob sent an open channel event")
 	default:
 	}
+
+	// At the height the coinbase can be spent, Alice marks the channel
+	// open and sends channel_ready, which Bob, having forgotten the
+	// channel, will not answer. The funding confirmed at height 1, so
+	// that height is the relay coinbase maturity.
+	maturityHeight := int32(chainreg.BitcoinRegTestNetParams.Params.
+		RelayCoinbaseMaturity())
+	alice.mockNotifier.epochChan <- &chainntnfs.BlockEpoch{
+		Height: maturityHeight,
+	}
+	select {
+	case <-alice.mockChanEvent.openEvent:
+	case <-time.After(time.Second * 5):
+		t.Fatalf("alice did not send open channel event")
+	}
+	assertDatabaseState(t, alice, fundingOp, markedOpen)
+	_, ok = assertFundingMsgSent(
+		t, alice.msgChan, "ChannelReady",
+	).(*lnwire.ChannelReady)
+	require.True(t, ok)
 }
 
 // TestMapGossipError verifies that mapGossipError correctly translates gossip

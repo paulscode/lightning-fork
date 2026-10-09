@@ -286,7 +286,8 @@ node does not sign: one signed elsewhere without the bit and let through with
 outside this node and is never checked here.
 
 Simple taproot channels, which are off by default (`--protocol.simple-taproot-chans`),
-never carry `option_unified_sigs`. Their commitment and closing signatures are
+never carry `option_unified_sigs`, and neither does the taproot overlay type
+Taproot Assets channels use. Their commitment and closing signatures are
 MuSig2 partial signatures under `SIGHASH_DEFAULT`, which has no hash type byte
 to carry the bit, and opting them in would be a change to the wire format that
 nobody has specified. Under the requirement above a node that signs under the
@@ -345,6 +346,13 @@ without `option_unified_sigs`. A signer that raised those to the unified hash
 would return signatures over a digest nobody checks against, so the watch-only
 node compares the hash type of every signature it gets back with the one it
 asked for, and refuses a mismatch with a message that names this option.
+
+The option turns the PSBT opt-in off for everything that node signs, not only
+for what the watch-only node asks: its own `FundPsbt`, `SignPsbt` and
+`FinalizePsbt` calls sign with whatever hash type a PSBT declares, plain
+`SIGHASH_ALL` included, and those transactions are replayable on the SHA256d
+chain. Keep a remote signer for signing only, and spend from the watch-only
+node, whose sends opt in before they reach the signer.
 
 Two things stay as they were. Bare and P2SH inputs, which the wallet never
 hands out addresses for, are signed with `SIGHASH_ALL`: the legacy signer

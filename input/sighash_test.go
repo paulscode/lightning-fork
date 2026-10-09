@@ -360,6 +360,16 @@ func TestWitnessSigHashTypesTaproot(t *testing.T) {
 	require.Equal(t, []txscript.SigHashType{0x01},
 		witnessSigHashTypes(wire.TxWitness{derSig(0x01), script, control}))
 
+	// A 65-byte push ending in 0x00 can't be a signature (BIP 341), so a
+	// script-path spend carrying one as data, beside a unified signature,
+	// passes.
+	data65 := append(append([]byte{0x04}, make([]byte, 63)...), 0x00)
+	sigUnified := append(make([]byte, 64), 0x21)
+	require.Equal(t, []txscript.SigHashType{0x21},
+		witnessSigHashTypes(wire.TxWitness{
+			sigUnified, data65, script, control,
+		}))
+
 	// The script-path signatures are refused by the transaction check.
 	tx := wire.NewMsgTx(2)
 	tx.AddTxIn(&wire.TxIn{Witness: wire.TxWitness{sig64, script, control}})

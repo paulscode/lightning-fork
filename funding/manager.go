@@ -3186,14 +3186,15 @@ func fundingTimeoutApplies(ch *channeldb.OpenChannel) bool {
 // fundingInChain reports whether a channel's funding output is in the chain,
 // confirmed and unspent, according to the chain backend.
 //
-// It is asked when a fundee's funding timeout falls due. A channel funded by
-// a coinbase stays pending for the whole of the coinbase maturity, thousands
-// of blocks under the long rule, so a restart in that window starts the
-// timeout again with the tip already past it, and it could fire before the
-// confirmation lookup answered: the fundee would forget a channel whose
-// funding had confirmed long before. Asking the chain rather than trusting a
-// stored confirmation height keeps the timeout for a funding that a reorg
-// took out, or that was double spent while the node was down.
+// It is asked when a fundee's funding timeout falls due. After a restart the
+// timeout can start again with the tip already past it, and fire before the
+// confirmation lookup has answered: the fundee would forget a channel whose
+// funding had confirmed long before. (A fundee no longer waits out a
+// coinbase's maturity, which made that window thousands of blocks long: it
+// refuses a coinbase-funded channel once it confirms.) Asking the chain
+// rather than trusting a stored confirmation height keeps the timeout for a
+// funding that a reorg took out, or that was double spent while the node was
+// down.
 func (f *Manager) fundingInChain(ch *channeldb.OpenChannel) bool {
 	pkScript, err := MakeFundingScript(ch)
 	if err != nil {
