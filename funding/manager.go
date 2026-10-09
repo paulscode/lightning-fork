@@ -1663,9 +1663,12 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		return
 	}
 
-	// As the fundee: a type the funder proposed without the unified bit,
-	// or no type at all, is refused (BOLT 2 open_channel).
-	err = requireUnifiedSigs(msg.ChannelType, peer.LocalFeatures())
+	// As the fundee: a channel whose negotiated type lacks the unified bit,
+	// or that has none, is refused (BOLT 2 open_channel). The negotiated
+	// type, not the proposed one: a peer that leaves out
+	// option_channel_type but proposes the implicit default with the bit
+	// set would otherwise get a reservation that signs the ordinary way.
+	err = requireUnifiedSigs(chanType, peer.LocalFeatures())
 	if err != nil {
 		log.Errorf("Refusing channel from %x: %v",
 			peer.IdentityKey().SerializeCompressed(), err)
@@ -3203,8 +3206,16 @@ func (f *Manager) fundingInChain(ch *channeldb.OpenChannel) bool {
 	txOut, err := f.cfg.Wallet.Cfg.ChainIO.GetUtxo(
 		&ch.FundingOutpoint, pkScript, ch.BroadcastHeight(), f.quit,
 	)
+	if err != nil || txOut == nil {
+		return false
+	}
 
-	return err == nil && txOut != nil
+	// A bitcoind backend looks the output up by outpoint alone, so check
+	// that it is the channel's funding output: a funder that named some
+	// other long-lived output as its funding would otherwise keep the
+	// pending channel from ever timing out.
+	return bytes.Equal(txOut.PkScript, pkScript) &&
+		txOut.Value == int64(ch.Capacity)
 }
 
 // MakeFundingScript re-creates the funding script for the funding transaction

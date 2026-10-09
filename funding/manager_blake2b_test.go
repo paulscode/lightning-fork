@@ -54,7 +54,7 @@ func (c *utxoChainIO) GetUtxo(*wire.OutPoint, []byte, uint32,
 
 // TestFundingInChain checks the question a fundee asks when its funding
 // timeout falls due: the funding output is in the chain only if the backend
-// returns it.
+// returns it, with the funding script and the channel's capacity.
 func TestFundingInChain(t *testing.T) {
 	t.Parallel()
 
@@ -84,8 +84,22 @@ func TestFundingInChain(t *testing.T) {
 		return f.fundingInChain(ch)
 	}
 
-	require.True(t, check(&utxoChainIO{txOut: wire.NewTxOut(1, nil)}))
+	pkScript, err := MakeFundingScript(ch)
+	require.NoError(t, err)
+
+	require.True(t, check(&utxoChainIO{
+		txOut: wire.NewTxOut(int64(ch.Capacity), pkScript),
+	}))
 	require.False(t, check(&utxoChainIO{err: errors.New("not found")}))
+
+	// Some other unspent output at that outpoint is not the funding: a
+	// bitcoind backend answers by outpoint alone.
+	require.False(t, check(&utxoChainIO{
+		txOut: wire.NewTxOut(int64(ch.Capacity), []byte{0x51}),
+	}))
+	require.False(t, check(&utxoChainIO{
+		txOut: wire.NewTxOut(1, pkScript),
+	}))
 
 	// The mock backends answer (nil, nil); that is not an output.
 	require.False(t, check(&utxoChainIO{}))
@@ -651,4 +665,60 @@ func TestRequireUnifiedSigsOnOpen(t *testing.T) {
 			assertFundingMsgSent(t, bob.msgChan, "Error")
 		})
 	}
+}
+
+// TestRequireUnifiedSigsImplicitProposal checks the fundee against a peer that
+// leaves out option_channel_type yet proposes the implicit default type with
+// option_unified_sigs set: negotiation then falls back to no explicit type,
+// whose reservation would sign the ordinary way, so the open is refused.
+func TestRequireUnifiedSigsImplicitProposal(t *testing.T) {
+	t.Parallel()
+
+	alice, bob := setupFundingManagers(t)
+	t.Cleanup(func() {
+		tearDownFundingManagers(t, alice, bob)
+	})
+
+	// Alice's features: no option_channel_type, but the unified bit.
+	attacker := []lnwire.FeatureBit{
+		lnwire.StaticRemoteKeyOptional,
+		lnwire.AnchorsZeroFeeHtlcTxOptional,
+		lnwire.Blake2bRequired,
+		lnwire.UnifiedSigsOptional,
+	}
+	// Bob's: the full set.
+	honest := append([]lnwire.FeatureBit{
+		lnwire.ExplicitChannelTypeOptional,
+	}, attacker...)
+
+	// The harness reads a node's own features from the peer it handles.
+	// Alice's funding manager is run without the unified bit so that it
+	// sends the open at all; the message is then shaped as an attacker
+	// would shape it, and Bob sees her advertise the bit.
+	bob.localFeatures = attacker[:3]
+	bob.remoteFeatures = honest
+	alice.localFeatures = honest
+	alice.remoteFeatures = attacker
+
+	alice.fundingMgr.InitFundingWorkflow(&InitFundingMsg{
+		Peer:            bob,
+		TargetPubkey:    bob.privKey.PubKey(),
+		ChainHash:       *fundingNetParams.GenesisHash,
+		LocalFundingAmt: 500000,
+		Private:         true,
+		Updates:         make(chan *lnrpc.OpenStatusUpdate),
+		Err:             make(chan error, 1),
+	})
+	open := expectOpenChannelMsg(t, alice.msgChan)
+
+	// The proposal is the implicit default, with the bit.
+	proposed := lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		lnwire.StaticRemoteKeyRequired,
+		lnwire.AnchorsZeroFeeHtlcTxRequired,
+		lnwire.UnifiedSigsRequired,
+	))
+	open.ChannelType = &proposed
+
+	bob.fundingMgr.ProcessFundingMsg(open, alice)
+	assertFundingMsgSent(t, bob.msgChan, "Error")
 }
