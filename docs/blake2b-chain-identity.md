@@ -172,14 +172,14 @@ produces a transaction that is valid and malleable by a third party.
 
 The opt-in is not a property of the commitment type, and is not the
 operator's to choose: it is added to whatever channel type is negotiated,
-named or chosen by default, whenever both peers support it. Simple taproot channels are
-the exception: a taproot channel type carrying the opt-in is refused, because
+named or chosen by default, whenever both peers support it. Simple taproot
+channels are the exception: a taproot channel type carrying the opt-in is refused, because
 there the commitment signature is a MuSig2 partial signature over a BIP341
 digest, so opting in would be a wire change rather than a hash type, and two
 sides would sign different digests. Since BOLT 2 requires the opt-in on every
 new channel, a taproot channel (the overlay type Taproot Assets channels use
-included) can no longer be opened or accepted by a node that signs under it, `--protocol.simple-taproot-chans` or not; one opened
-earlier keeps working.
+included) can no longer be opened or accepted by a node that signs under it,
+`--protocol.simple-taproot-chans` or not; one opened earlier keeps working.
 
 A channel type without the opt-in does not make a channel this node funds
 replayable, whatever coins paid for it: the funding inputs are signed with the
@@ -313,8 +313,9 @@ about a bit it has never heard of.
 
 Existing channels are unaffected either way. The type is fixed when the
 channel is opened and is never renegotiated, so upgrading does not change a
-channel that is already open, and a peer that does not signal the bit is
-offered an ordinary channel rather than refused.
+channel that is already open. A new channel is another matter: since BOLT 2
+requires the opt-in, a peer that does not signal the bit gets no new channel
+(it can still connect and route over channels it already has).
 
 ## 8. What has been withdrawn, and what to do about it
 

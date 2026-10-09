@@ -46,8 +46,9 @@ var (
 // thing either side can check.
 //
 // A nil type, which no open carries any more now that BOLT 2 requires an
-// explicit channel_type, is refused all the same. Taproot types never carry it (see withUnifiedSigs), so they are
-// refused too until the bit is defined for MuSig2 signatures. Existing
+// explicit channel_type, is refused all the same. Taproot types never carry
+// it (see withUnifiedSigs), so they are refused too until the bit is defined
+// for MuSig2 signatures. Existing
 // channels are not affected: this runs only when a channel is opened.
 func requireUnifiedSigs(chanType *lnwire.ChannelType,
 	local *lnwire.FeatureVector) error {

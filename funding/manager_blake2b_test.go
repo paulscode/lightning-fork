@@ -627,16 +627,24 @@ func TestRequireUnifiedSigsOnOpen(t *testing.T) {
 	fundeeCases := []struct {
 		name     string
 		features []lnwire.FeatureBit
+		noType   bool
 	}{{
 		name:     "a type without the bit",
 		features: withoutUnified,
 	}, {
-		name: "no type",
+		name: "a type without the bit, no option_channel_type",
 		features: []lnwire.FeatureBit{
 			lnwire.StaticRemoteKeyOptional,
 			lnwire.AnchorsZeroFeeHtlcTxOptional,
 			lnwire.Blake2bRequired,
 		},
+	}, {
+		// Every open now carries a type, so this one is shaped by
+		// hand: refused for its missing type (BOLT 2) before the
+		// unified bit is looked at.
+		name:     "no type at all",
+		features: withoutUnified,
+		noType:   true,
 	}}
 	for _, tc := range fundeeCases {
 		t.Run("fundee: "+tc.name, func(t *testing.T) {
@@ -672,6 +680,9 @@ func TestRequireUnifiedSigsOnOpen(t *testing.T) {
 				require.False(
 					t, sent.IsSet(lnwire.UnifiedSigsRequired),
 				)
+			}
+			if tc.noType {
+				open.ChannelType = nil
 			}
 
 			bob.fundingMgr.ProcessFundingMsg(open, alice)
