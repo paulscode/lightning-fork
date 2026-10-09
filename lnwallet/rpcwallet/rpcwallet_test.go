@@ -229,3 +229,54 @@ func TestPopulateNonSignedInputWitnessUtxosEmptyPkScript(t *testing.T) {
 
 	require.Nil(t, packet.Inputs[0].WitnessUtxo)
 }
+
+// TestCheckRemoteHashType: a remote signer that signs with another hash type
+// than the one asked for is refused rather than trusted, since the caller
+// attaches the requested hash type to the signature it gets back.
+func TestCheckRemoteHashType(t *testing.T) {
+	ecdsaSig := func(hashType byte) *psbt.PInput {
+		return &psbt.PInput{PartialSigs: []*psbt.PartialSig{{
+			Signature: append(make([]byte, 70), hashType),
+		}}}
+	}
+	v0 := &input.SignDescriptor{
+		SignMethod: input.WitnessV0SignMethod,
+		HashType:   txscript.SigHashAll,
+	}
+
+	// Asked for legacy SIGHASH_ALL (a watchtower justice signature, or a
+	// channel without option_unified_sigs), got it.
+	require.NoError(t, checkRemoteHashType(ecdsaSig(0x01), v0))
+
+	// The signer raised it to the unified hash: refused.
+	err := checkRemoteHashType(ecdsaSig(0x21), v0)
+	require.ErrorContains(t, err, "bitcoin.allow-legacy-sighash")
+
+	// Taproot key spends: 64 bytes is SIGHASH_DEFAULT.
+	keySpend := &input.SignDescriptor{
+		SignMethod: input.TaprootKeySpendBIP0086SignMethod,
+		HashType:   txscript.SigHashDefault,
+	}
+	require.NoError(t, checkRemoteHashType(&psbt.PInput{
+		TaprootKeySpendSig: make([]byte, 64),
+	}, keySpend))
+	require.Error(t, checkRemoteHashType(&psbt.PInput{
+		TaprootKeySpendSig: append(make([]byte, 64), 0x21),
+	}, keySpend))
+
+	// Tapscript signatures carry their hash type in the field.
+	scriptSpend := &input.SignDescriptor{
+		SignMethod: input.TaprootScriptSpendSignMethod,
+		HashType:   txscript.SigHashAll | txscript.SigHashUnified,
+	}
+	require.NoError(t, checkRemoteHashType(&psbt.PInput{
+		TaprootScriptSpendSig: []*psbt.TaprootScriptSpendSig{{
+			SigHash: txscript.SigHashAll | txscript.SigHashUnified,
+		}},
+	}, scriptSpend))
+	require.Error(t, checkRemoteHashType(&psbt.PInput{
+		TaprootScriptSpendSig: []*psbt.TaprootScriptSpendSig{{
+			SigHash: txscript.SigHashDefault,
+		}},
+	}, scriptSpend))
+}

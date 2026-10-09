@@ -1260,7 +1260,66 @@ func (r *RPCKeyRing) remoteSign(tx *wire.MsgTx, signDesc *input.SignDescriptor,
 	}
 	in = &signedPacket.Inputs[signDesc.InputIndex]
 
+	if err := checkRemoteHashType(in, signDesc); err != nil {
+		return nil, err
+	}
+
 	return extractSignature(in, signDesc.SignMethod)
+}
+
+// checkRemoteHashType makes sure the remote signer signed with the hash type
+// this node asked for. The caller adds that hash type to the signature it
+// gets back, so a signer that chose another one, as a Lightning Fork signer
+// does when it raises a declared SIGHASH_ALL to the unified signature hash,
+// would hand back a signature over a digest nobody checks against: a
+// watchtower's justice transaction, or a commitment on a channel without
+// option_unified_sigs, that fails only when it is needed.
+func checkRemoteHashType(in *psbt.PInput, signDesc *input.SignDescriptor) error {
+	var got txscript.SigHashType
+	switch signDesc.SignMethod {
+	case input.WitnessV0SignMethod:
+		if len(in.PartialSigs) != 1 || in.PartialSigs[0] == nil ||
+			len(in.PartialSigs[0].Signature) == 0 {
+
+			return nil // extractSignature reports this
+		}
+		sig := in.PartialSigs[0].Signature
+		got = txscript.SigHashType(sig[len(sig)-1])
+
+	case input.TaprootKeySpendBIP0086SignMethod,
+		input.TaprootKeySpendSignMethod:
+
+		switch len(in.TaprootKeySpendSig) {
+		case schnorr.SignatureSize:
+			got = txscript.SigHashDefault
+		case schnorr.SignatureSize + 1:
+			got = txscript.SigHashType(
+				in.TaprootKeySpendSig[schnorr.SignatureSize],
+			)
+		default:
+			return nil // extractSignature reports this
+		}
+
+	case input.TaprootScriptSpendSignMethod:
+		if len(in.TaprootScriptSpendSig) != 1 ||
+			in.TaprootScriptSpendSig[0] == nil {
+
+			return nil // extractSignature reports this
+		}
+		got = in.TaprootScriptSpendSig[0].SigHash
+
+	default:
+		return nil
+	}
+
+	if got != signDesc.HashType {
+		return fmt.Errorf("remote signer signed with hash type 0x%x "+
+			"where 0x%x was asked for; run the signer with "+
+			"bitcoin.allow-legacy-sighash so that it signs the hash "+
+			"type this node chooses", got, signDesc.HashType)
+	}
+
+	return nil
 }
 
 // extractSignature attempts to extract the signature from the PSBT input,
