@@ -336,6 +336,10 @@ var allTestCases = []*lntest.TestCase{
 		TestFunc: testRevokedCloseRetributionRemoteHodl,
 	},
 	{
+		Name:     "independent secrets",
+		TestFunc: testIndependentSecrets,
+	},
+	{
 		Name:     "multi-hop send to route",
 		TestFunc: testMultiHopSendToRoute,
 	},

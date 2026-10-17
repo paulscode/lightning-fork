@@ -63,6 +63,13 @@ var defaultSetDesc = setDesc{
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N
 	},
+	// Signalled so a peer knows this node can open a channel with
+	// option_independent_secrets. On by default; the operator can turn it
+	// off with protocol.no-independent-secrets.
+	lnwire.IndependentSecretsOptional: {
+		SetInit:    {}, // I
+		SetNodeAnn: {}, // N
+	},
 	lnwire.DataLossProtectRequired: {
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N

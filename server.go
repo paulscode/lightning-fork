@@ -791,7 +791,8 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 		NoRbfCoopClose:               !cfg.ProtocolOptions.RbfCoopClose,
 		Splice: cfg.ProtocolOptions.Splice() ||
 			pendingSplices(dbs.ChanStateDB.ChannelStateDB()),
-		NoUnifiedSigs: !input.UnifiedSigHash(),
+		NoUnifiedSigs:        !input.UnifiedSigHash(),
+		NoIndependentSecrets: cfg.ProtocolOptions.NoIndependentSecrets,
 	})
 	if err != nil {
 		return nil, err

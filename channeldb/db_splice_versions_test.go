@@ -7,12 +7,15 @@ import (
 )
 
 // TestOpenableDBVersions checks the versions a copying tool must accept:
-// the latest, which carries the splicing mark, and the one before it.
+// the one before the splicing mark, the splicing mark, and the latest, which
+// marks a database with a channel with option_independent_secrets.
 func TestOpenableDBVersions(t *testing.T) {
 	t.Parallel()
 
 	versions := OpenableDBVersions()
-	require.Equal(t, []uint32{splicingDBVersion - 1, splicingDBVersion},
-		versions)
-	require.Equal(t, LatestDBVersion(), versions[1])
+	require.Equal(t, []uint32{
+		splicingDBVersion - 1, splicingDBVersion,
+		independentSecretsDBVersion,
+	}, versions)
+	require.Equal(t, LatestDBVersion(), versions[2])
 }

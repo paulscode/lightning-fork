@@ -355,7 +355,10 @@ func ReadElement(r io.Reader, element interface{}) error {
 		*e = producer
 
 	case *shachain.Store:
-		store, err := shachain.NewRevocationStoreFromBytes(r)
+		// Either a shachain RevocationStore or, on channels with
+		// option_independent_secrets, an IndependentStore. The encoding
+		// says which.
+		store, err := shachain.NewStoreFromBytes(r)
 		if err != nil {
 			return err
 		}

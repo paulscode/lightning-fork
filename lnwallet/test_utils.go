@@ -217,7 +217,19 @@ func CreateTestChannels(t *testing.T, chanType channeldb.ChannelType,
 	if err != nil {
 		return nil, nil, err
 	}
-	bobPreimageProducer := shachain.NewRevocationProducer(*bobRoot)
+	var bobPreimageProducer shachain.Producer = shachain.
+		NewRevocationProducer(*bobRoot)
+
+	// With LocalIndependentSecretsBit, both sides generate their secrets
+	// without a shachain, as a dev node does.
+	if chanType.HasLocalIndependentSecrets() {
+		bobPreimageProducer, err = shachain.NewIndependentProducerFrom(
+			bobPreimageProducer,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	bobFirstRevoke, err := bobPreimageProducer.AtIndex(0)
 	if err != nil {
 		return nil, nil, err
@@ -228,7 +240,15 @@ func CreateTestChannels(t *testing.T, chanType channeldb.ChannelType,
 	if err != nil {
 		return nil, nil, err
 	}
-	alicePreimageProducer := shachain.NewRevocationProducer(*aliceRoot)
+	var alicePreimageProducer shachain.Producer = shachain.
+		NewRevocationProducer(*aliceRoot)
+	if chanType.HasLocalIndependentSecrets() {
+		alicePreimageProducer, err = shachain.
+			NewIndependentProducerFrom(alicePreimageProducer)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	aliceFirstRevoke, err := alicePreimageProducer.AtIndex(0)
 	if err != nil {
 		return nil, nil, err
@@ -308,6 +328,12 @@ func CreateTestChannels(t *testing.T, chanType channeldb.ChannelType,
 		binary.BigEndian.Uint64(chanIDBytes[:]),
 	)
 
+	// Each side stores the other's per-commitment secrets in the store
+	// the channel type calls for.
+	remoteSecretStore := func() shachain.Store {
+		return channeldb.NewRemoteSecretStore(chanType)
+	}
+
 	aliceChannelState := &channeldb.OpenChannel{
 		LocalChanCfg:            aliceCfg,
 		RemoteChanCfg:           bobCfg,
@@ -319,7 +345,7 @@ func CreateTestChannels(t *testing.T, chanType channeldb.ChannelType,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: bobCommitPoint,
 		RevocationProducer:      alicePreimageProducer,
-		RevocationStore:         shachain.NewRevocationStore(),
+		RevocationStore:         remoteSecretStore(),
 		LocalCommitment:         aliceLocalCommit,
 		RemoteCommitment:        aliceRemoteCommit,
 		Db:                      dbAlice.ChannelStateDB(),
@@ -337,7 +363,7 @@ func CreateTestChannels(t *testing.T, chanType channeldb.ChannelType,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: aliceCommitPoint,
 		RevocationProducer:      bobPreimageProducer,
-		RevocationStore:         shachain.NewRevocationStore(),
+		RevocationStore:         remoteSecretStore(),
 		LocalCommitment:         bobLocalCommit,
 		RemoteCommitment:        bobRemoteCommit,
 		Db:                      dbBob.ChannelStateDB(),

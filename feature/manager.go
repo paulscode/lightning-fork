@@ -95,6 +95,10 @@ type Config struct {
 	// channel disagree with the chain about what was signed. Always false
 	// on mainnet, where the opt-in cannot be switched off.
 	NoUnifiedSigs bool
+
+	// NoIndependentSecrets unsets option_independent_secrets, which is
+	// otherwise signalled by default.
+	NoIndependentSecrets bool
 }
 
 // Manager is responsible for generating feature vectors for different requested
@@ -190,6 +194,10 @@ func newManager(cfg Config, desc setDesc) (*Manager, error) {
 		if cfg.NoUnifiedSigs {
 			raw.Unset(lnwire.UnifiedSigsOptional)
 			raw.Unset(lnwire.UnifiedSigsRequired)
+		}
+		if cfg.NoIndependentSecrets {
+			raw.Unset(lnwire.IndependentSecretsOptional)
+			raw.Unset(lnwire.IndependentSecretsRequired)
 		}
 		if cfg.NoWumbo {
 			raw.Unset(lnwire.WumboChannelsOptional)

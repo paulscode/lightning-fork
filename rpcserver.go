@@ -4214,6 +4214,8 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 			ConfirmationHeight: pendingChan.
 				ConfirmationHeight,
 		}
+		result[i].Channel.IndependentSecrets =
+			pendingChan.ChanType.HasIndependentSecrets()
 	}
 
 	return result, nil
@@ -4281,6 +4283,8 @@ func (r *rpcServer) fetchPendingForceCloseChannels() (pendingForceClose,
 			)
 			channel.UnifiedSigs =
 				historical.ChanType.HasUnifiedSigs()
+			channel.IndependentSecrets =
+				historical.ChanType.HasIndependentSecrets()
 
 			// Get the number of forwarding packages from the
 			// historical channel.
@@ -4540,6 +4544,8 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 			Memo:                  string(waitingClose.Memo),
 			CustomChannelData:     customChanBytes,
 		}
+		channel.IndependentSecrets =
+			waitingClose.ChanType.HasIndependentSecrets()
 
 		var closingTxid, closingTxHex string
 		if closingTx != nil {
@@ -5181,6 +5187,7 @@ func createRPCOpenChannel(ctx context.Context, r *rpcServer,
 		LocalChanReserveSat:  int64(dbChannel.LocalChanCfg.ChanReserve),
 		RemoteChanReserveSat: int64(dbChannel.RemoteChanCfg.ChanReserve),
 	}
+	channel.IndependentSecrets = dbChannel.ChanType.HasIndependentSecrets()
 
 	// Look up our channel peer's node alias if the caller requests it.
 	if peerAliasLookup {

@@ -42,7 +42,8 @@ func setVersionTestDB(t *testing.T, backend kvdb.Backend, version uint32) {
 func TestSplicingDBVersion(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, uint32(splicingDBVersion), LatestDBVersion())
+	require.Equal(t, uint32(splicingDBVersion),
+		getLatestDBVersion(targetVersions(true)))
 	before := uint32(splicingDBVersion - 1)
 
 	newBackend := func(t *testing.T) kvdb.Backend {
@@ -106,7 +107,7 @@ func TestSplicingDBVersion(t *testing.T) {
 			_, err := openVersionTestDB(t, backend, splicing)
 			require.NoError(t, err)
 
-			setVersionTestDB(t, backend, splicingDBVersion+1)
+			setVersionTestDB(t, backend, LatestDBVersion()+1)
 			_, err = openVersionTestDB(t, backend, splicing)
 			require.ErrorIs(t, err, ErrDBReversion)
 		}

@@ -33,6 +33,13 @@ type ProtocolOptions struct {
 	// experimental simple taproot chans commitment type.
 	TaprootChans bool `long:"simple-taproot-chans" description:"if set, then lnd will create and accept requests for channels using the simple taproot commitment type"`
 
+	// NoIndependentSecrets should be set if the node should not signal
+	// option_independent_secrets. It's signalled by default, so new
+	// channels with peers that also signal it store the remote party's
+	// per-commitment secrets individually instead of requiring them to
+	// come from a shachain.
+	NoIndependentSecrets bool `long:"no-independent-secrets" description:"if set, don't signal option_independent_secrets, so new channels keep requiring the remote party's per-commitment secrets to come from a shachain. By default new channels with peers that also signal it store every secret individually, which lets a peer generate them with k-of-n signers. Downgrading to a version of lnd without it is not supported once any channel has used it: such a version can't read that channel's stored state, even after the channel has closed."`
+
 	// TaprootOverlayChans should be set if we want to enable support for
 	// the experimental taproot overlay chan type.
 	TaprootOverlayChans bool `long:"simple-taproot-overlay-chans" description:"if set, then lnd will create and accept requests for channels using the taproot overlay commitment type"`

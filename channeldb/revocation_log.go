@@ -275,6 +275,16 @@ type RevocationLog struct {
 	// at channel funding time, and after wards is to be considered
 	// immutable.
 	CustomBlob tlv.OptionalRecordT[tlv.TlvType5, tlv.Blob]
+
+	// CommitSecret is the remote party's per-commitment secret that
+	// revoked this commitment. It's only stored for channels that
+	// negotiated option_independent_secrets, where the secrets can't be
+	// re-derived from a shachain; on other channels the shachain
+	// revocation store serves it instead.
+	//
+	// The type is taken from the high range so it can't collide with a
+	// field upstream lnd adds to the revocation log later.
+	CommitSecret tlv.OptionalRecordT[tlv.TlvType65537, [32]byte]
 }
 
 // NewRevocationLog creates a new RevocationLog from the given parameters.
@@ -322,6 +332,19 @@ func NewRevocationLog(ourOutputIndex uint16, theirOutputIndex uint16,
 func putRevocationLog(bucket kvdb.RwBucket, commit *ChannelCommitment,
 	ourOutputIndex, theirOutputIndex uint32, noAmtData bool) error {
 
+	return putRevocationLogWithSecret(
+		bucket, commit, ourOutputIndex, theirOutputIndex, noAmtData,
+		fn.None[[32]byte](),
+	)
+}
+
+// putRevocationLogWithSecret is putRevocationLog that also records the
+// per-commitment secret that revoked the commitment, when one is given. This
+// is used on channels with option_independent_secrets.
+func putRevocationLogWithSecret(bucket kvdb.RwBucket,
+	commit *ChannelCommitment, ourOutputIndex, theirOutputIndex uint32,
+	noAmtData bool, commitSecret fn.Option[[32]byte]) error {
+
 	// Sanity check that the output indexes can be safely converted.
 	if ourOutputIndex > math.MaxUint16 {
 		return ErrOutputIndexTooBig
@@ -346,6 +369,12 @@ func putRevocationLog(bucket kvdb.RwBucket, commit *ChannelCommitment,
 	commit.CustomBlob.WhenSome(func(blob tlv.Blob) {
 		rl.CustomBlob = tlv.SomeRecordT(
 			tlv.NewPrimitiveRecord[tlv.TlvType5, tlv.Blob](blob),
+		)
+	})
+
+	commitSecret.WhenSome(func(secret [32]byte) {
+		rl.CommitSecret = tlv.SomeRecordT(
+			tlv.NewPrimitiveRecord[tlv.TlvType65537](secret),
 		)
 	})
 
@@ -431,6 +460,12 @@ func serializeRevocationLog(w io.Writer, rl *RevocationLog) error {
 		records = append(records, r.Record())
 	})
 
+	rl.CommitSecret.WhenSome(
+		func(r tlv.RecordT[tlv.TlvType65537, [32]byte]) {
+			records = append(records, r.Record())
+		},
+	)
+
 	// Create the tlv stream.
 	tlvStream, err := tlv.NewStream(records...)
 	if err != nil {
@@ -472,6 +507,7 @@ func deserializeRevocationLog(r io.Reader) (RevocationLog, error) {
 	ourBalance := rl.OurBalance.Zero()
 	theirBalance := rl.TheirBalance.Zero()
 	customBlob := rl.CustomBlob.Zero()
+	commitSecret := rl.CommitSecret.Zero()
 
 	// Create the tlv stream.
 	tlvStream, err := tlv.NewStream(
@@ -481,6 +517,7 @@ func deserializeRevocationLog(r io.Reader) (RevocationLog, error) {
 		ourBalance.Record(),
 		theirBalance.Record(),
 		customBlob.Record(),
+		commitSecret.Record(),
 	)
 	if err != nil {
 		return rl, err
@@ -502,6 +539,10 @@ func deserializeRevocationLog(r io.Reader) (RevocationLog, error) {
 
 	if t, ok := parsedTypes[customBlob.TlvType()]; ok && t == nil {
 		rl.CustomBlob = tlv.SomeRecordT(customBlob)
+	}
+
+	if t, ok := parsedTypes[commitSecret.TlvType()]; ok && t == nil {
+		rl.CommitSecret = tlv.SomeRecordT(commitSecret)
 	}
 
 	// Read the HTLC entries.

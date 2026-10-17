@@ -34,6 +34,7 @@ import (
 	"github.com/lightningnetwork/lnd/channeldb/migration36"
 	"github.com/lightningnetwork/lnd/channeldb/migration37"
 	"github.com/lightningnetwork/lnd/channeldb/migration38"
+	"github.com/lightningnetwork/lnd/channeldb/migration39"
 	"github.com/lightningnetwork/lnd/channeldb/migration_01_to_11"
 	"github.com/lightningnetwork/lnd/clock"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
@@ -349,6 +350,15 @@ var (
 			number:    splicingDBVersion,
 			migration: migration38.MarkSplicing,
 		},
+		{
+			// Changes no data, and is never run as a migration:
+			// the database moves here when it first stores a
+			// channel with option_independent_secrets, so that an
+			// older binary, which can't read that channel's
+			// revocation state, refuses it at startup.
+			number:    independentSecretsDBVersion,
+			migration: migration39.MarkIndependentSecrets,
+		},
 	}
 
 	// optionalVersions stores all optional migrations that are applied
@@ -529,7 +539,7 @@ func (d *DB) Wipe() error {
 		return err
 	}
 
-	return initChannelDB(d.Backend, getLatestDBVersion(dbVersions))
+	return initChannelDB(d.Backend, getLatestDBVersion(targetVersions(true)))
 }
 
 // initChannelDB creates and initializes a fresh version of channeldb. In the
@@ -2157,13 +2167,15 @@ func LatestDBVersion() uint32 {
 }
 
 // OpenableDBVersions returns the channel database versions this build opens
-// as they are: the latest, and the one before the splicing mark, at which a
-// node that never ran with splicing stays. A tool that copies a database
-// for this build (lndinit's SQLite conversion) accepts either.
+// as they are: the one before the splicing mark, at which a node that never
+// ran with splicing stays, the splicing mark, and the mark of a database
+// with a channel with option_independent_secrets. A tool that copies a
+// database for this build (lndinit's SQLite conversion) accepts any of them.
 func OpenableDBVersions() []uint32 {
 	return []uint32{
 		getLatestDBVersion(targetVersions(false)),
 		getLatestDBVersion(targetVersions(true)),
+		independentSecretsDBVersion,
 	}
 }
 
@@ -2187,14 +2199,36 @@ func markSplicing(tx kvdb.RwTx) error {
 	return putMeta(meta, tx)
 }
 
-// targetVersions returns the migrations to apply: all of them with splicing
-// on, all but the splicing mark without.
+// independentSecretsDBVersion is the database version that marks a node
+// that has stored a channel with option_independent_secrets.
+const independentSecretsDBVersion = 39
+
+// markIndependentSecrets moves the database to the independent secrets
+// version, in tx, if it is below it.
+func markIndependentSecrets(tx kvdb.RwTx) error {
+	meta := &Meta{}
+	if err := FetchMeta(meta, tx); err != nil {
+		return err
+	}
+	if meta.DbVersionNumber >= independentSecretsDBVersion {
+		return nil
+	}
+	meta.DbVersionNumber = independentSecretsDBVersion
+
+	return putMeta(meta, tx)
+}
+
+// targetVersions returns the migrations to apply: all but the independent
+// secrets mark with splicing on, and also without the splicing mark when
+// it's off. The independent secrets mark is never run as a migration:
+// markIndependentSecrets applies it with the first such channel.
 func targetVersions(splicing bool) []mandatoryVersion {
+	versions := dbVersions[:len(dbVersions)-1]
 	if splicing {
-		return dbVersions
+		return versions
 	}
 
-	return dbVersions[:len(dbVersions)-1]
+	return versions[:len(versions)-1]
 }
 
 func getLatestDBVersion(versions []mandatoryVersion) uint32 {

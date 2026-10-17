@@ -105,6 +105,37 @@ func withUnifiedSigs(chanType lnwire.ChannelType, local,
 	return lnwire.ChannelType(*withBit)
 }
 
+// withIndependentSecrets returns chanType with option_independent_secrets set,
+// when both peers signal it.
+//
+// Like option_unified_sigs, the bit is not a commitment shape: it changes how
+// each side stores the per-commitment secrets it receives, so it applies to
+// every commitment type, taproot included.
+func withIndependentSecrets(chanType lnwire.ChannelType, local,
+	remote *lnwire.FeatureVector) lnwire.ChannelType {
+
+	if !hasFeatures(local, remote, lnwire.IndependentSecretsOptional) {
+		return chanType
+	}
+
+	features := lnwire.RawFeatureVector(chanType)
+	withBit := features.Clone()
+	withBit.Set(lnwire.IndependentSecretsRequired)
+
+	return lnwire.ChannelType(*withBit)
+}
+
+// withAddOns adds to chanType every add-on bit that both peers support and
+// that isn't a commitment shape: option_unified_sigs and
+// option_independent_secrets.
+func withAddOns(chanType lnwire.ChannelType, local,
+	remote *lnwire.FeatureVector) lnwire.ChannelType {
+
+	return withIndependentSecrets(
+		withUnifiedSigs(chanType, local, remote), local, remote,
+	)
+}
+
 // isTaprootType reports whether a channel type is one whose commitment is
 // signed with MuSig2, which the unified bit cannot yet be combined with: the
 // simple taproot types and the taproot overlay type that Taproot Assets
@@ -116,8 +147,8 @@ func isTaprootType(features lnwire.RawFeatureVector) bool {
 }
 
 // funderChannelType is the channel type a funder proposes when its caller
-// named one: the named type, with the unified bit added when both sides
-// support it.
+// named one: the named type, with the unified and independent-secrets bits
+// added when both sides support them.
 //
 // Only a funder does this. A fundee answers the type the funder proposed as
 // proposed, or refuses it, since a funder that is sent back a type it did not
@@ -129,7 +160,7 @@ func funderChannelType(desired *lnwire.ChannelType, local,
 		return nil
 	}
 
-	augmented := withUnifiedSigs(*desired, local, remote)
+	augmented := withAddOns(*desired, local, remote)
 
 	return &augmented
 }
@@ -203,6 +234,22 @@ func explicitNegotiateCommitmentType(channelType lnwire.ChannelType, local,
 
 		stripped := channelFeatures.Clone()
 		stripped.Unset(lnwire.UnifiedSigsRequired)
+		channelFeatures = *stripped
+	}
+
+	// option_independent_secrets is orthogonal to the commitment type in
+	// the same way: it changes how per-commitment secrets are stored, not
+	// the transactions. Check both sides support it, then take it off.
+	if channelFeatures.IsSet(lnwire.IndependentSecretsRequired) {
+		if !hasFeatures(
+			local, remote, lnwire.IndependentSecretsOptional,
+		) {
+
+			return 0, errUnsupportedChannelType
+		}
+
+		stripped := channelFeatures.Clone()
+		stripped.Unset(lnwire.IndependentSecretsRequired)
 		channelFeatures = *stripped
 	}
 
@@ -598,7 +645,7 @@ func selectDefaultChannelType(local,
 	// If both peers are signalling support for anchor commitments with
 	// zero-fee HTLC transactions, we'll use this type.
 	if hasFeatures(local, remote, lnwire.AnchorsZeroFeeHtlcTxOptional) {
-		chanType := withUnifiedSigs(
+		chanType := withAddOns(
 			lnwire.ChannelType(*lnwire.NewRawFeatureVector(
 				lnwire.AnchorsZeroFeeHtlcTxRequired,
 				lnwire.StaticRemoteKeyRequired,
@@ -616,7 +663,7 @@ func selectDefaultChannelType(local,
 	// If both nodes are signaling the proper feature bit for tweakless
 	// commitments, we'll use that.
 	if hasFeatures(local, remote, lnwire.StaticRemoteKeyOptional) {
-		chanType := withUnifiedSigs(
+		chanType := withAddOns(
 			lnwire.ChannelType(*lnwire.NewRawFeatureVector(
 				lnwire.StaticRemoteKeyRequired,
 			)), local, remote,

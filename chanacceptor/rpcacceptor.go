@@ -457,6 +457,10 @@ func acceptorCommitmentType(
 	shape := channelFeatures.Clone()
 	shape.Unset(lnwire.UnifiedSigsRequired)
 
+	// option_independent_secrets changes how per-commitment secrets are
+	// stored, not the shape of the commitment, so it's set aside too.
+	shape.Unset(lnwire.IndependentSecretsRequired)
+
 	switch {
 	case shape.OnlyContains(
 		lnwire.ZeroConfRequired,

@@ -3352,6 +3352,10 @@
         "original_channel_point": {
           "type": "string",
           "description": "The outpoint the channel was opened with, when a splice moved it:\nchannel_point is then the current funding output."
+        },
+        "independent_secrets": {
+          "type": "boolean",
+          "description": "Whether the channel uses option_independent_secrets: this node\nstores every per-commitment secret the peer reveals instead of\nrequiring them to come from a shachain. A build without the\noption cannot load such a channel. False for a closing channel\nwhose type is not known."
         }
       }
     },
@@ -4143,6 +4147,10 @@
           "type": "string",
           "format": "uint64",
           "description": "The short channel id the channel was opened with. chan_id is the one the\nchannel goes by now, which a splice changes; forwarding records keep this\none. Payments naming either reach the channel."
+        },
+        "independent_secrets": {
+          "type": "boolean",
+          "description": "Whether the channel uses option_independent_secrets: this node stores\nevery per-commitment secret the peer reveals instead of requiring them\nto come from a shachain, which lets the peer generate them with k-of-n\nsigners. A build without the option cannot load such a channel."
         }
       }
     },

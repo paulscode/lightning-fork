@@ -30,6 +30,13 @@ type DevConfig struct {
 	UnsafeConnect               bool          `long:"unsafeconnect" description:"Allow the rpcserver to connect to a peer even if there's already a connection."`
 	ForceChannelCloseConfs      uint32        `long:"force-channel-close-confs" description:"Force a specific number of confirmations for channel closes (dev/test only)"`
 	MinFwdHistoryAge            time.Duration `long:"min-fwd-history-age" description:"Minimum age of forwarding events before they can be deleted via DeleteForwardingHistory (dev/test only, default: 1h)"`
+	IndependentSecretsSender    bool          `long:"independent-secrets-sender" description:"On new channels with option_independent_secrets, generate this node's own per-commitment secrets without a shachain, to exercise the peer's support for them (dev/test only)"`
+}
+
+// GetIndependentSecretsSender returns the config value for
+// `IndependentSecretsSender`.
+func (d *DevConfig) GetIndependentSecretsSender() bool {
+	return d.IndependentSecretsSender
 }
 
 // ChannelReadyWait returns the config value `ProcessChannelReadyWait`.
