@@ -1174,7 +1174,8 @@ func TestAdversarialInitiatorProperty(t *testing.T) {
 		require.NoError(rt, init.AddSharedInputAndFunding())
 
 		var in, out btcutil.Amount
-		for i := 0; i < rapid.IntRange(0, 3).Draw(rt, "inputs"); i++ {
+		nInputs := rapid.IntRange(0, 3).Draw(rt, "inputs")
+		for i := 0; i < nInputs; i++ {
 			v := amount(fmt.Sprintf("in%d", i), 1_000, 900_000)
 			tag := byte(10 + i)
 			prev := prevTx(tag, p2wpkh(tag), v)
@@ -1212,11 +1213,15 @@ func TestAdversarialInitiatorProperty(t *testing.T) {
 			"the funding output isn't what the peer claimed")
 
 		// We put nothing in, so what the peer's own coins pay beyond
-		// its contribution is the whole fee, at least the rate.
+		// its contribution is the whole fee, at least the rate for the
+		// weight with the peer's witnesses as light as we allow.
 		paid := in - out - ours.initContrib
 		require.Equal(rt, res.Fee, paid)
-		require.GreaterOrEqual(rt, int64(paid),
-			int64(ours.feeRate)*res.Weight/1000,
+		minWeight := lntypes.WeightUnit(
+			res.Weight - int64(nInputs)*peerWitnessSlack,
+		)
+		require.GreaterOrEqual(rt, paid,
+			ours.feeRate.FeeForWeight(minWeight),
 			"the peer didn't pay for its contribution")
 	})
 	require.Positive(t, accepted, "no splice got through")
