@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightningnetwork/lnd/actor"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -99,12 +100,13 @@ func (p *Brontide) closeDisowned(chanID lnwire.ChannelID, force bool) {
 		ChanPoint:      &op,
 		TargetFeePerKw: feePerKw,
 		Updates:        make(chan interface{}, 8),
-		Err:            make(chan error, 1),
+		Err:            actor.NewPromise[error](),
 		Ctx:            ctx,
 		NotIfClosing:   true,
 	}
 	p.HandleLocalCloseChanReqs(req)
 
+	errChan := req.ErrChan(ctx)
 	for {
 		select {
 		case u := <-req.Updates:
@@ -112,7 +114,7 @@ func (p *Brontide) closeDisowned(chanID lnwire.ChannelID, force bool) {
 				return
 			}
 
-		case err := <-req.Err:
+		case err := <-errChan:
 			if err != nil && !errors.Is(err, errAlreadyClosing) {
 				p.log.Errorf("ChannelID(%v): unable to close: %v",
 					chanID, err)

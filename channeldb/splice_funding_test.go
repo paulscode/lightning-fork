@@ -392,8 +392,9 @@ func TestLockSpliceSwapsCommitments(t *testing.T) {
 	} {
 		next, err := btcec.NewPrivateKey()
 		require.NoError(t, err)
-		channel.RemoteCurrentRevocation = channel.RemoteNextRevocation
-		channel.RemoteNextRevocation = next.PubKey()
+		curRev := channel.RemoteNextRevocation.UnwrapOrFail(t)
+		channel.RemoteCurrentRevocation = &curRev
+		channel.RemoteNextRevocation = fn.Some(*next.PubKey())
 
 		if i == 1 {
 			pending := channel.RemoteCommitment

@@ -3,7 +3,7 @@ version: "2"
 run:
   # If you change this please also update GO_VERSION in Makefile (then run
   # `make lint` to see where else it needs to be updated as well).
-  go: "1.27.2"
+  go: "1.27.3"
 
   # Abort after 10 minutes.
   timeout: 10m
@@ -217,6 +217,10 @@ linters:
           log-regex: ^\s*.*(L|l)og\.(Info|Debug|Trace|Warn|Error|Critical)S\(
           # Tab width in spaces.
           tab-width: 8
+
+      txscope:
+        type: module
+        description: Prevent pool access from within ExecTx callbacks.
 
   exclusions:
     # Mode of the generated files analysis.

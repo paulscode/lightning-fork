@@ -42,9 +42,9 @@ set -euo pipefail
 
 # The Go release Lightning Fork's own release builds use (see Dockerfile),
 # with the checksums go.dev publishes for it.
-GO_VERSION=1.27.2
-GO_SHA256_amd64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
-GO_SHA256_arm64=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
+GO_VERSION=1.27.3
+GO_SHA256_amd64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+GO_SHA256_arm64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
 
 # The dashboard (github.com/paulscode/umbrel-lightning-fork) runs on the
 # Node.js its Umbrel and StartOS image uses, with nodejs.org's checksums.

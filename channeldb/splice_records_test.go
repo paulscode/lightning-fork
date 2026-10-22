@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
@@ -190,10 +191,11 @@ func TestSpliceCommitWrites(t *testing.T) {
 	// old height goes into the splice's revocation log with its own
 	// output indexes, and the tip becomes the tail.
 	oldTail := got.RemoteTail
-	channel.RemoteCurrentRevocation = channel.RemoteNextRevocation
+	curRev := channel.RemoteNextRevocation.UnwrapOrFail(t)
+	channel.RemoteCurrentRevocation = &curRev
 	next, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-	channel.RemoteNextRevocation = next.PubKey()
+	channel.RemoteNextRevocation = fn.Some(*next.PubKey())
 	fwdPkg := NewFwdPkg(channel.ShortChanID(), tailHeight, nil, nil)
 	require.NoError(t, channel.AdvanceCommitChainTail(
 		fwdPkg, nil, 0, 1, SpliceCommitWrite{
