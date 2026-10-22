@@ -101,6 +101,11 @@ var deps = depDesc{
 	lnwire.UnifiedSigsOptional: {
 		lnwire.Blake2bOptional: {},
 	},
+	// option_independent_secrets only ever applies through channel_type,
+	// so it depends on explicit channel type negotiation.
+	lnwire.IndependentSecretsOptional: {
+		lnwire.ExplicitChannelTypeOptional: {},
+	},
 }
 
 // ValidateDeps asserts that a feature vector sets all features and their

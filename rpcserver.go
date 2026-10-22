@@ -4225,6 +4225,8 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 			ConfirmationHeight: pendingChan.
 				ConfirmationHeight,
 		}
+		result[i].Channel.IndependentSecrets =
+			pendingChan.ChanType.HasIndependentSecrets()
 	}
 
 	return result, nil
@@ -4292,6 +4294,8 @@ func (r *rpcServer) fetchPendingForceCloseChannels() (pendingForceClose,
 			)
 			channel.UnifiedSigs =
 				historical.ChanType.HasUnifiedSigs()
+			channel.IndependentSecrets =
+				historical.ChanType.HasIndependentSecrets()
 
 			numFwdPkgs, err := historical.CountFwdPkgs()
 			if err != nil {
@@ -4551,6 +4555,8 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 			Memo:                  string(waitingClose.Memo),
 			CustomChannelData:     customChanBytes,
 		}
+		channel.IndependentSecrets =
+			waitingClose.ChanType.HasIndependentSecrets()
 
 		var closingTxid, closingTxHex string
 		if closingTx != nil {
@@ -5192,6 +5198,7 @@ func createRPCOpenChannel(ctx context.Context, r *rpcServer,
 		LocalChanReserveSat:  int64(dbChannel.LocalChanCfg.ChanReserve),
 		RemoteChanReserveSat: int64(dbChannel.RemoteChanCfg.ChanReserve),
 	}
+	channel.IndependentSecrets = dbChannel.ChanType.HasIndependentSecrets()
 
 	// Look up our channel peer's node alias if the caller requests it.
 	if peerAliasLookup {
@@ -5447,6 +5454,9 @@ func (r *rpcServer) createRPCClosedChannel(
 	case channeldb.ErrChannelNotFound:
 
 	case nil:
+		channel.IndependentSecrets =
+			histChan.ChanType.HasIndependentSecrets()
+
 		if histChan.IsZeroConf() && histChan.ZeroConfConfirmed() {
 			// If the channel was zero-conf, it may have confirmed.
 			// Populate the confirmed SCID if so.

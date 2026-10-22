@@ -95,6 +95,10 @@ type Config struct {
 	// channel disagree with the chain about what was signed. Always false
 	// on mainnet, where the opt-in cannot be switched off.
 	NoUnifiedSigs bool
+
+	// NoIndependentSecrets unsets option_independent_secrets. lnd sets it
+	// unless the operator turns on protocol.independent-secrets.
+	NoIndependentSecrets bool
 }
 
 // Manager is responsible for generating feature vectors for different requested
@@ -191,6 +195,10 @@ func newManager(cfg Config, desc setDesc) (*Manager, error) {
 			raw.Unset(lnwire.UnifiedSigsOptional)
 			raw.Unset(lnwire.UnifiedSigsRequired)
 		}
+		if cfg.NoIndependentSecrets {
+			raw.Unset(lnwire.IndependentSecretsOptional)
+			raw.Unset(lnwire.IndependentSecretsRequired)
+		}
 		if cfg.NoWumbo {
 			raw.Unset(lnwire.WumboChannelsOptional)
 			raw.Unset(lnwire.WumboChannelsRequired)
@@ -261,6 +269,19 @@ func newManager(cfg Config, desc setDesc) (*Manager, error) {
 			if raw.IsSet(custom) {
 				return nil, fmt.Errorf("feature bit: %v "+
 					"already set", custom)
+			}
+
+			// A bit lnd defines is set by its own option, if at
+			// all, not as a custom bit: otherwise custom-init could
+			// turn on a feature its option leaves off, such as
+			// option_independent_secrets, which moves the database
+			// to a version older releases can't open. The same rule
+			// applies to updates at runtime (ValidateUpdate).
+			if name, known := lnwire.Features[custom]; known {
+				return nil, fmt.Errorf("feature bit: %v (%v) "+
+					"is defined by lnd and can't be set as "+
+					"a custom feature: %w", custom, name,
+					lnwire.ErrFeatureStandard)
 			}
 
 			if err := raw.SafeSet(custom); err != nil {

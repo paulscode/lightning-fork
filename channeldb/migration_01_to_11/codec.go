@@ -354,7 +354,11 @@ func ReadElement(r io.Reader, element interface{}) error {
 		*e = producer
 
 	case *shachain.Store:
-		store, err := shachain.NewRevocationStoreFromBytes(r)
+		// NewStoreFromBytes also decodes the IndependentStore of a
+		// channel with option_independent_secrets. Such channels only
+		// exist in a fully migrated database, but optional
+		// migrations such as migration30 still read them.
+		store, err := shachain.NewStoreFromBytes(r)
 		if err != nil {
 			return err
 		}

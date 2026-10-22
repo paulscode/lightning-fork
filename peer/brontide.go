@@ -5570,6 +5570,16 @@ func (p *Brontide) handleInitMsg(msg *lnwire.Init) error {
 		return fmt.Errorf("peer requires splicing, which is turned off")
 	}
 
+	// The even bit of option_independent_secrets is only valid in
+	// channel_type, and a node must not set it in init (BOLT 3). lnd knows
+	// the bit, so the check for unknown required bits lets it through; a
+	// peer that sets it anyway is refused, whether or not this node offers
+	// the add-on.
+	if p.remoteFeatures.IsSet(lnwire.IndependentSecretsRequired) {
+		return fmt.Errorf("peer sets option_independent_secrets' " +
+			"even bit in init, where it isn't valid")
+	}
+
 	// Refuse a peer that serves another chain, or that will not say which
 	// chain it serves when we insist on knowing.
 	err = checkPeerNetworks(

@@ -162,10 +162,11 @@ func (c *OpenChannel) LockSplice(l SpliceLock) error {
 // chain's, 546). False for a channel never spliced, which keeps those of its
 // opening.
 //
-// The port's channel process reads the reserves when it starts (each
-// connection, and after each tx_abort exchange), not at the lock: the link
-// applies them at the same moments (LightningChannel.ApplySpliceReserves), so
-// both sides hold each other to the same.
+// They take effect at the next connection, not at the lock nor after a
+// tx_abort exchange, as the Core Lightning port now does too (bolts#15): the
+// peer applies them when the channel is loaded for that connection
+// (LightningChannel.ApplySpliceReserves), so both sides hold each other to
+// the same.
 func (c *OpenChannel) SpliceReserve() (btcutil.Amount, bool) {
 	c.RLock()
 	defer c.RUnlock()

@@ -803,6 +803,8 @@ func (d *DefaultWalletImpl) BuildChainControl(
 		AuxLeafStore:          partialChainControl.Cfg.AuxLeafStore,
 		AuxSigner:             partialChainControl.Cfg.AuxSigner,
 	}
+	lnWalletConfig.IndependentSecretsSender =
+		d.cfg.Dev.GetIndependentSecretsSender()
 
 	// The broadcast is already always active for neutrino nodes, so we
 	// don't want to create a rebroadcast loop.
@@ -922,6 +924,8 @@ func (d *RPCSignerWalletImpl) BuildChainControl(
 		ChainHash:             d.cfg.ActiveNetParams.ChainHash,
 		CoinSelectionStrategy: walletConfig.CoinSelectionStrategy,
 	}
+	lnWalletConfig.IndependentSecretsSender =
+		d.cfg.Dev.GetIndependentSecretsSender()
 
 	// We've created the wallet configuration now, so we can finish
 	// initializing the main chain control.

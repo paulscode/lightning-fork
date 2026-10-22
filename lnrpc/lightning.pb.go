@@ -2749,8 +2749,13 @@ type ChannelAcceptRequest struct {
 	// Whether the initiator wants to use the scid-alias channel type. This is
 	// separate from the feature bit.
 	WantsScidAlias bool `protobuf:"varint,16,opt,name=wants_scid_alias,json=wantsScidAlias,proto3" json:"wants_scid_alias,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Whether the initiator proposes option_independent_secrets in the
+	// channel type. On such a channel this node stores every per-commitment
+	// secret the initiator reveals instead of requiring them to come from a
+	// shachain. commitment_type doesn't show it.
+	WantsIndependentSecrets bool `protobuf:"varint,2001,opt,name=wants_independent_secrets,json=wantsIndependentSecrets,proto3" json:"wants_independent_secrets,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *ChannelAcceptRequest) Reset() {
@@ -2891,6 +2896,13 @@ func (x *ChannelAcceptRequest) GetWantsZeroConf() bool {
 func (x *ChannelAcceptRequest) GetWantsScidAlias() bool {
 	if x != nil {
 		return x.WantsScidAlias
+	}
+	return false
+}
+
+func (x *ChannelAcceptRequest) GetWantsIndependentSecrets() bool {
+	if x != nil {
+		return x.WantsIndependentSecrets
 	}
 	return false
 }
@@ -4838,8 +4850,13 @@ type Channel struct {
 	//channel goes by now, which a splice changes; forwarding records keep this
 	//one. Payments naming either reach the channel.
 	OriginalChanId uint64 `protobuf:"varint,1006,opt,name=original_chan_id,json=originalChanId,proto3" json:"original_chan_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Whether the channel uses option_independent_secrets: this node stores
+	// every per-commitment secret the peer reveals instead of requiring them
+	// to come from a shachain, which lets the peer generate them with k-of-n
+	// signers. A build without the option cannot load such a channel.
+	IndependentSecrets bool `protobuf:"varint,2001,opt,name=independent_secrets,json=independentSecrets,proto3" json:"independent_secrets,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *Channel) Reset() {
@@ -5175,6 +5192,13 @@ func (x *Channel) GetOriginalChanId() uint64 {
 		return x.OriginalChanId
 	}
 	return 0
+}
+
+func (x *Channel) GetIndependentSecrets() bool {
+	if x != nil {
+		return x.IndependentSecrets
+	}
+	return false
 }
 
 // A splice that has started and not yet locked or ended.
@@ -6298,8 +6322,12 @@ type ChannelCloseSummary struct {
 	//The outpoint the channel was opened with, when a splice moved it:
 	//channel_point is then the funding output that was closed.
 	OriginalChannelPoint string `protobuf:"bytes,1002,opt,name=original_channel_point,json=originalChannelPoint,proto3" json:"original_channel_point,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Whether the channel used option_independent_secrets. A closed channel
+	// with it still keeps its stored state, so a build without the option
+	// can't open this database. False when the channel's history isn't kept.
+	IndependentSecrets bool `protobuf:"varint,2001,opt,name=independent_secrets,json=independentSecrets,proto3" json:"independent_secrets,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ChannelCloseSummary) Reset() {
@@ -6449,6 +6477,13 @@ func (x *ChannelCloseSummary) GetOriginalChannelPoint() string {
 		return x.OriginalChannelPoint
 	}
 	return ""
+}
+
+func (x *ChannelCloseSummary) GetIndependentSecrets() bool {
+	if x != nil {
+		return x.IndependentSecrets
+	}
+	return false
 }
 
 type Resolution struct {
@@ -19297,8 +19332,14 @@ type PendingChannelsResponse_PendingChannel struct {
 	//The outpoint the channel was opened with, when a splice moved it:
 	//channel_point is then the current funding output.
 	OriginalChannelPoint string `protobuf:"bytes,1002,opt,name=original_channel_point,json=originalChannelPoint,proto3" json:"original_channel_point,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Whether the channel uses option_independent_secrets: this node
+	// stores every per-commitment secret the peer reveals instead of
+	// requiring them to come from a shachain. A build without the
+	// option cannot load such a channel. False for a closing channel
+	// whose type is not known.
+	IndependentSecrets bool `protobuf:"varint,2001,opt,name=independent_secrets,json=independentSecrets,proto3" json:"independent_secrets,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *PendingChannelsResponse_PendingChannel) Reset() {
@@ -19441,6 +19482,13 @@ func (x *PendingChannelsResponse_PendingChannel) GetOriginalChannelPoint() strin
 		return x.OriginalChannelPoint
 	}
 	return ""
+}
+
+func (x *PendingChannelsResponse_PendingChannel) GetIndependentSecrets() bool {
+	if x != nil {
+		return x.IndependentSecrets
+	}
+	return false
 }
 
 type PendingChannelsResponse_PendingOpenChannel struct {
@@ -20035,7 +20083,7 @@ const file_lightning_proto_rawDesc = "" +
 	"\n" +
 	"fixed_msat\x18\x03 \x01(\x03H\x00R\tfixedMsat\x12\x1a\n" +
 	"\apercent\x18\x02 \x01(\x03H\x00R\apercentB\a\n" +
-	"\x05limit\"\xec\x04\n" +
+	"\x05limit\"\xa9\x05\n" +
 	"\x14ChannelAcceptRequest\x12\x1f\n" +
 	"\vnode_pubkey\x18\x01 \x01(\fR\n" +
 	"nodePubkey\x12\x1d\n" +
@@ -20058,7 +20106,8 @@ const file_lightning_proto_rawDesc = "" +
 	"\rchannel_flags\x18\r \x01(\rR\fchannelFlags\x12>\n" +
 	"\x0fcommitment_type\x18\x0e \x01(\x0e2\x15.lnrpc.CommitmentTypeR\x0ecommitmentType\x12&\n" +
 	"\x0fwants_zero_conf\x18\x0f \x01(\bR\rwantsZeroConf\x12(\n" +
-	"\x10wants_scid_alias\x18\x10 \x01(\bR\x0ewantsScidAlias\"\x90\x03\n" +
+	"\x10wants_scid_alias\x18\x10 \x01(\bR\x0ewantsScidAlias\x12;\n" +
+	"\x19wants_independent_secrets\x18\xd1\x0f \x01(\bR\x17wantsIndependentSecrets\"\x90\x03\n" +
 	"\x15ChannelAcceptResponse\x12\x16\n" +
 	"\x06accept\x18\x01 \x01(\bR\x06accept\x12&\n" +
 	"\x0fpending_chan_id\x18\x02 \x01(\fR\rpendingChanId\x12\x14\n" +
@@ -20187,7 +20236,7 @@ const file_lightning_proto_rawDesc = "" +
 	"\x0edust_limit_sat\x18\x03 \x01(\x04R\fdustLimitSat\x12/\n" +
 	"\x14max_pending_amt_msat\x18\x04 \x01(\x04R\x11maxPendingAmtMsat\x12\"\n" +
 	"\rmin_htlc_msat\x18\x05 \x01(\x04R\vminHtlcMsat\x12,\n" +
-	"\x12max_accepted_htlcs\x18\x06 \x01(\rR\x10maxAcceptedHtlcs\"\x80\x0e\n" +
+	"\x12max_accepted_htlcs\x18\x06 \x01(\rR\x10maxAcceptedHtlcs\"\xb2\x0e\n" +
 	"\aChannel\x12\x16\n" +
 	"\x06active\x18\x01 \x01(\bR\x06active\x12#\n" +
 	"\rremote_pubkey\x18\x02 \x01(\tR\fremotePubkey\x12#\n" +
@@ -20239,7 +20288,8 @@ const file_lightning_proto_rawDesc = "" +
 	"\vlast_splice\x18\xec\a \x01(\v2\x11.lnrpc.LastSpliceR\n" +
 	"lastSplice\x125\n" +
 	"\x16original_channel_point\x18\xed\a \x01(\tR\x14originalChannelPoint\x12-\n" +
-	"\x10original_chan_id\x18\xee\a \x01(\x04B\x020\x01R\x0eoriginalChanId\"\xf6\x04\n" +
+	"\x10original_chan_id\x18\xee\a \x01(\x04B\x020\x01R\x0eoriginalChanId\x120\n" +
+	"\x13independent_secrets\x18\xd1\x0f \x01(\bR\x12independentSecrets\"\xf6\x04\n" +
 	"\rPendingSplice\x12.\n" +
 	"\tinitiator\x18\x01 \x01(\x0e2\x10.lnrpc.InitiatorR\tinitiator\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12&\n" +
@@ -20337,7 +20387,7 @@ const file_lightning_proto_rawDesc = "" +
 	"\x12ListAliasesRequest\"E\n" +
 	"\x13ListAliasesResponse\x12.\n" +
 	"\n" +
-	"alias_maps\x18\x01 \x03(\v2\x0f.lnrpc.AliasMapR\taliasMaps\"\x9d\a\n" +
+	"alias_maps\x18\x01 \x03(\v2\x0f.lnrpc.AliasMapR\taliasMaps\"\xcf\a\n" +
 	"\x13ChannelCloseSummary\x12#\n" +
 	"\rchannel_point\x18\x01 \x01(\tR\fchannelPoint\x12\x1b\n" +
 	"\achan_id\x18\x02 \x01(\x04B\x020\x01R\x06chanId\x12\x1d\n" +
@@ -20359,7 +20409,8 @@ const file_lightning_proto_rawDesc = "" +
 	"aliasScids\x12;\n" +
 	"\x18zero_conf_confirmed_scid\x18\x0f \x01(\x04B\x020\x01R\x15zeroConfConfirmedScid\x12.\n" +
 	"\x13custom_channel_data\x18\x10 \x01(\fR\x11customChannelData\x125\n" +
-	"\x16original_channel_point\x18\xea\a \x01(\tR\x14originalChannelPoint\"\x8a\x01\n" +
+	"\x16original_channel_point\x18\xea\a \x01(\tR\x14originalChannelPoint\x120\n" +
+	"\x13independent_secrets\x18\xd1\x0f \x01(\bR\x12independentSecrets\"\x8a\x01\n" +
 	"\vClosureType\x12\x15\n" +
 	"\x11COOPERATIVE_CLOSE\x10\x00\x12\x15\n" +
 	"\x11LOCAL_FORCE_CLOSE\x10\x01\x12\x16\n" +
@@ -20654,13 +20705,13 @@ const file_lightning_proto_rawDesc = "" +
 	"\x13blocks_til_maturity\x18\x05 \x01(\x05R\x11blocksTilMaturity\x12\x14\n" +
 	"\x05stage\x18\x06 \x01(\rR\x05stage\">\n" +
 	"\x16PendingChannelsRequest\x12$\n" +
-	"\x0einclude_raw_tx\x18\x01 \x01(\bR\fincludeRawTx\"\xbb\x16\n" +
+	"\x0einclude_raw_tx\x18\x01 \x01(\bR\fincludeRawTx\"\xed\x16\n" +
 	"\x17PendingChannelsResponse\x12.\n" +
 	"\x13total_limbo_balance\x18\x01 \x01(\x03R\x11totalLimboBalance\x12e\n" +
 	"\x15pending_open_channels\x18\x02 \x03(\v21.lnrpc.PendingChannelsResponse.PendingOpenChannelR\x13pendingOpenChannels\x12j\n" +
 	"\x18pending_closing_channels\x18\x03 \x03(\v2,.lnrpc.PendingChannelsResponse.ClosedChannelB\x02\x18\x01R\x16pendingClosingChannels\x12v\n" +
 	"\x1epending_force_closing_channels\x18\x04 \x03(\v21.lnrpc.PendingChannelsResponse.ForceClosedChannelR\x1bpendingForceClosingChannels\x12h\n" +
-	"\x16waiting_close_channels\x18\x05 \x03(\v22.lnrpc.PendingChannelsResponse.WaitingCloseChannelR\x14waitingCloseChannels\x1a\xbe\x05\n" +
+	"\x16waiting_close_channels\x18\x05 \x03(\v22.lnrpc.PendingChannelsResponse.WaitingCloseChannelR\x14waitingCloseChannels\x1a\xf0\x05\n" +
 	"\x0ePendingChannel\x12&\n" +
 	"\x0fremote_node_pub\x18\x01 \x01(\tR\rremoteNodePub\x12#\n" +
 	"\rchannel_point\x18\x02 \x01(\tR\fchannelPoint\x12\x1a\n" +
@@ -20678,7 +20729,8 @@ const file_lightning_proto_rawDesc = "" +
 	"\x04memo\x18\r \x01(\tR\x04memo\x12.\n" +
 	"\x13custom_channel_data\x18\" \x01(\fR\x11customChannelData\x12\"\n" +
 	"\funified_sigs\x18\xe9\a \x01(\bR\vunifiedSigs\x125\n" +
-	"\x16original_channel_point\x18\xea\a \x01(\tR\x14originalChannelPoint\x1a\xe8\x02\n" +
+	"\x16original_channel_point\x18\xea\a \x01(\tR\x14originalChannelPoint\x120\n" +
+	"\x13independent_secrets\x18\xd1\x0f \x01(\bR\x12independentSecrets\x1a\xe8\x02\n" +
 	"\x12PendingOpenChannel\x12G\n" +
 	"\achannel\x18\x01 \x01(\v2-.lnrpc.PendingChannelsResponse.PendingChannelR\achannel\x12\x1d\n" +
 	"\n" +

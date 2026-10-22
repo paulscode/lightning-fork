@@ -928,6 +928,12 @@ message ChannelAcceptRequest {
     // Whether the initiator wants to use the scid-alias channel type. This is
     // separate from the feature bit.
     bool wants_scid_alias = 16;
+
+    // Whether the initiator proposes option_independent_secrets in the
+    // channel type. On such a channel this node stores every per-commitment
+    // secret the initiator reveals instead of requiring them to come from a
+    // shachain. commitment_type doesn't show it.
+    bool wants_independent_secrets = 2001;
 }
 
 message ChannelAcceptResponse {
@@ -1638,6 +1644,12 @@ message Channel {
     one. Payments naming either reach the channel.
     */
     uint64 original_chan_id = 1006 [jstype = JS_STRING];
+
+    // Whether the channel uses option_independent_secrets: this node stores
+    // every per-commitment secret the peer reveals instead of requiring them
+    // to come from a shachain, which lets the peer generate them with k-of-n
+    // signers. A build without the option cannot load such a channel.
+    bool independent_secrets = 2001;
 }
 
 /*
@@ -2010,6 +2022,11 @@ message ChannelCloseSummary {
     channel_point is then the funding output that was closed.
     */
     string original_channel_point = 1002;
+
+    // Whether the channel used option_independent_secrets. A closed channel
+    // with it still keeps its stored state, so a build without the option
+    // can't open this database. False when the channel's history isn't kept.
+    bool independent_secrets = 2001;
 }
 
 enum ResolutionType {
@@ -3093,6 +3110,13 @@ message PendingChannelsResponse {
         channel_point is then the current funding output.
         */
         string original_channel_point = 1002;
+
+        // Whether the channel uses option_independent_secrets: this node
+        // stores every per-commitment secret the peer reveals instead of
+        // requiring them to come from a shachain. A build without the
+        // option cannot load such a channel. False for a closing channel
+        // whose type is not known.
+        bool independent_secrets = 2001;
     }
 
     message PendingOpenChannel {

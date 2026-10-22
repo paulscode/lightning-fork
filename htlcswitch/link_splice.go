@@ -337,14 +337,6 @@ func (l *channelLink) handleSpliceCommitSig(msg *lnwire.CommitSig) {
 
 // handleSpliceMessage hands a splice message to the splice machine.
 func (l *channelLink) handleSpliceMessage(msg lnwire.Message) {
-	// A tx_abort, the peer's or the echo of ours, ends an exchange after
-	// which the Core Lightning port's channel process restarts, reading a
-	// spliced channel's reserves anew: applied here, before the peer's
-	// next message is read, which may come at once.
-	if _, ok := msg.(*lnwire.TxAbort); ok {
-		l.channel.ApplySpliceReserves()
-	}
-
 	if l.cfg.SpliceHandler == nil {
 		if !l.unknownMessageLogged {
 			l.log.Warnf("received %T without splicing enabled",

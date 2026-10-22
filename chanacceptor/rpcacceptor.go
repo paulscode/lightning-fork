@@ -262,9 +262,10 @@ func (r *RPCAcceptor) sendAcceptRequests(errChan chan error,
 			// counterpart. Also determine whether the zero-conf or
 			// scid-alias channel types are set.
 			var (
-				commitmentType lnrpc.CommitmentType
-				wantsZeroConf  bool
-				wantsScidAlias bool
+				commitmentType          lnrpc.CommitmentType
+				wantsZeroConf           bool
+				wantsScidAlias          bool
+				wantsIndependentSecrets bool
 			)
 
 			if req.OpenChanMsg.ChannelType != nil {
@@ -289,6 +290,15 @@ func (r *RPCAcceptor) sendAcceptRequests(errChan chan error,
 
 					wantsScidAlias = true
 				}
+
+				// acceptorCommitmentType sets this bit aside,
+				// so it's reported on its own.
+				if channelFeatures.IsSet(
+					lnwire.IndependentSecretsRequired,
+				) {
+
+					wantsIndependentSecrets = true
+				}
 			}
 
 			acceptRequests[pendingChanID] = newRequest
@@ -311,6 +321,8 @@ func (r *RPCAcceptor) sendAcceptRequests(errChan chan error,
 				CommitmentType:   commitmentType,
 				WantsZeroConf:    wantsZeroConf,
 				WantsScidAlias:   wantsScidAlias,
+
+				WantsIndependentSecrets: wantsIndependentSecrets,
 			}
 
 			if err := r.send(chanAcceptReq); err != nil {
@@ -456,6 +468,10 @@ func acceptorCommitmentType(
 
 	shape := channelFeatures.Clone()
 	shape.Unset(lnwire.UnifiedSigsRequired)
+
+	// option_independent_secrets changes how per-commitment secrets are
+	// stored, not the shape of the commitment, so it's set aside too.
+	shape.Unset(lnwire.IndependentSecretsRequired)
 
 	switch {
 	case shape.OnlyContains(

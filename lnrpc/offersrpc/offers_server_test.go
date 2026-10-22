@@ -677,6 +677,8 @@ func fetchPayAndList(t *testing.T, chain [32]byte) {
 		paid[0].FeeLimit, "the wallet's default fee limit")
 	require.Equal(t, uint32(DefaultMaxParts), paid[0].MaxParts)
 	require.Equal(t, DefaultPayTimeout, paid[0].PayAttemptTimeout)
+	require.Equal(t, []byte(fetched.Bolt12), paid[0].PaymentRequest,
+		"the invoice paid is kept as the payment's request")
 
 	payResp, err = s.PayOffer(ctx, &PayOfferRequest{
 		Offer: lno, AmountMsat: 1_000_000, FeeLimitMsat: 500,

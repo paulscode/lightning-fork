@@ -337,6 +337,23 @@ const (
 	// ordinary channel rather than fail to open one at all.
 	UnifiedSigsOptional FeatureBit = 515
 
+	// IndependentSecretsRequired is a required feature bit that indicates
+	// the node can negotiate a channel with option_independent_secrets:
+	// it stores every per-commitment secret it receives instead of
+	// requiring the remote party to derive them from a shachain, so the
+	// remote party may generate them by any method, including jointly
+	// across k-of-n signers.
+	//
+	// This even bit is only valid in channel_type: a node must not set it
+	// in init or node_announcement, where only the optional bit is used.
+	//
+	// Specified as 266/267 in the fork's BOLTs (lightning-blake2b/bolts#17).
+	IndependentSecretsRequired FeatureBit = 266
+
+	// IndependentSecretsOptional is the optional form of
+	// IndependentSecretsRequired.
+	IndependentSecretsOptional FeatureBit = 267
+
 	// ExperimentalAccountabilityRequired is a required feature bit that
 	// indicates that the node will relay experimental accountability
 	// signals.
@@ -447,6 +464,8 @@ var Features = map[FeatureBit]string{
 	Blake2bOptional:                      "blake2b",
 	UnifiedSigsRequired:                  "unified-sigs",
 	UnifiedSigsOptional:                  "unified-sigs",
+	IndependentSecretsRequired:           "independent-secrets",
+	IndependentSecretsOptional:           "independent-secrets",
 	ExperimentalAccountabilityRequired:   "accountable-x",
 	ExperimentalAccountabilityOptional:   "accountable-x",
 	Bolt11BlindedPathsOptional:           "bolt-11-blinded-paths",

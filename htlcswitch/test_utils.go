@@ -131,10 +131,20 @@ type testLightningChannel struct {
 // representations.
 //
 // TODO(roasbeef): need to factor out, similar func re-used in many parts of codebase
+//
+// Any extraChanType bits are added to the channel type of both sides. With
+// LocalIndependentSecretsBit, both sides generate their per-commitment
+// secrets with a shachain.IndependentProducer.
 func createTestChannel(t *testing.T, alicePrivKey, bobPrivKey []byte,
 	aliceAmount, bobAmount, aliceReserve, bobReserve btcutil.Amount,
-	chanID lnwire.ShortChannelID) (*testLightningChannel,
+	chanID lnwire.ShortChannelID,
+	extraChanType ...channeldb.ChannelType) (*testLightningChannel,
 	*testLightningChannel, error) {
+
+	chanType := channeldb.SingleFunderTweaklessBit
+	for _, extra := range extraChanType {
+		chanType |= extra
+	}
 
 	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(alicePrivKey)
 	bobKeyPriv, bobKeyPub := btcec.PrivKeyFromBytes(bobPrivKey)
@@ -224,7 +234,16 @@ func createTestChannel(t *testing.T, alicePrivKey, bobPrivKey []byte,
 	if err != nil {
 		return nil, nil, err
 	}
-	bobPreimageProducer := shachain.NewRevocationProducer(*bobRoot)
+	var bobPreimageProducer shachain.Producer = shachain.
+		NewRevocationProducer(*bobRoot)
+	if chanType.HasLocalIndependentSecrets() {
+		bobPreimageProducer, err = shachain.NewIndependentProducerFrom(
+			bobPreimageProducer,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	bobFirstRevoke, err := bobPreimageProducer.AtIndex(0)
 	if err != nil {
 		return nil, nil, err
@@ -235,7 +254,15 @@ func createTestChannel(t *testing.T, alicePrivKey, bobPrivKey []byte,
 	if err != nil {
 		return nil, nil, err
 	}
-	alicePreimageProducer := shachain.NewRevocationProducer(*aliceRoot)
+	var alicePreimageProducer shachain.Producer = shachain.
+		NewRevocationProducer(*aliceRoot)
+	if chanType.HasLocalIndependentSecrets() {
+		alicePreimageProducer, err = shachain.
+			NewIndependentProducerFrom(alicePreimageProducer)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	aliceFirstRevoke, err := alicePreimageProducer.AtIndex(0)
 	if err != nil {
 		return nil, nil, err
@@ -244,8 +271,7 @@ func createTestChannel(t *testing.T, alicePrivKey, bobPrivKey []byte,
 
 	aliceCommitTx, bobCommitTx, err := lnwallet.CreateCommitmentTxns(
 		aliceAmount, bobAmount, &aliceCfg, &bobCfg, aliceCommitPoint,
-		bobCommitPoint, *fundingTxIn, channeldb.SingleFunderTweaklessBit,
-		isAliceInitiator, 0,
+		bobCommitPoint, *fundingTxIn, chanType, isAliceInitiator, 0,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -291,17 +317,20 @@ func createTestChannel(t *testing.T, alicePrivKey, bobPrivKey []byte,
 		CommitSig:     bytes.Repeat([]byte{1}, 71),
 	}
 
+	aliceSecretStore := channeldb.NewRemoteSecretStore(chanType)
+	bobSecretStore := channeldb.NewRemoteSecretStore(chanType)
+
 	aliceChannelState := &channeldb.OpenChannel{
 		LocalChanCfg:            aliceCfg,
 		RemoteChanCfg:           bobCfg,
 		IdentityPub:             aliceKeyPub,
 		FundingOutpoint:         *prevOut,
-		ChanType:                channeldb.SingleFunderTweaklessBit,
+		ChanType:                chanType,
 		IsInitiator:             isAliceInitiator,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: bobCommitPoint,
 		RevocationProducer:      alicePreimageProducer,
-		RevocationStore:         shachain.NewRevocationStore(),
+		RevocationStore:         aliceSecretStore,
 		LocalCommitment:         aliceCommit,
 		RemoteCommitment:        aliceCommit,
 		ShortChannelID:          chanID,
@@ -315,12 +344,12 @@ func createTestChannel(t *testing.T, alicePrivKey, bobPrivKey []byte,
 		RemoteChanCfg:           aliceCfg,
 		IdentityPub:             bobKeyPub,
 		FundingOutpoint:         *prevOut,
-		ChanType:                channeldb.SingleFunderTweaklessBit,
+		ChanType:                chanType,
 		IsInitiator:             !isAliceInitiator,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: aliceCommitPoint,
 		RevocationProducer:      bobPreimageProducer,
-		RevocationStore:         shachain.NewRevocationStore(),
+		RevocationStore:         bobSecretStore,
 		LocalCommitment:         bobCommit,
 		RemoteCommitment:        bobCommit,
 		ShortChannelID:          chanID,
@@ -871,14 +900,16 @@ type clusterChannels struct {
 
 // createClusterChannels creates lightning channels which are needed for
 // network cluster to be initialized.
-func createClusterChannels(t *testing.T, aliceToBob, bobToCarol btcutil.Amount) (
-	*clusterChannels, func() (*clusterChannels, error), error) {
+func createClusterChannels(t *testing.T, aliceToBob, bobToCarol btcutil.Amount,
+	extraChanType ...channeldb.ChannelType) (*clusterChannels,
+	func() (*clusterChannels, error), error) {
 
 	_, _, firstChanID, secondChanID := genIDs()
 
 	// Create lightning channels between Alice<->Bob and Bob<->Carol
 	aliceChannel, firstBobChannel, err := createTestChannel(t, alicePrivKey,
 		bobPrivKey, aliceToBob, aliceToBob, 0, 0, firstChanID,
+		extraChanType...,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create "+
@@ -887,6 +918,7 @@ func createClusterChannels(t *testing.T, aliceToBob, bobToCarol btcutil.Amount) 
 
 	secondBobChannel, carolChannel, err := createTestChannel(t, bobPrivKey,
 		carolPrivKey, bobToCarol, bobToCarol, 0, 0, secondChanID,
+		extraChanType...,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create "+

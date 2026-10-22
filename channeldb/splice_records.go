@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/kvdb"
@@ -1137,8 +1138,15 @@ func (c *OpenChannel) SpliceRevocationsAt(height uint64) ([]chainhash.Hash,
 // pending splices: our new commitments, the peer's new ones with our
 // signatures, or, with revoke, the peer's revoked ones moved into their
 // revocation logs.
+//
+// On a channel with option_independent_secrets, commitSecret is the peer's
+// per-commitment secret for the commitment number secretHeight. One secret
+// revokes the commitment with that number on every funding output, so it is
+// stored with each splice's log entry at that number too: a breach on a
+// splice's funding is looked up in the splice's log.
 func applySpliceWrites(chanBucket kvdb.RwBucket, writes []SpliceCommitWrite,
-	revoke bool, noAmtData bool) error {
+	revoke bool, noAmtData bool, commitSecret fn.Option[[32]byte],
+	secretHeight uint64) error {
 
 	for _, w := range writes {
 		r, err := fetchSpliceRecord(chanBucket, w.Txid)
@@ -1173,9 +1181,13 @@ func applySpliceWrites(chanBucket kvdb.RwBucket, writes []SpliceCommitWrite,
 			if err != nil {
 				return err
 			}
-			err = putRevocationLog(
+			secret := fn.None[[32]byte]()
+			if r.RemoteTail.CommitHeight == secretHeight {
+				secret = commitSecret
+			}
+			err = putRevocationLogWithSecret(
 				log, r.RemoteTail, w.OurOutputIndex,
-				w.TheirOutputIndex, noAmtData,
+				w.TheirOutputIndex, noAmtData, secret,
 			)
 			if err != nil {
 				return err

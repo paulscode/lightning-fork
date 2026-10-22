@@ -1196,11 +1196,12 @@ func TestLinkHoldKeepsCloseDisable(t *testing.T) {
 	require.False(t, s.link.EligibleToForward())
 }
 
-// TestLinkTxAbortAppliesReserves checks a tx_abort applies a spliced
-// channel's reserves at once, before the peer's next message: the Core
-// Lightning port's channel process restarts after the exchange, reading them
-// anew, and its next update may follow straight away.
-func TestLinkTxAbortAppliesReserves(t *testing.T) {
+// TestLinkTxAbortKeepsReserves checks a tx_abort leaves a spliced channel's
+// reserves as they were: they change at the next connection, when the Core
+// Lightning port takes them up too (bolts#15). Switching at the tx_abort
+// left the two disagreeing after an aborted RBF, and the channel force
+// closed.
+func TestLinkTxAbortKeepsReserves(t *testing.T) {
 	t.Parallel()
 
 	s := newSpliceLinkHarness(t)
@@ -1222,16 +1223,18 @@ func TestLinkTxAbortAppliesReserves(t *testing.T) {
 
 		return local, remote
 	}
-	want, ok := s.link.channel.State().SpliceReserve()
+	splice, ok := s.link.channel.State().SpliceReserve()
 	require.True(t, ok)
-	local, _ := reserves()
-	require.NotEqual(t, want, local, "the lock alone changes them")
+	local, remote := reserves()
+	require.NotEqual(t, splice, local, "the lock alone changes them")
 
 	s.link.HandleChannelUpdate(&lnwire.TxAbort{ChannelID: s.link.ChanID()})
-	require.Eventually(t, func() bool {
-		local, remote := reserves()
-		return local == want && remote == want
-	}, 5*time.Second, 10*time.Millisecond)
+	// The abort is handled on the link's goroutine; a request queued
+	// after it runs once it has been.
+	time.Sleep(100 * time.Millisecond)
+	gotLocal, gotRemote := reserves()
+	require.Equal(t, local, gotLocal)
+	require.Equal(t, remote, gotRemote)
 }
 
 // quiesce makes the harness's link quiescent, Alice asking.

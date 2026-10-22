@@ -71,3 +71,9 @@ func (d *DevConfig) GetMinFwdHistoryAge() time.Duration {
 func (d *DevConfig) ChannelCloseConfs() fn.Option[uint32] {
 	return fn.None[uint32]()
 }
+
+// GetIndependentSecretsSender returns false for production builds, where this
+// node's per-commitment secrets always come from a shachain.
+func (d *DevConfig) GetIndependentSecretsSender() bool {
+	return false
+}

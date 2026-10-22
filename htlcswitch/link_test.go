@@ -3981,9 +3981,12 @@ func TestChannelRetransmission(t *testing.T) {
 			},
 		},
 	}
-	paymentWithRestart := func(t *testing.T, messages []expectedMessage) {
+	paymentWithRestart := func(t *testing.T, messages []expectedMessage,
+		extraChanType ...channeldb.ChannelType) {
+
 		channels, restoreChannelsFromDb, err := createClusterChannels(
 			t, btcutil.SatoshiPerBitcoin*5, btcutil.SatoshiPerBitcoin*5,
+			extraChanType...,
 		)
 		if err != nil {
 			t.Fatalf("unable to create channel: %v", err)
@@ -4119,11 +4122,27 @@ func TestChannelRetransmission(t *testing.T) {
 		}
 	}
 
+	// Every case also runs on channels with option_independent_secrets
+	// on which both sides generate their secrets without a shachain: the
+	// reestablish, the retransmitted revoke_and_ack and the restart from
+	// the database must all work with secrets that are stored one by one.
+	independent := channeldb.IndependentSecretsBit |
+		channeldb.LocalIndependentSecretsBit
 	for _, test := range retransmissionTests {
 		passed := t.Run(test.name, func(t *testing.T) {
 			paymentWithRestart(t, test.messages)
 		})
+		if !passed {
+			break
+		}
 
+		passed = t.Run("independent secrets/"+test.name,
+			func(t *testing.T) {
+				paymentWithRestart(
+					t, test.messages, independent,
+				)
+			},
+		)
 		if !passed {
 			break
 		}

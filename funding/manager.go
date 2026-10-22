@@ -1719,6 +1719,9 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 	zeroConf := featureVec.IsSet(lnwire.ZeroConfRequired)
 	scid := featureVec.IsSet(lnwire.ScidAliasRequired)
 	unifiedSigs := featureVec.IsSet(lnwire.UnifiedSigsRequired)
+	independentSecrets := featureVec.IsSet(
+		lnwire.IndependentSecretsRequired,
+	)
 
 	// If the zero-conf channel type was negotiated, ensure that the
 	// acceptor allows it.
@@ -1813,6 +1816,7 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		UnifiedSigs:      unifiedSigs,
 		TapscriptRoot:    tapscriptRoot,
 	}
+	req.IndependentSecrets = independentSecrets
 
 	reservation, err := f.cfg.Wallet.InitChannelReservation(req)
 	if err != nil {
@@ -5188,6 +5192,9 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	zeroConf := featureVec.IsSet(lnwire.ZeroConfRequired)
 	scid := featureVec.IsSet(lnwire.ScidAliasRequired)
 	unifiedSigs := featureVec.IsSet(lnwire.UnifiedSigsRequired)
+	independentSecrets := featureVec.IsSet(
+		lnwire.IndependentSecretsRequired,
+	)
 
 	// The option-scid-alias channel type for a public channel is disallowed
 	if scid && !msg.Private {
@@ -5299,6 +5306,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		Memo:             msg.Memo,
 		TapscriptRoot:    tapscriptRoot,
 	}
+	req.IndependentSecrets = independentSecrets
 
 	reservation, err := f.cfg.Wallet.InitChannelReservation(req)
 	if err != nil {

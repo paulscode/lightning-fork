@@ -23,7 +23,23 @@ type PaymentIntentType int16
 const (
 	// PaymentIntentTypeBolt11 indicates a BOLT11 invoice payment.
 	PaymentIntentTypeBolt11 PaymentIntentType = 0
+
+	// PaymentIntentTypeBolt12 indicates a BOLT 12 invoice payment: the
+	// payload is the lni1 invoice paid, signed by its issuer.
+	PaymentIntentTypeBolt12 PaymentIntentType = 1
 )
+
+// paymentIntentType tells a stored payment request's kind: a BOLT 12
+// invoice (lni1...) or, as every request was before, a BOLT11 one.
+func paymentIntentType(request []byte) PaymentIntentType {
+	if len(request) >= 4 &&
+		bytes.EqualFold(request[:4], []byte("lni1")) {
+
+		return PaymentIntentTypeBolt12
+	}
+
+	return PaymentIntentTypeBolt11
+}
 
 // HTLCAttemptResolutionType represents the type of HTLC attempt resolution.
 type HTLCAttemptResolutionType int32
@@ -794,11 +810,8 @@ func (s *SQLStore) QueryPayments(ctx context.Context, query Query) (Response,
 				NumLimit:      limit,
 				CreatedAfter:  createdAfter,
 				CreatedBefore: createdBefore,
-				// For now there only BOLT 11 payment intents
-				// exist.
-				IntentType: sqldb.SQLInt16(
-					PaymentIntentTypeBolt11,
-				),
+				// Every kind of intent: a BOLT 12 payment
+				// keeps its invoice too, and must be listed.
 			}
 
 			if query.Reversed {
@@ -1268,9 +1281,10 @@ func (s *SQLStore) InitPayment(ctx context.Context, paymentHash lntypes.Hash,
 			_, err = db.InsertPaymentIntent(
 				ctx, sqlc.InsertPaymentIntentParams{
 					PaymentID: paymentID,
-					IntentType: int16(
-						PaymentIntentTypeBolt11,
-					),
+					IntentType: int16(paymentIntentType(
+						paymentCreationInfo.
+							PaymentRequest,
+					)),
 					IntentPayload: paymentCreationInfo.
 						PaymentRequest,
 				},

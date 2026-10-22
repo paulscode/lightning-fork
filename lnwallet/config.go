@@ -78,4 +78,11 @@ type Config struct {
 	// AuxSigner is an optional signer that can be used to sign auxiliary
 	// leaves for certain custom channel types.
 	AuxSigner fn.Option[AuxSigner]
+
+	// IndependentSecretsSender makes this node generate its own
+	// per-commitment secrets with a shachain.IndependentProducer on every
+	// new channel with option_independent_secrets, so that the peer's
+	// support for them is exercised. It's set only by a dev option in
+	// integration builds.
+	IndependentSecretsSender bool
 }

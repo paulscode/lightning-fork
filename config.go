@@ -1252,6 +1252,16 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 			"can't be set with protocol.no-quiescence")
 	}
 
+	// The dev sender's secrets are only accepted on channels with
+	// option_independent_secrets, which this node only opens or accepts
+	// when it signals the feature.
+	if cfg.Dev != nil && cfg.Dev.GetIndependentSecretsSender() &&
+		!cfg.ProtocolOptions.IndependentSecrets {
+
+		return nil, mkErr("dev.independent-secrets-sender needs " +
+			"protocol.independent-secrets")
+	}
+
 	// The hold on a peer's spliced-in coins, and the deepest lock, wait
 	// for this many confirmations; the notifier counts no further.
 	if cfg.ProtocolOptions.SplicePeerInputConfs > chainntnfs.MaxNumConfs {

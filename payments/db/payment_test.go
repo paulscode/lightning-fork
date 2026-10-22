@@ -3461,3 +3461,43 @@ func TestFetchPaymentWithNoAttempts(t *testing.T) {
 	require.Equal(t, info.Value, payment.Info.Value)
 	require.Equal(t, StatusInitiated, payment.Status)
 }
+
+// TestBolt12PaymentRequestKept checks that a payment of a BOLT 12 invoice
+// keeps the invoice as its request, like a BOLT11 one, and is listed with
+// it: with the preimage it is the proof of the payment.
+func TestBolt12PaymentRequestKept(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	paymentDB, _ := NewTestDB(t)
+
+	bolt11, _ := genInfo(t)
+	require.NoError(t, paymentDB.InitPayment(
+		ctx, bolt11.PaymentIdentifier, bolt11,
+	))
+
+	bolt12, _ := genInfo(t)
+	bolt12.PaymentRequest = []byte("lni1qqgjnqv6zcd0dsr3s")
+	require.NoError(t, paymentDB.InitPayment(
+		ctx, bolt12.PaymentIdentifier, bolt12,
+	))
+
+	fetched, err := paymentDB.FetchPayment(ctx, bolt12.PaymentIdentifier)
+	require.NoError(t, err)
+	require.Equal(t, bolt12.PaymentRequest, fetched.Info.PaymentRequest)
+
+	resp, err := paymentDB.QueryPayments(ctx, Query{
+		MaxPayments:       math.MaxUint64,
+		IncludeIncomplete: true,
+	})
+	require.NoError(t, err)
+	requests := make(map[lntypes.Hash][]byte)
+	for _, p := range resp.Payments {
+		requests[p.Info.PaymentIdentifier] = p.Info.PaymentRequest
+	}
+	require.Len(t, requests, 2, "both kinds of payment are listed")
+	require.Equal(t, bolt11.PaymentRequest,
+		requests[bolt11.PaymentIdentifier])
+	require.Equal(t, bolt12.PaymentRequest,
+		requests[bolt12.PaymentIdentifier])
+}

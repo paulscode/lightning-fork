@@ -671,6 +671,11 @@ func (s *Server) PayOffer(ctx context.Context,
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// The invoice paid is the payment's request: kept with the payment,
+	// it is, with the preimage, the proof of what was paid and to whom
+	// (the issuer signed it), as a BOLT11 request is for those payments.
+	intent.PaymentRequest = []byte(bolt12)
+
 	hash := intent.Identifier()
 	preimage, rt, err := s.cfg.Deps.PayInvoice(ctx, intent)
 	switch {

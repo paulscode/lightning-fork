@@ -227,3 +227,17 @@ func TestComputePaymentStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestPaymentIntentType checks the kind a stored payment request is given.
+func TestPaymentIntentType(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, PaymentIntentTypeBolt12,
+		paymentIntentType([]byte("lni1qqgjnqv6zcd0dsr3s")))
+	require.Equal(t, PaymentIntentTypeBolt12,
+		paymentIntentType([]byte("LNI1QQGJNQV6")))
+	require.Equal(t, PaymentIntentTypeBolt11,
+		paymentIntentType([]byte("lnbc1500n1p")))
+	require.Equal(t, PaymentIntentTypeBolt11, paymentIntentType([]byte("lni")))
+	require.Equal(t, PaymentIntentTypeBolt11, paymentIntentType(nil))
+}
