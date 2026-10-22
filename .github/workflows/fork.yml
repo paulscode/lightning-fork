@@ -44,6 +44,10 @@ jobs:
           echo "$files" | sed 's/^/  /'
           [ -z "$files" ] || { out=$(gofmt -l $files); [ -z "$out" ] || { echo "gofmt:"; echo "$out"; exit 1; }; }
           pkgs=$(echo "$files" | xargs -r -n1 dirname | sort -u | sed 's|^|./|')
+          # Only this module's packages: an upstream merge past the last
+          # release tag also brings files of its nested modules (kvdb, tlv,
+          # tools), which go vet here can't load.
+          [ -z "$pkgs" ] || pkgs=$(go list -e -f '{{if .Module}}{{if .Module.Main}}{{.ImportPath}}{{end}}{{end}}' $pkgs)
           [ -z "$pkgs" ] || go vet $pkgs
       - name: Chain registrations use the current funding output
         run: ./scripts/check-funding-outpoint.sh
