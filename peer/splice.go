@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lightningnetwork/lnd/lnpeer"
 	"sync/atomic"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -115,7 +116,11 @@ func (p *Brontide) closeDisowned(chanID lnwire.ChannelID, force bool) {
 			}
 
 		case err := <-errChan:
-			if err != nil && !errors.Is(err, errAlreadyClosing) {
+			// The peer exiting answers the request too; it isn't a
+			// failure of the close.
+			if err != nil && !errors.Is(err, errAlreadyClosing) &&
+				!errors.Is(err, lnpeer.ErrPeerExiting) {
+
 				p.log.Errorf("ChannelID(%v): unable to close: %v",
 					chanID, err)
 			}
