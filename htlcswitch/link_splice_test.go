@@ -2,6 +2,7 @@ package htlcswitch
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -1446,11 +1447,37 @@ func TestLinkHeldBounded(t *testing.T) {
 		t.Parallel()
 
 		s := newSpliceLinkHarness(t)
+		peer := s.link.cfg.Peer.(*mockPeer)
+		peer.disconnects = make(chan error, 16)
 		htlc := heldUpdate(s)
 		for range maxHeldMessages {
 			s.link.HandleChannelUpdate(htlc)
 		}
-		s.requireFailure(t, LinkFailureDisconnect)
+
+		// The mailbox holds as many messages as the link does, so when
+		// the link drains it more slowly than they come, the mailbox's
+		// bound disconnects the peer first. Either way the connection
+		// drops. Other disconnects (the harness never ends quiescence)
+		// are what a no-op Disconnect ignored before.
+		timeout := time.After(5 * time.Second)
+		for {
+			select {
+			case e := <-s.failures:
+				require.Equal(t, LinkFailureDisconnect,
+					e.FailureAction, e.Error())
+
+				return
+
+			case err := <-peer.disconnects:
+				if errors.Is(err, errWireMessageQueueFull) {
+					return
+				}
+
+			case <-timeout:
+				t.Fatal("neither the link nor the mailbox " +
+					"dropped the connection")
+			}
+		}
 	})
 
 	// Below both, nothing fails.

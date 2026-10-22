@@ -2074,13 +2074,25 @@ type mockPeer struct {
 	disconnected bool
 	sentMsgs     chan lnwire.Message
 	quit         chan struct{}
+
+	// disconnects, if set, receives each Disconnect's error.
+	disconnects chan error
 }
 
 func (m *mockPeer) QuitSignal() <-chan struct{} {
 	return m.quit
 }
 
-func (m *mockPeer) Disconnect(err error) {}
+func (m *mockPeer) Disconnect(err error) {
+	if m.disconnects == nil {
+		return
+	}
+
+	select {
+	case m.disconnects <- err:
+	default:
+	}
+}
 
 var _ lnpeer.Peer = (*mockPeer)(nil)
 
