@@ -516,12 +516,16 @@ From the command line:
 
 ```sh
 lncli splice estimate in --chan_point=<txid:index> --amt=<sats>
-lncli splice in  --chan_point=<txid:index> --amt=<sats> [--sat_per_vbyte=N]
+lncli splice in  --chan_point=<txid:index> --amt=<sats> [--sat_per_vbyte=N] [--utxo=<txid:index> ...]
 lncli splice out --chan_point=<txid:index> --amt=<sats> [--addr=<address>]
 ```
 
 `--max` takes what the wallet can spend, or what the channel lets go,
-after the fee. Without `--addr` funds moved out go to a new address of
+after the fee. `--utxo` (repeatable; `outpoints` in the RPC) limits the
+coins a splice in may spend to those: the amount comes from them, or with
+`--max` all of them go in. The coins left out count towards what the
+wallet keeps for fee-bumping its anchor channels' closes, so the chosen ones
+needn't keep it back themselves. Without `--addr` funds moved out go to a new address of
 the wallet; a channel opened with a close address only moves funds there.
 The amount moved out is what arrives; the fee comes from this node's side
 of the channel. `lncli listchannels` shows a splice in progress as

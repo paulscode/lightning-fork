@@ -5142,6 +5142,14 @@
         "addr": {
           "type": "string",
           "description": "For SPLICE_OUT, the address the funds go to. Empty: a new address of this\nnode's wallet."
+        },
+        "outpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/lnrpcOutPoint"
+          },
+          "description": "For SPLICE_IN, the only coins of the wallet the splice may spend (coin\ncontrol), at most 251. Only confirmed P2WKH and P2TR coins can be spent,\nnever coinbase outputs. Empty: the wallet chooses."
         }
       }
     },
@@ -5218,7 +5226,7 @@
         },
         "refusal_code": {
           "type": "string",
-          "description": "Empty when the splice is possible; otherwise why not: \"insufficient_funds\",\n\"immature_inputs\", \"below_min\", \"above_max_out\", \"fee_below_floor\",\n\"reserve_on_change\", \"close_address_set\", \"node_cap\", or one of\nChannel.splice_status's values."
+          "description": "Empty when the splice is possible; otherwise why not: \"insufficient_funds\",\n\"immature_inputs\", \"unknown_coin\" (an outpoint asked for isn't a coin the\nsplice can spend: only confirmed P2WKH and P2TR coins, never coinbase\noutputs, at most 251), \"below_min\", \"above_max_out\", \"fee_below_floor\",\n\"reserve_on_change\", \"close_address_set\", \"node_cap\", or one of\nChannel.splice_status's values."
         }
       }
     },
@@ -8110,6 +8118,14 @@
         "force_low_fee": {
           "type": "boolean",
           "description": "Accept a fee rate below min_sat_per_vbyte. Never below the minimum relay\nfee."
+        },
+        "outpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/lnrpcOutPoint"
+          },
+          "description": "For SPLICE_IN, the only coins of the wallet the splice may spend (coin\ncontrol), at most 251. Only confirmed P2WKH and P2TR coins can be spent,\nnever coinbase outputs. Empty: the wallet chooses."
         }
       }
     },

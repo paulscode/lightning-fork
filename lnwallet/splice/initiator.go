@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -42,6 +43,10 @@ type Request struct {
 
 	// Destination is where funds moved out go.
 	Destination []byte
+
+	// Outpoints, for funds in, are the only coins the splice may spend
+	// (coin control); empty, the wallet chooses among all of them.
+	Outpoints []wire.OutPoint
 }
 
 // State is a splice's progress as reported to whoever started it.
@@ -238,10 +243,16 @@ func (m *Machine) prepareFunds(a *active, req Request) error {
 			if err != nil {
 				return err
 			}
+			coins, keep, err := OnlyCoins(
+				coins, req.Outpoints, reserve,
+			)
+			if err != nil {
+				return err
+			}
 			sel, err = SelectAddFunds(
 				shape, coins, req.Amount, req.UseMax,
 				req.FeeRate, changeScript, m.cfg.DustLimit,
-				reserve,
+				keep,
 			)
 			if err != nil {
 				return err
@@ -259,6 +270,8 @@ func (m *Machine) prepareFunds(a *active, req Request) error {
 			return refused(codeInsufficientFunds, "%v", err)
 		case errors.Is(err, ErrBelowDust):
 			return refused("below_min", "%v", err)
+		case errors.Is(err, ErrUnknownCoin):
+			return refused(codeUnknownCoin, "%v", err)
 		case err != nil:
 			return refused(codeInternal, "%v", err)
 		}

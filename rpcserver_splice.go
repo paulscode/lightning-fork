@@ -241,11 +241,33 @@ func checkSpliceRanges(amount int64, satPerVByte uint64) error {
 	return nil
 }
 
+// spliceOutpoints converts the coins a splice may spend; only funds in
+// spend wallet coins.
+func spliceOutpoints(direction lnrpc.SpliceDirection,
+	outpoints []*lnrpc.OutPoint) ([]wire.OutPoint, error) {
+
+	if len(outpoints) == 0 {
+		return nil, nil
+	}
+	if direction != lnrpc.SpliceDirection_SPLICE_IN {
+		return nil, status.Error(codes.InvalidArgument,
+			"outpoints are for adding funds only")
+	}
+	ops, err := toWireOutpoints(outpoints)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"outpoints: %v", err)
+	}
+
+	return ops, nil
+}
+
 // spliceRequest turns the RPC's request into the machine's.
 func (r *rpcServer) spliceRequest(ch *channeldb.OpenChannel,
 	direction lnrpc.SpliceDirection, amount int64, useMax bool,
 	satPerVByte uint64, targetConf int32, addr string,
-	force bool) (splice.Request, bool, error) {
+	force bool, outpoints []*lnrpc.OutPoint) (splice.Request, bool,
+	error) {
 
 	req := splice.Request{
 		Amount: btcutil.Amount(amount), UseMax: useMax,
@@ -256,6 +278,10 @@ func (r *rpcServer) spliceRequest(ch *channeldb.OpenChannel,
 	}
 
 	var err error
+	req.Outpoints, err = spliceOutpoints(direction, outpoints)
+	if err != nil {
+		return req, false, err
+	}
 	req.FeeRate, err = r.spliceFeeRate(satPerVByte, targetConf)
 	if err != nil {
 		return req, false, err
@@ -321,6 +347,10 @@ func (r *rpcServer) EstimateSplice(_ context.Context,
 		Amount: btcutil.Amount(in.AmountSat), UseMax: in.UseMax,
 		FeeRate: feeRate,
 	}
+	req.Outpoints, err = spliceOutpoints(in.Direction, in.Outpoints)
+	if err != nil {
+		return nil, err
+	}
 	ours := false
 	switch in.Direction {
 	case lnrpc.SpliceDirection_SPLICE_IN:
@@ -384,6 +414,21 @@ func (r *rpcServer) EstimateSplice(_ context.Context,
 	}
 	reserve := wallet.RequiredReserve(uint32(numAnchors))
 
+	// With coins chosen, only they are candidates, and the coins left
+	// out stay in the wallet towards its reserve.
+	keep := reserve
+	if len(req.Outpoints) > 0 {
+		coins, keep, err = splice.OnlyCoins(
+			coins, req.Outpoints, reserve,
+		)
+		if err != nil {
+			if refusal == "" {
+				refusal = "unknown_coin"
+			}
+			coins, keep = nil, reserve
+		}
+	}
+
 	est, err := splice.EstimateSplice(splice.EstimateRequest{
 		Request:      req,
 		Capacity:     ch.Capacity,
@@ -394,7 +439,7 @@ func (r *rpcServer) EstimateSplice(_ context.Context,
 		DustLimit: func(script []byte) btcutil.Amount {
 			return lnwallet.DustLimitForSize(len(script))
 		},
-		Reserve:   reserve,
+		Reserve:   keep,
 		Estimator: r.server.cc.FeeEstimator,
 		Refusal:   refusal,
 	})
@@ -441,7 +486,7 @@ func (r *rpcServer) SpliceChannel(in *lnrpc.SpliceChannelRequest,
 
 	req, _, err := r.spliceRequest(
 		ch, in.Direction, in.AmountSat, in.UseMax, in.SatPerVbyte,
-		in.TargetConf, in.Addr, in.ForceLowFee,
+		in.TargetConf, in.Addr, in.ForceLowFee, in.Outpoints,
 	)
 	if err != nil {
 		return err

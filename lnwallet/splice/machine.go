@@ -269,6 +269,7 @@ const (
 	codePeerContribUnsupp = "peer_contribution_unsupported"
 	codePeerMisbehaved    = "peer_misbehaved"
 	codeInsufficientFunds = "insufficient_funds"
+	codeUnknownCoin       = "unknown_coin"
 	codeDisconnected      = "peer_disconnected"
 )
 

@@ -2,8 +2,10 @@ package commands
 
 import (
 	"errors"
+	"fmt"
 	"io"
 
+	"github.com/lightningnetwork/lnd"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/urfave/cli"
 )
@@ -53,8 +55,8 @@ var spliceCommand = cli.Command{
 		{
 			Name:      "in",
 			Usage:     "Add funds from the wallet to the channel.",
-			ArgsUsage: "--chan_point=X --amt=N | --max",
-			Flags:     spliceFlags,
+			ArgsUsage: "--chan_point=X --amt=N | --max [--utxo=O ...]",
+			Flags:     append(spliceFlags, utxoFlag),
 			Action:    actionDecorator(spliceIn),
 		},
 		{
@@ -77,10 +79,31 @@ var spliceCommand = cli.Command{
 			Flags: append(estimateFlags(), cli.StringFlag{
 				Name:  "addr",
 				Usage: "for out: where the funds would go",
-			}),
+			}, utxoFlag),
 			Action: actionDecorator(spliceEstimate),
 		},
 	},
+}
+
+// utxoFlag chooses the wallet coins a splice in may spend.
+var utxoFlag = cli.StringSliceFlag{
+	Name: "utxo",
+	Usage: "for in: a wallet coin, txid:index, the splice may spend; " +
+		"repeat it for several. Only these are spent (the amount, " +
+		"or with --max all of them); without it the wallet chooses",
+}
+
+// spliceUtxos parses the --utxo flags.
+func spliceUtxos(ctx *cli.Context) ([]*lnrpc.OutPoint, error) {
+	if !ctx.IsSet("utxo") {
+		return nil, nil
+	}
+	outpoints, err := lnd.UtxosToOutpoints(ctx.StringSlice("utxo"))
+	if err != nil {
+		return nil, fmt.Errorf("unable to decode utxos: %w", err)
+	}
+
+	return outpoints, nil
 }
 
 // estimateFlags are the splice flags an estimate takes: all but
@@ -118,6 +141,10 @@ func runSplice(ctx *cli.Context, dir lnrpc.SpliceDirection) error {
 	if !ctx.IsSet("amt") && !ctx.Bool("max") {
 		return errors.New("amt or max required")
 	}
+	outpoints, err := spliceUtxos(ctx)
+	if err != nil {
+		return err
+	}
 
 	stream, err := client.SpliceChannel(ctxc, &lnrpc.SpliceChannelRequest{
 		ChannelPoint: chanPoint,
@@ -128,6 +155,7 @@ func runSplice(ctx *cli.Context, dir lnrpc.SpliceDirection) error {
 		TargetConf:   int32(ctx.Int64("conf_target")),
 		Addr:         ctx.String("addr"),
 		ForceLowFee:  ctx.Bool("force_low_fee"),
+		Outpoints:    outpoints,
 	})
 	if err != nil {
 		return err
@@ -172,6 +200,11 @@ func spliceEstimate(ctx *cli.Context) error {
 		return errors.New("in or out required")
 	}
 
+	outpoints, err := spliceUtxos(ctx)
+	if err != nil {
+		return err
+	}
+
 	resp, err := client.EstimateSplice(ctxc, &lnrpc.EstimateSpliceRequest{
 		ChannelPoint: chanPoint,
 		Direction:    dir,
@@ -180,6 +213,7 @@ func spliceEstimate(ctx *cli.Context) error {
 		SatPerVbyte:  ctx.Uint64("sat_per_vbyte"),
 		TargetConf:   int32(ctx.Int64("conf_target")),
 		Addr:         ctx.String("addr"),
+		Outpoints:    outpoints,
 	})
 	if err != nil {
 		return err

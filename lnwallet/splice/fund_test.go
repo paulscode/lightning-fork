@@ -424,3 +424,75 @@ func TestMoveOut(t *testing.T) {
 func lntypesWeight(w int64) lntypes.WeightUnit {
 	return lntypes.WeightUnit(w)
 }
+
+// TestOnlyCoins checks coin control for funds in: only the coins asked for
+// are candidates, the coins left out count towards the wallet's reserve, and
+// a coin the splice can't spend, or one asked for twice, is refused.
+func TestOnlyCoins(t *testing.T) {
+	t.Parallel()
+
+	const feeRate = chainfee.SatPerKWeight(2_500)
+	change := p2tr(0xee)
+
+	big := coin(1, p2wpkh(1), 500_000)
+	small := coin(2, p2tr(2), 120_000)
+	other := coin(3, p2wpkh(3), 80_000)
+	all := []Coin{big, small, other}
+
+	// No outpoints: everything, the reserve unchanged.
+	coins, keep, err := OnlyCoins(all, nil, 50_000)
+	require.NoError(t, err)
+	require.Equal(t, all, coins)
+	require.Equal(t, btcutil.Amount(50_000), keep)
+
+	// Only small: the other two, 580,000, more than cover the reserve.
+	coins, keep, err = OnlyCoins(all, []wire.OutPoint{small.OutPoint},
+		50_000)
+	require.NoError(t, err)
+	require.Equal(t, []Coin{small}, coins)
+	require.Zero(t, keep)
+
+	// With an amount the larger coin isn't touched, even though the
+	// wallet would pick it first.
+	sel, err := SelectAddFunds(
+		testShape, coins, 100_000, false, feeRate, change, dustLimit,
+		keep,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []Coin{small}, sel.Inputs)
+
+	// With max, all of the chosen coin goes in: no change kept back for
+	// a reserve the rest of the wallet holds.
+	sel, err = SelectAddFunds(
+		testShape, coins, 0, true, feeRate, change, dustLimit, keep,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []Coin{small}, sel.Inputs)
+	require.Zero(t, sel.Change)
+
+	// Coins left out worth less than the reserve: the rest stays with
+	// the chosen ones.
+	_, keep, err = OnlyCoins(
+		all, []wire.OutPoint{big.OutPoint, small.OutPoint}, 100_000,
+	)
+	require.NoError(t, err)
+	require.Equal(t, btcutil.Amount(20_000), keep)
+
+	// A coin the splice can't spend, or one given twice, is refused.
+	unknown := coin(9, p2wpkh(9), 1_000).OutPoint
+	_, _, err = OnlyCoins(all, []wire.OutPoint{unknown}, 0)
+	require.ErrorIs(t, err, ErrUnknownCoin)
+	_, _, err = OnlyCoins(
+		all, []wire.OutPoint{small.OutPoint, small.OutPoint}, 0,
+	)
+	require.ErrorIs(t, err, ErrUnknownCoin)
+
+	// More coins than a splice takes: refused, not quietly cut.
+	many := make([]wire.OutPoint, interactivetx.MaxInputsOrOutputs)
+	for i := range many {
+		many[i] = wire.OutPoint{Index: uint32(i)}
+	}
+	_, _, err = OnlyCoins(all, many, 0)
+	require.ErrorIs(t, err, ErrUnknownCoin)
+	require.ErrorContains(t, err, "at most 251")
+}

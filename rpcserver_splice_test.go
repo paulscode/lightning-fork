@@ -57,7 +57,7 @@ func TestSpliceRequestRanges(t *testing.T) {
 	} {
 		_, _, err := r.spliceRequest(
 			nil, lnrpc.SpliceDirection_SPLICE_IN, tc.amount, false,
-			tc.rate, 0, "", false,
+			tc.rate, 0, "", false, nil,
 		)
 		require.ErrorContains(t, err, tc.want)
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
