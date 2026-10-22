@@ -1,3 +1,5 @@
+//go:build !dev && !integration
+
 package lnwallet
 
 import (
