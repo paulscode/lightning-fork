@@ -4,6 +4,7 @@
 package offersrpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -803,4 +804,23 @@ func fetchPayAndList(t *testing.T, chain [32]byte) {
 		OfferId: []byte{1},
 	})
 	requireCode(t, err, codes.InvalidArgument)
+}
+
+// TestStoredInvoice checks the invoice kept with a payment: the same bytes,
+// re-encoded without continuations, and nothing above MaxStoredInvoice.
+func TestStoredInvoice(t *testing.T) {
+	data := bytes.Repeat([]byte{0x42}, 600)
+	plain, err := bolt12.Encode(offers.InvoiceHRP, data)
+	require.NoError(t, err)
+
+	padded := plain[:20] + "+\n  " + plain[20:300] + "+ " + plain[300:]
+	require.Equal(t, plain, storedInvoice(" "+padded+"\n"))
+
+	big, err := bolt12.Encode(
+		offers.InvoiceHRP, make([]byte, MaxStoredInvoice),
+	)
+	require.NoError(t, err)
+	require.Empty(t, storedInvoice(big))
+
+	require.Empty(t, storedInvoice("not an invoice"))
 }

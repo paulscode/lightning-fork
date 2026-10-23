@@ -674,7 +674,7 @@ func (s *Server) PayOffer(ctx context.Context,
 	// The invoice paid is the payment's request: kept with the payment,
 	// it is, with the preimage, the proof of what was paid and to whom
 	// (the issuer signed it), as a BOLT11 request is for those payments.
-	intent.PaymentRequest = []byte(bolt12)
+	intent.PaymentRequest = []byte(storedInvoice(bolt12))
 
 	hash := intent.Identifier()
 	preimage, rt, err := s.cfg.Deps.PayInvoice(ctx, intent)
@@ -814,4 +814,27 @@ func invoiceToRPC(inv *bolt12.Invoice) *InvoiceInfo {
 		PayerId:        pubKeyBytes(optPubKey(inv.InvreqPayerID)),
 		SignatureValid: bolt12.VerifyInvoice(inv) == nil,
 	}
+}
+
+// MaxStoredInvoice bounds the BOLT 12 invoice kept as a payment's request.
+// A BOLT 11 request is at most about 7 KB; a BOLT 12 invoice its issuer pads
+// (unknown odd TLVs) could run to megabytes, and every listpayments page
+// holding it would carry them, past what a gRPC client accepts by default.
+const MaxStoredInvoice = 32 * 1024
+
+// storedInvoice is the invoice to keep with a payment: re-encoded from its
+// bytes (no '+' continuations or whitespace, the same signed TLVs, so it is
+// still the issuer's signature over what was paid), or nothing when that is
+// above MaxStoredInvoice or it does not decode.
+func storedInvoice(s string) string {
+	hrp, data, err := bolt12.Decode(strings.TrimSpace(s))
+	if err != nil {
+		return ""
+	}
+	enc, err := bolt12.Encode(hrp, data)
+	if err != nil || len(enc) > MaxStoredInvoice {
+		return ""
+	}
+
+	return enc
 }
