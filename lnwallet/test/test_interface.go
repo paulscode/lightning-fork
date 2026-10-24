@@ -3187,6 +3187,15 @@ func testSingleFunderExternalFundingTx(miner *rpctest.Harness,
 func TestLightningWallet(t *testing.T, targetBackEnd string) {
 	t.Parallel()
 
+	// The miner and the backends run a stock SHA256d regtest, which has
+	// no unified signature hash: they refuse a signature that opts in
+	// (bitcoind with "non mandatory script verify flag", btcd by leaving
+	// the transaction out of its mempool, so a test waiting for it to
+	// confirm hangs). Opt out, as the daemon does in a development build,
+	// whatever tags this test is built with. Every test in this binary
+	// runs against such a regtest, so it is not set back.
+	input.SetUnifiedSigHash(false)
+
 	// Initialize the harness around a btcd node which will serve as our
 	// dedicated miner to generate blocks, cause re-orgs, etc. We'll set
 	// up this node with a chain length of 125, so we have plenty of BTC
