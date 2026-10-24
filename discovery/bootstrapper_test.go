@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightningnetwork/lnd/autopilot"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tor"
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/require"
@@ -17,8 +18,9 @@ import (
 // stubNode is a minimal autopilot.Node implementation used to drive
 // ChannelGraphBootstrapper from a unit test.
 type stubNode struct {
-	pub   *btcec.PublicKey
-	addrs []net.Addr
+	pub      *btcec.PublicKey
+	addrs    []net.Addr
+	features *lnwire.FeatureVector
 }
 
 func (n *stubNode) PubKey() [33]byte {
@@ -28,6 +30,8 @@ func (n *stubNode) PubKey() [33]byte {
 }
 
 func (n *stubNode) Addrs() []net.Addr { return n.addrs }
+
+func (n *stubNode) Features() *lnwire.FeatureVector { return n.features }
 
 // stubChannelGraph yields a fixed list of nodes from ForEachNode and is
 // otherwise unused by SampleNodeAddrs.
@@ -201,6 +205,70 @@ func TestGraphBootstrapperSkipsV2Onion(t *testing.T) {
 		require.NotEqual(t, v2OnlyKey, s.pub,
 			"v2-only node %x should contribute nothing", s.pub)
 	}
+}
+
+// TestGraphBootstrapperSkipsUnknownRequired checks that the graph bootstrapper
+// doesn't pick a node whose node_announcement sets an even feature bit we
+// don't know, or the even bit of option_independent_secrets, which counts as
+// one there. A node with known bits, or whose features aren't known, is still
+// picked.
+func TestGraphBootstrapperSkipsUnknownRequired(t *testing.T) {
+	t.Parallel()
+
+	tcp := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9735}
+
+	mkNode := func(t *testing.T, fv *lnwire.FeatureVector) *stubNode {
+		t.Helper()
+		priv, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		return &stubNode{
+			pub:      priv.PubKey(),
+			addrs:    []net.Addr{tcp},
+			features: fv,
+		}
+	}
+	vector := func(bits ...lnwire.FeatureBit) *lnwire.FeatureVector {
+		return lnwire.NewFeatureVector(
+			lnwire.NewRawFeatureVector(bits...), lnwire.Features,
+		)
+	}
+
+	known := mkNode(t, vector(lnwire.DataLossProtectRequired))
+	unknownOdd := mkNode(t, vector(lnwire.FeatureBit(999)))
+	noFeatures := mkNode(t, nil)
+	unknownEven := mkNode(t, vector(lnwire.FeatureBit(998)))
+	independentEven := mkNode(
+		t, vector(lnwire.IndependentSecretsRequired),
+	)
+
+	graph := &stubChannelGraph{
+		nodes: []autopilot.Node{
+			unknownEven, known, independentEven, unknownOdd,
+			noFeatures,
+		},
+	}
+	bs, err := NewGraphBootstrapper(graph, true)
+	require.NoError(t, err)
+
+	got, err := bs.SampleNodeAddrs(
+		t.Context(), 10, map[autopilot.NodeID]struct{}{},
+	)
+	require.NoError(t, err)
+
+	picked := make(map[[33]byte]bool, len(got))
+	for _, na := range got {
+		var p [33]byte
+		copy(p[:], na.IdentityKey.SerializeCompressed())
+		picked[p] = true
+	}
+
+	require.True(t, picked[known.PubKey()])
+	require.True(t, picked[unknownOdd.PubKey()])
+	require.True(t, picked[noFeatures.PubKey()])
+	require.False(t, picked[unknownEven.PubKey()])
+	require.False(t, picked[independentEven.PubKey()])
+	require.Len(t, got, 3)
 }
 
 // TestFallBackSRVLookupSkipsNonSRV ensures a DNS response whose Answer section

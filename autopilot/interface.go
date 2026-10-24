@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/feature"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -32,6 +33,24 @@ type Node interface {
 	// Addrs returns a slice of publicly reachable public TCP addresses
 	// that the peer is known to be listening on.
 	Addrs() []net.Addr
+
+	// Features returns the features the node announced, or nil when they
+	// aren't known.
+	Features() *lnwire.FeatureVector
+}
+
+// Connectable reports whether a node may be picked from the graph to connect
+// to on our own initiative. BOLT 7 says not to connect to a node whose
+// node_announcement sets an even feature bit we don't know, and the even bit
+// of option_independent_secrets counts as one there. A node whose features
+// aren't known is connectable, as before.
+func Connectable(n Node) bool {
+	features := n.Features()
+	if features == nil {
+		return true
+	}
+
+	return feature.ValidateRoutable(features) == nil
 }
 
 // LocalChannel is a simple struct which contains relevant details of a

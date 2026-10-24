@@ -1230,9 +1230,21 @@ func TestLinkTxAbortKeepsReserves(t *testing.T) {
 	require.NotEqual(t, splice, local, "the lock alone changes them")
 
 	s.link.HandleChannelUpdate(&lnwire.TxAbort{ChannelID: s.link.ChanID()})
-	// The abort is handled on the link's goroutine; a request queued
-	// after it runs once it has been.
-	time.Sleep(100 * time.Millisecond)
+	// The abort is handled on the link's goroutine, which hands it to the
+	// splice handler. Once the handler has it, the link is handling the
+	// abort, and a request queued now runs once it is done.
+	require.Eventually(t, func() bool {
+		s.handler.mu.Lock()
+		defer s.handler.mu.Unlock()
+
+		for _, m := range s.handler.messages {
+			if _, ok := m.(*lnwire.TxAbort); ok {
+				return true
+			}
+		}
+
+		return false
+	}, 5*time.Second, 10*time.Millisecond)
 	gotLocal, gotRemote := reserves()
 	require.Equal(t, local, gotLocal)
 	require.Equal(t, remote, gotRemote)

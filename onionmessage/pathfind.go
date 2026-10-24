@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/lightningnetwork/lnd/feature"
 	graphdb "github.com/lightningnetwork/lnd/graph/db"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -16,7 +17,8 @@ type OnionMessagePath []route.Vertex
 // FindPath finds the shortest path (by hop count) from source to destination
 // through nodes that support onion messaging (feature bit 38/39). It uses a
 // standard BFS on the channel graph filtered by the OnionMessagesOptional
-// feature bit.
+// feature bit, and leaves out intermediate nodes whose announced features
+// feature.ValidateRoutable refuses.
 func FindPath(ctx context.Context, graph graphdb.NodeTraverser, source,
 	destination route.Vertex, maxHops int) (OnionMessagePath, error) {
 
@@ -96,6 +98,17 @@ func FindPath(ctx context.Context, graph graphdb.NodeTraverser, source,
 					if !feats.HasFeature(
 						lnwire.OnionMessagesOptional,
 					) {
+
+						return nil
+					}
+
+					// Nor do we send through a node whose
+					// announced features pathfinding
+					// refuses.
+					if neighbor != destination &&
+						feature.ValidateRoutable(
+							feats,
+						) != nil {
 
 						return nil
 					}

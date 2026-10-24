@@ -634,6 +634,14 @@ func (a *Agent) openChans(ctx context.Context, availableFunds btcutil.Amount,
 		}
 		addresses[nID] = addrs
 
+		// Nor do we connect to a node that announces an even feature
+		// bit we don't know.
+		if !Connectable(node) {
+			log.Tracef("Skipping node %x with unknown required "+
+				"features", nID[:])
+			return nil
+		}
+
 		// Additionally, if this node is in the blacklist, then
 		// we'll skip it.
 		if _, ok := nodesToSkip[nID]; ok {
