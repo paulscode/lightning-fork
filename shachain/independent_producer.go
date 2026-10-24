@@ -17,12 +17,16 @@ import (
 const independentSecretTag = "independent-per-commitment-secret"
 
 // IndependentProducer is a Producer whose secrets have no shachain
-// relationship: the secret at index i is an HMAC of i keyed by the root, as
-// option_independent_secrets allows ("a key derivation function applied to a
-// private seed and the commitment number"). Like a shachain it needs no state
-// beyond its root, so a node can always regenerate any secret it has sent the
-// point for, but a peer can't compress the secrets, so it only works with a
-// peer that stores every secret.
+// relationship: the secret at index i is an HMAC of i keyed by the root. That
+// is one of the ways option_independent_secrets suggests ("a key derivation
+// function applied to a private seed, a value unique to the channel ... and
+// the commitment number"): the root is already unique to the channel, as
+// lnwallet derives it for each channel from a fresh revocation root key and
+// the channel's own funding key, so it stands for both the seed and the
+// channel's value, and the commitment number is the index. Like a shachain it
+// needs no state beyond its root, so a node can always regenerate any secret
+// it has sent the point for, but a peer can't compress the secrets, so it
+// only works with a peer that stores every secret.
 //
 // It exists so that a node can exercise the receiving side of its peer, in
 // tests and on test networks; a single signer gains nothing from it.
