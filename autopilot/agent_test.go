@@ -12,6 +12,9 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/graph/db/models"
+	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/require"
 )
 
@@ -579,6 +582,100 @@ func TestAgentImmediateAttach(t *testing.T) {
 			t.Fatalf("channel not opened in time")
 		}
 	}
+}
+
+// TestAgentSkipsUnknownRequired checks that the agent doesn't offer the
+// heuristic a node whose node_announcement sets an even feature bit we don't
+// know, or the even bit of option_independent_secrets, which counts as one
+// there, so it never connects to one to open a channel.
+func TestAgentSkipsUnknownRequired(t *testing.T) {
+	t.Parallel()
+
+	testCtx := setup(t, nil)
+	graph, ok := testCtx.graph.(*memChannelGraph)
+	require.True(t, ok)
+
+	addNode := func(bits ...lnwire.FeatureBit) NodeID {
+		pub, err := testCtx.graph.addRandNode()
+		require.NoError(t, err)
+
+		nID := NewNodeID(pub)
+		graph.graph[nID].features = lnwire.NewFeatureVector(
+			lnwire.NewRawFeatureVector(bits...), lnwire.Features,
+		)
+
+		return nID
+	}
+
+	plain, err := testCtx.graph.addRandNode()
+	require.NoError(t, err)
+	known := addNode(lnwire.DataLossProtectRequired)
+	unknownEven := addNode(lnwire.FeatureBit(998))
+	independentEven := addNode(lnwire.IndependentSecretsRequired)
+
+	respondMoreChans(t, testCtx, moreChansResp{
+		numMore: 1,
+		amt:     5 * btcutil.SatoshiPerBitcoin,
+	})
+
+	var arg directiveArg
+	select {
+	case arg = <-testCtx.heuristic.nodeScoresArgs:
+	case <-time.After(time.Second * 3):
+		t.Fatalf("node scores weren't queried in time")
+	}
+
+	require.Contains(t, arg.nodes, NewNodeID(plain))
+	require.Contains(t, arg.nodes, known)
+	require.NotContains(t, arg.nodes, unknownEven)
+	require.NotContains(t, arg.nodes, independentEven)
+	require.Len(t, arg.nodes, 2)
+
+	select {
+	case testCtx.heuristic.nodeScoresResps <- map[NodeID]*NodeScore{}:
+	case <-time.After(time.Second * 10):
+		t.Fatalf("node scores were not sent in time")
+	}
+}
+
+// TestDatabaseGraphNodeFeatures checks that the database backed graph hands
+// over the features a node announced, so that Connectable can refuse it.
+func TestDatabaseGraphNodeFeatures(t *testing.T) {
+	t.Parallel()
+
+	g, err := newDiskChanGraph(t)
+	require.NoError(t, err)
+	dbGraph, ok := g.(*testDBGraph)
+	require.True(t, ok)
+
+	nodeKey, err := randKey()
+	require.NoError(t, err)
+	err = dbGraph.db.AddNode(t.Context(), models.NewV1Node(
+		route.NewVertex(nodeKey), &models.NodeV1Fields{
+			Addresses: []net.Addr{&net.TCPAddr{
+				IP: net.ParseIP("127.0.0.1"), Port: 9735,
+			}},
+			Features: lnwire.NewRawFeatureVector(
+				lnwire.IndependentSecretsRequired,
+			),
+			AuthSigBytes: testSig.Serialize(),
+		},
+	))
+	require.NoError(t, err)
+
+	var nodes []Node
+	err = g.ForEachNode(t.Context(), func(_ context.Context,
+		n Node) error {
+
+		nodes = append(nodes, n)
+		return nil
+	}, func() { nodes = nil })
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	require.True(t, nodes[0].Features().IsSet(
+		lnwire.IndependentSecretsRequired,
+	))
+	require.False(t, Connectable(nodes[0]))
 }
 
 // TestAgentPrivateChannels ensure that only requests for private channels are

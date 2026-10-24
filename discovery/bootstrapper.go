@@ -218,6 +218,15 @@ func (c *ChannelGraphBootstrapper) SampleNodeAddrs(_ context.Context,
 				return nil
 			}
 
+			// BOLT 7: we don't connect to a node that announces
+			// an even feature bit we don't know.
+			if !autopilot.Connectable(node) {
+				log.Tracef("Skipping node %x with unknown "+
+					"required features for bootstrapping",
+					nodePubKeyBytes)
+				return nil
+			}
+
 			foundAddr := false
 			for _, nodeAddr := range node.Addrs() {
 				// If we haven't yet reached our limit, then

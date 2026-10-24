@@ -51,8 +51,9 @@ func ChannelGraphFromDatabase(db GraphSource) ChannelGraph {
 // channeldb.Node. The wrapper method implement the autopilot.Node
 // interface.
 type dbNode struct {
-	pub   [33]byte
-	addrs []net.Addr
+	pub      [33]byte
+	addrs    []net.Addr
+	features *lnwire.FeatureVector
 }
 
 // A compile time assertion to ensure dbNode meets the autopilot.Node
@@ -76,6 +77,14 @@ func (d *dbNode) Addrs() []net.Addr {
 	return d.addrs
 }
 
+// Features returns the features the node announced, or nil when they aren't
+// known.
+//
+// NOTE: Part of the autopilot.Node interface.
+func (d *dbNode) Features() *lnwire.FeatureVector {
+	return d.features
+}
+
 // ForEachNode is a higher-order function that should be called once for each
 // connected node within the channel graph. If the passed callback returns an
 // error, then execution should be terminated.
@@ -93,8 +102,9 @@ func (d *databaseChannelGraph) ForEachNode(ctx context.Context,
 		}
 
 		node := &dbNode{
-			pub:   n.PubKeyBytes,
-			addrs: n.Addresses,
+			pub:      n.PubKeyBytes,
+			addrs:    n.Addresses,
+			features: n.Features,
 		}
 
 		return cb(ctx, node)
@@ -188,6 +198,13 @@ func (nc dbNodeCached) Addrs() []net.Addr {
 	return []net.Addr{}
 }
 
+// Features returns nil: the graph cache's iteration doesn't hand them over.
+//
+// NOTE: Part of the autopilot.Node interface.
+func (nc dbNodeCached) Features() *lnwire.FeatureVector {
+	return nil
+}
+
 // ForEachNode is a higher-order function that should be called once for each
 // connected node within the channel graph. If the passed callback returns an
 // error, then execution should be terminated.
@@ -259,6 +276,8 @@ type memNode struct {
 	chans []ChannelEdge
 
 	addrs []net.Addr
+
+	features *lnwire.FeatureVector
 }
 
 // A compile time assertion to ensure memNode meets the autopilot.Node
@@ -282,6 +301,14 @@ func (m memNode) PubKey() [33]byte {
 // NOTE: Part of the autopilot.Node interface.
 func (m memNode) Addrs() []net.Addr {
 	return m.addrs
+}
+
+// Features returns the features the node announced, or nil when they aren't
+// known.
+//
+// NOTE: Part of the autopilot.Node interface.
+func (m memNode) Features() *lnwire.FeatureVector {
+	return m.features
 }
 
 // Median returns the median value in the slice of Amounts.
