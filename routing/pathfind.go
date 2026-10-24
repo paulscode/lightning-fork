@@ -632,7 +632,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 	// Ensure that the destination's features don't include unknown
 	// required features.
-	err := feature.ValidateRequired(features)
+	err := feature.ValidateRoutable(features)
 	if err != nil {
 		log.Warnf("Pathfinding destination node features: %v", err)
 		return nil, 0, errUnknownRequiredFeature
@@ -1031,7 +1031,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 		// Don't route through nodes that contain unknown required
 		// features and mark as nil in the cache.
-		err = feature.ValidateRequired(fromFeatures)
+		err = feature.ValidateRoutable(fromFeatures)
 		if err != nil {
 			featureCache[node] = nil
 			return nil, nil

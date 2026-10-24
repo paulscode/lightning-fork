@@ -1,6 +1,7 @@
 package feature
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -80,4 +81,32 @@ func TestCustomFeaturesRefuseKnownBits(t *testing.T) {
 		})
 		require.NoError(t, err, "set %v", set)
 	}
+}
+
+// TestValidateRoutableRefusesIndependentSecretsEvenBit checks that a node
+// announcing the even bit of option_independent_secrets, which is only valid in
+// channel_type, is refused for routing as if the bit were unknown, while one
+// announcing the optional bit is not.
+func TestValidateRoutableRefusesIndependentSecretsEvenBit(t *testing.T) {
+	t.Parallel()
+
+	announced := func(bit lnwire.FeatureBit) *lnwire.FeatureVector {
+		return lnwire.NewFeatureVector(lnwire.NewRawFeatureVector(
+			lnwire.ExplicitChannelTypeOptional, bit,
+		), lnwire.Features)
+	}
+
+	even := announced(lnwire.IndependentSecretsRequired)
+	require.NoError(t, ValidateRequired(even), "lnd knows the bit")
+	err := ValidateRoutable(even)
+	require.Error(t, err)
+	require.Contains(t, err.Error(),
+		fmt.Sprintf("%d", lnwire.IndependentSecretsRequired))
+
+	require.NoError(t, ValidateRoutable(
+		announced(lnwire.IndependentSecretsOptional),
+	))
+	require.Error(t, ValidateRoutable(lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(100), lnwire.Features,
+	)), "an unknown required bit is still refused")
 }

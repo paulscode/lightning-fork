@@ -89,6 +89,16 @@ var (
 	unknownRequiredFeatures = lnwire.NewFeatureVector(
 		lnwire.NewRawFeatureVector(100), lnwire.Features,
 	)
+
+	// independentSecretsEvenBitFeatures sets the even bit of
+	// option_independent_secrets, with the bit it depends on, as a node
+	// that announces it would.
+	independentSecretsEvenBitFeatures = lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(
+			lnwire.ExplicitChannelTypeOptional,
+			lnwire.IndependentSecretsRequired,
+		), lnwire.Features,
+	)
 )
 
 var (
@@ -850,6 +860,9 @@ func TestPathFinding(t *testing.T) {
 	}, {
 		name: "unknown required features",
 		fn:   runUnknownRequiredFeatures,
+	}, {
+		name: "independent secrets even bit in node announcement",
+		fn:   runIndependentSecretsEvenBit,
 	}, {
 		name: "destination payment address",
 		fn:   runDestPaymentAddr,
@@ -2011,6 +2024,23 @@ func runMissingFeatureDep(t *testing.T, useCache bool) {
 // destination requires an unknown required feature, and that we skip
 // intermediaries that signal unknown required features.
 func runUnknownRequiredFeatures(t *testing.T, useCache bool) {
+	runRefusedNodeFeatures(t, useCache, unknownRequiredFeatures)
+}
+
+// runIndependentSecretsEvenBit asserts that a node announcing the even bit of
+// option_independent_secrets, which is only valid in channel_type, is treated
+// like one with an unknown required feature: it isn't paid from its
+// announcement, and it isn't routed through.
+func runIndependentSecretsEvenBit(t *testing.T, useCache bool) {
+	runRefusedNodeFeatures(t, useCache, independentSecretsEvenBitFeatures)
+}
+
+// runRefusedNodeFeatures asserts that we fail path finding when the
+// destination's announced features are refused, and that we skip
+// intermediaries whose announced features are refused.
+func runRefusedNodeFeatures(t *testing.T, useCache bool,
+	refused *lnwire.FeatureVector) {
+
 	testChannels := []*testChannel{
 		asymmetricTestChannel("roasbeef", "conner", 100000,
 			&testChannelPolicy{
@@ -2024,7 +2054,7 @@ func runUnknownRequiredFeatures(t *testing.T, useCache bool) {
 				FeeRate:  400,
 				MinHTLC:  1,
 				MaxHTLC:  100000000,
-				Features: unknownRequiredFeatures,
+				Features: refused,
 			}, 0,
 		),
 		asymmetricTestChannel("conner", "joost", 100000,
@@ -2033,7 +2063,7 @@ func runUnknownRequiredFeatures(t *testing.T, useCache bool) {
 				FeeRate:  400,
 				MinHTLC:  1,
 				MaxHTLC:  100000000,
-				Features: unknownRequiredFeatures,
+				Features: refused,
 			},
 			&testChannelPolicy{
 				Expiry:  144,
@@ -2049,21 +2079,20 @@ func runUnknownRequiredFeatures(t *testing.T, useCache bool) {
 	conner := ctx.keyFromAlias("conner")
 	joost := ctx.keyFromAlias("joost")
 
-	// Conner's node in the graph has an unknown required feature (100).
-	// Pathfinding should fail since we check the destination's features for
-	// unknown required features before beginning pathfinding.
+	// Conner's node in the graph has a refused feature vector.
+	// Pathfinding should fail since we check the destination's features
+	// before beginning pathfinding.
 	_, err := ctx.findPath(conner, 100)
 	if !reflect.DeepEqual(err, errUnknownRequiredFeature) {
 		t.Fatalf("path shouldn't have been found: %v", err)
 	}
 
 	// Now, try to find a route to joost through conner. The destination
-	// features are valid, but conner's feature vector in the graph still
-	// requires feature 100. We expect errNoPathFound and not the error
-	// above since intermediate hops are simply skipped if they have invalid
+	// features are valid, but conner's feature vector in the graph is
+	// still refused. We expect errNoPathFound and not the error above
+	// since intermediate hops are simply skipped if they have invalid
 	// feature vectors, leaving no possible route to joost. This asserts
-	// that we don't try to route _through_ nodes with unknown required
-	// features.
+	// that we don't try to route _through_ such nodes.
 	_, err = ctx.findPath(joost, 100)
 	if err != errNoPathFound {
 		t.Fatalf("path shouldn't have been found: %v", err)

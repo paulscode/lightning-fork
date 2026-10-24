@@ -28,6 +28,10 @@ generates its own: they still come from its shachain.
   bit 267 is set in `init` and `node_announcement`. A new channel uses the
   add-on when both peers signal it and agree on it in `channel_type`. With a
   peer that doesn't signal it, the channel opens the normal way.
+- **The even bit, 266,** is only valid in `channel_type`. A peer that sets it
+  in `init` is refused, and a node that sets it in `node_announcement` is
+  treated as requiring a feature lnd doesn't know: it isn't paid from its
+  announcement or routed through.
 - **Storage.** Each secret is stored with the revocation log entry of the
   commitment it revokes, written in the same database transaction. That's 38
   bytes per revoked state (a 32-byte secret in a TLV record), next to data the
