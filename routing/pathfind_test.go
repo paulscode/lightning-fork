@@ -3820,6 +3820,109 @@ func TestLastHopPayloadSize(t *testing.T) {
 	}
 }
 
+// TestFindBlindedPathsRefusedFeatures checks that a blinded path is not built
+// through a node whose announced features pathfinding refuses: one with an
+// unknown even bit, or with the even bit of option_independent_secrets, even
+// when it signals route blinding.
+func TestFindBlindedPathsRefusedFeatures(t *testing.T) {
+	refused := map[string]*lnwire.FeatureVector{
+		"unknown even bit": lnwire.NewFeatureVector(
+			lnwire.NewRawFeatureVector(
+				lnwire.RouteBlindingOptional, 100,
+			), lnwire.Features,
+		),
+		"independent secrets even bit": lnwire.NewFeatureVector(
+			lnwire.NewRawFeatureVector(
+				lnwire.RouteBlindingOptional,
+				lnwire.ExplicitChannelTypeOptional,
+				lnwire.IndependentSecretsRequired,
+			), lnwire.Features,
+		),
+	}
+
+	for name, features := range refused {
+		t.Run(name, func(t *testing.T) {
+			testFindBlindedPathsRefusedFeatures(t, features)
+		})
+	}
+}
+
+func testFindBlindedPathsRefusedFeatures(t *testing.T,
+	refused *lnwire.FeatureVector) {
+
+	policy := func(fv *lnwire.FeatureVector) *testChannelPolicy {
+		return &testChannelPolicy{
+			Expiry:   144,
+			FeeRate:  400,
+			MinHTLC:  1,
+			MaxHTLC:  100000000,
+			Features: fv,
+		}
+	}
+	withRouteBlinding := policy(lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(lnwire.RouteBlindingOptional),
+		lnwire.Features,
+	))
+
+	// Dave is the destination. Bob and Charlie both signal route
+	// blinding and both have a second channel, to Eve, but Bob's
+	// announcement is refused.
+	//
+	//	Bob --- Dave --- Charlie
+	//	  \_____ Eve _____/
+	testChannels := []*testChannel{
+		asymmetricTestChannel(
+			"dave", "bob", 100000, withRouteBlinding,
+			policy(refused), 1,
+		),
+		symmetricTestChannel(
+			"dave", "charlie", 100000, withRouteBlinding, 2,
+		),
+		symmetricTestChannel(
+			"bob", "eve", 100000, withRouteBlinding, 3,
+		),
+		symmetricTestChannel(
+			"charlie", "eve", 100000, withRouteBlinding, 4,
+		),
+	}
+
+	ctx := newPathFindingTestContext(
+		t, true, testChannels, "dave", lnwire.RouteBlindingOptional,
+	)
+
+	labels := func(paths [][]blindedHop) []string {
+		var out []string
+		for _, path := range paths {
+			var hops []string
+			for _, hop := range path {
+				hops = append(
+					hops, ctx.aliasFromKey(hop.vertex),
+				)
+			}
+			out = append(out, strings.Join(hops, ","))
+		}
+
+		return out
+	}
+
+	paths, err := ctx.findBlindedPaths(&blindedPathRestrictions{
+		minNumHops: 1,
+		maxNumHops: 1,
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"charlie,dave"}, labels(paths))
+
+	paths, err = ctx.findBlindedPaths(&blindedPathRestrictions{
+		minNumHops: 1,
+		maxNumHops: 2,
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{
+		"charlie,dave",
+		"eve,charlie,dave",
+	}, labels(paths))
+}
+
 // TestFindBlindedPaths tests that the findBlindedPaths function correctly
 // selects a set of blinded paths to a destination node given various
 // restrictions.

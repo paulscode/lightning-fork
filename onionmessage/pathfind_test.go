@@ -193,6 +193,55 @@ func TestFindPathFeatureFiltering(t *testing.T) {
 	require.Equal(t, dest, path[2])
 }
 
+// TestFindPathRefusedFeatures tests that an intermediate node whose announced
+// features pathfinding refuses, for an unknown even bit or the even bit of
+// option_independent_secrets, is skipped although it supports onion messages.
+func TestFindPathRefusedFeatures(t *testing.T) {
+	t.Parallel()
+
+	refused := map[string]lnwire.FeatureBit{
+		"unknown even bit":    100,
+		"independent secrets": lnwire.IndependentSecretsRequired,
+	}
+	for name, bit := range refused {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			graph := newMockNodeTraverser()
+
+			source := vertexFromByte(1)
+			bad := vertexFromByte(2)
+			good := vertexFromByte(3)
+			good2 := vertexFromByte(4)
+			dest := vertexFromByte(5)
+
+			graph.addNode(source, onionFeatures())
+			graph.addNode(bad, lnwire.NewFeatureVector(
+				lnwire.NewRawFeatureVector(
+					lnwire.OnionMessagesOptional, bit,
+				), lnwire.Features,
+			))
+			graph.addNode(good, onionFeatures())
+			graph.addNode(good2, onionFeatures())
+			graph.addNode(dest, onionFeatures())
+
+			// The shorter path goes through the refused node.
+			graph.addEdge(source, bad)
+			graph.addEdge(bad, dest)
+			graph.addEdge(source, good)
+			graph.addEdge(good, good2)
+			graph.addEdge(good2, dest)
+
+			path, err := FindPath(
+				t.Context(), graph, source, dest, 20,
+			)
+			require.NoError(t, err)
+			require.Equal(t, OnionMessagePath{good, good2, dest},
+				path)
+		})
+	}
+}
+
 // TestFindPathNoPathExists tests that ErrNoPathFound is returned when the
 // graph is disconnected.
 func TestFindPathNoPathExists(t *testing.T) {

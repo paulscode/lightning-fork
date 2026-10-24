@@ -1348,7 +1348,9 @@ func findBlindedPaths(g Graph, target route.Vertex,
 	}
 
 	// A helper closure which checks if the node in question has advertised
-	// that it supports route blinding.
+	// that it supports route blinding, and that it can be routed through:
+	// as in pathfinding, a node whose announced features we refuse isn't
+	// used.
 	nodeSupportsRouteBlinding := func(node route.Vertex) (bool, error) {
 		if supportsRouteBlinding[node] {
 			return true, nil
@@ -1357,6 +1359,13 @@ func findBlindedPaths(g Graph, target route.Vertex,
 		features, err := g.FetchNodeFeatures(context.TODO(), node)
 		if err != nil {
 			return false, err
+		}
+
+		if err := feature.ValidateRoutable(features); err != nil {
+			log.Debugf("Not using node %v in a blinded path: %v",
+				node, err)
+
+			return false, nil
 		}
 
 		return features.HasFeature(lnwire.RouteBlindingOptional), nil
