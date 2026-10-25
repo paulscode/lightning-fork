@@ -425,6 +425,24 @@ func TestAcceptSpliceReplacementRefused(t *testing.T) {
 		requireDisconnected(t, h)
 	})
 
+	// The peer's shutdown read: as for splice_init, a warning and the
+	// connection closed. The splice carries on.
+	t.Run("after the peer's shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		h := newAcceptorHarness(t)
+		first := startAliceSplice(t, h, 40_000_000, 2_500)
+		first.construct(t, h)
+		signSplice(t, h, first, nil)
+
+		require.False(t, h.machine.ShutdownReceived())
+		rbf(h, 5_000)
+		w := next[*lnwire.Warning](t, h)
+		require.Contains(t, string(w.Data), "after shutdown")
+		requireDisconnected(t, h)
+		require.Len(t, h.bob.PendingFundings(), 1)
+	})
+
 	t.Run("after our splice_locked", func(t *testing.T) {
 		t.Parallel()
 

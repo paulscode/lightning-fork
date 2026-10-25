@@ -383,7 +383,23 @@ func (m *Machine) quiesced(a *active,
 		// channel is ours to free, and the peer, quiescent too, waits
 		// for a splice_init that won't come.
 		if m.active != a && err == nil && initiator == lntypes.Local {
-			m.endQuiescence("canceled")
+			reason := "canceled"
+			if m.closing() {
+				reason = codeClosing
+			}
+			m.endQuiescence(reason)
+		}
+
+		return
+	}
+
+	// A close begun while we waited, by either side: BOLT 2 allows no
+	// splice from then on. Quiescence the link withdrew for it is no
+	// failure to quiesce.
+	if m.closing() {
+		m.failOurs(codeClosing, "")
+		if err == nil && initiator == lntypes.Local {
+			m.endQuiescence(codeClosing)
 		}
 
 		return
@@ -400,15 +416,6 @@ func (m *Machine) quiesced(a *active,
 		// resumed here, which would end it under the peer's
 		// splice_init.
 		m.failOurs(codeNotQuiescent, "the peer started quiescence")
-
-		return
-	}
-
-	// A close begun while we waited: BOLT 2 allows no splice from then
-	// on.
-	if state := m.cfg.Channel.State(); shutdownSent(state) {
-		m.failOurs(codeClosing, "")
-		m.endQuiescence(codeClosing)
 
 		return
 	}

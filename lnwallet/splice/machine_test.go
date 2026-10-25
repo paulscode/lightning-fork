@@ -65,6 +65,10 @@ type testLink struct {
 	resumed  chan struct{}
 	held     atomic.Bool
 
+	// stfuErr, set before stfuGate closes, is InitStfu's answer: the
+	// request withdrawn.
+	stfuErr error
+
 	// mu guards initiator, which a test may change.
 	mu sync.Mutex
 }
@@ -93,6 +97,10 @@ func (l *testLink) InitStfu() <-chan fn.Result[lntypes.ChannelParty] {
 	// The test decides when the channel is quiescent.
 	go func() {
 		<-l.stfuGate
+		if l.stfuErr != nil {
+			c <- fn.Err[lntypes.ChannelParty](l.stfuErr)
+			return
+		}
 		c <- fn.Ok(l.stfuResult)
 	}()
 
@@ -913,6 +921,20 @@ func TestAcceptSpliceRefused(t *testing.T) {
 		init(h, 1_000_000, 2_500)
 		require.Contains(t, abortReason(t, h), codeClosing)
 		requireResumed(t, h)
+	})
+
+	// The peer's shutdown read: BOLT 2 has its splice_init answered with
+	// a warning and the connection closed.
+	t.Run("after the peer's shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		h := newAcceptorHarness(t)
+		require.False(t, h.machine.ShutdownReceived())
+		init(h, 1_000_000, 2_500)
+		w := next[*lnwire.Warning](t, h)
+		require.Contains(t, string(w.Data), "after shutdown")
+		requireDisconnected(t, h)
+		require.Empty(t, h.bob.PendingFundings())
 	})
 
 	// Leaving less than the reserve the peer is held to: refused before
