@@ -125,17 +125,22 @@ func (p *Brontide) closeDisowned(chanID lnwire.ChannelID, force bool) {
 	}
 }
 
-// spliceYields cancels a splice of ours still waiting for quiescence when
-// the peer, knowing nothing of it, sends shutdown, and reports whether
-// nothing then bars the close: the peer's shutdown is no breach.
-func (p *Brontide) spliceYields(chanID lnwire.ChannelID) bool {
-	m, ok := p.SpliceMachine(chanID)
-	if !ok || !m.Preparing() {
-		return false
+// spliceShutdown tells the channel's splice machine and link that the peer
+// sent shutdown, as the message is read: BOLT 2 allows no splice from then
+// on. A splice of ours still waiting for quiescence, the peer knowing
+// nothing of it, fails with "closing", its coins released, and an stfu of
+// ours not yet sent is withdrawn; the peer's shutdown is no breach then.
+func (p *Brontide) spliceShutdown(chanID lnwire.ChannelID) {
+	if m, ok := p.SpliceMachine(chanID); ok {
+		m.ShutdownReceived()
 	}
-	m.Cancel()
 
-	return !p.spliceUnlocked(chanID)
+	// After the machine, so the withdrawn quiescence reaches it as the
+	// close it is.
+	link := p.fetchLinkFromKeyAndCid(chanID)
+	if sl, ok := link.(htlcswitch.SpliceLink); ok {
+		sl.ShutdownReceived()
+	}
 }
 
 // spliceNegotiated reports whether splicing applies to this connection: we

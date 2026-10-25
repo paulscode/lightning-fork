@@ -2421,11 +2421,15 @@ out:
 			break out
 		}
 
-		// No shutdown while a splice of the channel hasn't locked: the
+		// The peer's shutdown ends splicing on the channel: a splice
+		// of ours still waiting for quiescence yields to it. Then no
+		// shutdown while a splice of the channel hasn't locked: the
 		// spec forbids it, and closing would abandon the splice.
 		sd, isShutdown := nextMsg.(*lnwire.Shutdown)
-		if isShutdown && p.spliceUnlocked(sd.ChannelID) &&
-			!p.spliceYields(sd.ChannelID) {
+		if isShutdown {
+			p.spliceShutdown(sd.ChannelID)
+		}
+		if isShutdown && p.spliceUnlocked(sd.ChannelID) {
 
 			p.log.Warnf("shutdown for ChannelID(%v) while a splice "+
 				"is pending", sd.ChannelID)

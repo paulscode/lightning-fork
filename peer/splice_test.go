@@ -194,3 +194,41 @@ func TestSpliceMachineForHolds(t *testing.T) {
 	require.True(t, start)
 	require.True(t, disabled)
 }
+
+// TestPeerShutdownEndsSplicing checks the peer's shutdown, with no splice
+// under way: as it is read, the channel's splice machine refuses splices
+// with "closing", which the estimate and the channel's splice_status report,
+// before we answer it and the channel's state shows the close. lnd started a
+// splice then, which the Core Lightning port refused with a warning.
+func TestPeerShutdownEndsSplicing(t *testing.T) {
+	t.Parallel()
+
+	harness, err := createTestPeerWithChannel(t, noUpdate)
+	require.NoError(t, err)
+	peer := harness.peer
+	chanID := lnwire.NewChanIDFromOutPoint(harness.channel.ChannelPoint())
+	ch, ok := peer.activeChannels.Load(chanID)
+	require.True(t, ok)
+
+	m := splice.NewMachine(splice.Config{ChanID: chanID, Channel: ch})
+	peer.spliceMtx.Lock()
+	peer.spliceMachines[chanID] = m
+	peer.spliceMtx.Unlock()
+	require.Empty(t, m.Refusal())
+	require.False(t, peer.spliceUnlocked(chanID))
+
+	peer.remoteFeatures = lnwire.EmptyFeatureVector()
+	var shutdown bytes.Buffer
+	_, err = lnwire.WriteMessage(&shutdown, lnwire.NewShutdown(
+		chanID, genScript(t, p2wshAddress),
+	), 0)
+	require.NoError(t, err)
+
+	peer.cg.WgAdd(1)
+	go peer.readHandler()
+	harness.mockConn.readMessages <- shutdown.Bytes()
+
+	require.Eventually(t, func() bool {
+		return m.Refusal() == "closing"
+	}, timeout, 10*time.Millisecond)
+}
