@@ -1840,3 +1840,50 @@ func TestLinkTxSignaturesPastHeldUpdates(t *testing.T) {
 	}
 	require.True(t, got, "tx_signatures stuck behind held updates")
 }
+
+// TestLinkShutdownWithdrawsStfu checks the peer's shutdown read while our
+// stfu is owed, our update_fee not yet locked in: the request for quiescence
+// is answered with ErrShutdownReceived and no stfu follows the shutdown, as
+// BOLT 2 allows no splice once it is sent. Later requests are refused.
+func TestLinkShutdownWithdrawsStfu(t *testing.T) {
+	t.Parallel()
+
+	s := newSpliceLinkHarnessWith(t, func(cfg *ChannelLinkConfig) {
+		cfg.FeeEstimator = chainfee.NewStaticEstimator(50_000, 253)
+	})
+	require.Eventually(t, s.link.EligibleToForward, 5*time.Second,
+		10*time.Millisecond)
+	require.NoError(t, <-s.link.runSpliceReq(
+		func(ctx context.Context) error {
+			return s.link.handleUpdateFee(ctx)
+		},
+	))
+	nextSent[*lnwire.UpdateFee](t, s)
+
+	refused := func(res <-chan fn.Result[lntypes.ChannelParty]) {
+		t.Helper()
+
+		select {
+		case r := <-res:
+			require.ErrorIs(t, r.Err(), ErrShutdownReceived)
+		case <-time.After(5 * time.Second):
+			t.Fatal("quiescence request not answered")
+		}
+	}
+
+	res := s.link.InitStfu()
+	s.link.ShutdownReceived()
+	refused(res)
+	refused(s.link.InitStfu())
+
+	timeout := time.After(300 * time.Millisecond)
+	for done := false; !done; {
+		select {
+		case msg := <-s.sent:
+			_, stfu := msg.(*lnwire.Stfu)
+			require.False(t, stfu, "stfu after the peer's shutdown")
+		case <-timeout:
+			done = true
+		}
+	}
+}

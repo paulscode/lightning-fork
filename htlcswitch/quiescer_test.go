@@ -401,3 +401,96 @@ func TestQuiescenceLateLocalRequest(t *testing.T) {
 	require.Equal(t, fn.Ok(lntypes.Remote),
 		harness.quiescer.QuiescenceInitiator())
 }
+
+// TestQuiescerRefuseInit checks the peer's shutdown read while our stfu is
+// owed, waiting for our updates to be locked in: the request is withdrawn,
+// answered with the error, no stfu of ours goes out after the shutdown, and
+// later requests are refused, also past a resume. Our stfu already out stays
+// out, and the peer's stfu is still answered.
+func TestQuiescerRefuseInit(t *testing.T) {
+	t.Parallel()
+
+	newReq := func() (StfuReq, <-chan fn.Result[lntypes.ChannelParty]) {
+		return fn.NewReq[fn.Unit, fn.Result[lntypes.ChannelParty]](
+			fn.Unit{},
+		)
+	}
+	resolved := func(t *testing.T,
+		res <-chan fn.Result[lntypes.ChannelParty]) error {
+
+		t.Helper()
+		select {
+		case r := <-res:
+			_, err := r.Unpack()
+			return err
+		default:
+			t.Fatal("quiescence request not resolved")
+			return nil
+		}
+	}
+
+	t.Run("owed", func(t *testing.T) {
+		t.Parallel()
+
+		h := initQuiescerTestHarness(lntypes.Local)
+		req, res := newReq()
+		h.quiescer.InitStfu(req)
+		require.True(t, h.quiescer.OweStfu())
+
+		require.True(t, h.quiescer.RefuseInit(ErrShutdownReceived))
+		require.ErrorIs(t, resolved(t, res), ErrShutdownReceived)
+		require.False(t, h.quiescer.OweStfu())
+		require.True(t, h.quiescer.CanSendUpdates())
+
+		require.NoError(t, h.quiescer.SendOwedStfu())
+		select {
+		case <-h.conn:
+			t.Fatal("stfu sent after the peer's shutdown")
+		default:
+		}
+
+		// Refused from now on, a resume between.
+		h.quiescer.Resume()
+		req, res = newReq()
+		h.quiescer.InitStfu(req)
+		require.ErrorIs(t, resolved(t, res), ErrShutdownReceived)
+		require.False(t, h.quiescer.OweStfu())
+	})
+
+	t.Run("sent", func(t *testing.T) {
+		t.Parallel()
+
+		h := initQuiescerTestHarness(lntypes.Local)
+		req, res := newReq()
+		h.quiescer.InitStfu(req)
+		require.NoError(t, h.quiescer.SendOwedStfu())
+		<-h.conn
+
+		require.False(t, h.quiescer.RefuseInit(ErrShutdownReceived))
+		require.NoError(t, h.quiescer.RecvStfu(lnwire.Stfu{
+			ChanID: cid,
+		}))
+		r := <-res
+		require.Equal(t, fn.Ok(lntypes.Local), r)
+	})
+
+	t.Run("the peer's stfu", func(t *testing.T) {
+		t.Parallel()
+
+		h := initQuiescerTestHarness(lntypes.Local)
+		req, res := newReq()
+		h.quiescer.InitStfu(req)
+		require.NoError(t, h.quiescer.RecvStfu(lnwire.Stfu{
+			ChanID: cid, Initiator: true,
+		}))
+
+		require.True(t, h.quiescer.RefuseInit(ErrShutdownReceived))
+		require.ErrorIs(t, resolved(t, res), ErrShutdownReceived)
+		require.True(t, h.quiescer.OweStfu())
+		require.NoError(t, h.quiescer.SendOwedStfu())
+		msg := <-h.conn
+		require.False(t, msg.Initiator)
+		require.Equal(t, fn.Ok(lntypes.Remote),
+			h.quiescer.QuiescenceInitiator())
+	})
+}

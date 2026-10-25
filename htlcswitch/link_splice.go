@@ -465,6 +465,21 @@ func (l *channelLink) LockSplice(txid chainhash.Hash,
 	})
 }
 
+// ErrShutdownReceived refuses our request for quiescence once the peer sent
+// shutdown: BOLT 2 allows no splice from then on, the one thing it is for.
+var ErrShutdownReceived = errors.New("the peer sent shutdown")
+
+// ShutdownReceived tells the link the peer sent shutdown for the channel, as
+// the message is read: our requests for quiescence are refused from then on,
+// and one whose stfu is still owed, waiting for our updates to be locked in,
+// is withdrawn, so no stfu of ours follows the peer's shutdown. Safe from any
+// goroutine.
+func (l *channelLink) ShutdownReceived() {
+	if l.quiescer.RefuseInit(ErrShutdownReceived) {
+		l.log.Infof("withdrew our stfu: %v", ErrShutdownReceived)
+	}
+}
+
 // HoldUpdates stops our updates on a channel whose peer disowned a splice:
 // its commitments leave that funding out, ours on it must stay current, so
 // no commitment can be signed. No HTLC is forwarded into the channel, nor an
@@ -583,6 +598,7 @@ type SpliceLink interface {
 	LockSplice(txid chainhash.Hash, scid lnwire.ShortChannelID) <-chan error
 	RemoveSpliceFunding(txid chainhash.Hash) <-chan error
 	HoldUpdates() <-chan error
+	ShutdownReceived()
 }
 
 // A compile time check that the link can splice.

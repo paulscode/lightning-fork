@@ -101,6 +101,12 @@ type Quiescer interface {
 	// channel quiescent until both tx_signatures are exchanged, across
 	// reconnections, without another stfu.
 	AssumeQuiescent(initiator lntypes.ChannelParty)
+
+	// RefuseInit refuses our requests for quiescence from now on with
+	// err, and withdraws one whose stfu hasn't gone out, reporting
+	// whether it did. An stfu of ours already sent stays out; the peer's
+	// is still answered.
+	RefuseInit(err error) bool
 }
 
 // QuiescerCfg is a config structure used to initialize a quiescer giving it the
@@ -160,6 +166,10 @@ type QuiescerLive struct {
 	// activeQuiescenceRequest is a possibly None Request that we should
 	// resolve when we complete quiescence.
 	activeQuiescenceReq fn.Option[StfuReq]
+
+	// refuseInit, once set, refuses our requests for quiescence: the
+	// peer sent shutdown. Kept across Resume.
+	refuseInit error
 
 	// resumeQueue is a slice of hooks that will be called when the quiescer
 	// is resumed. These are actions that needed to be deferred while the
@@ -472,6 +482,12 @@ func (q *QuiescerLive) InitStfu(req StfuReq) {
 // negotiation where we are the initiator. We don't yet send stfu yet because
 // we need to wait for the link to give us a valid opportunity to do so.
 func (q *QuiescerLive) initStfu(req StfuReq) {
+	if q.refuseInit != nil {
+		req.Resolve(fn.Err[lntypes.ChannelParty](q.refuseInit))
+
+		return
+	}
+
 	if q.localInit {
 		req.Resolve(fn.Errf[lntypes.ChannelParty](
 			"quiescence already requested",
@@ -497,6 +513,29 @@ func (q *QuiescerLive) initStfu(req StfuReq) {
 
 	q.localInit = true
 	q.activeQuiescenceReq = fn.Some(req)
+}
+
+// RefuseInit refuses our requests for quiescence from now on, and withdraws
+// one whose stfu hasn't gone out. See the Quiescer interface.
+func (q *QuiescerLive) RefuseInit(err error) bool {
+	q.Lock()
+	defer q.Unlock()
+
+	q.refuseInit = err
+
+	// Our stfu is out, or none was asked for: nothing to withdraw.
+	if !q.localInit || q.sent {
+		return false
+	}
+
+	q.log.Debugf("withdrawing our request for quiescence: %v", err)
+	q.localInit = false
+	q.activeQuiescenceReq.WhenSome(func(req StfuReq) {
+		req.Resolve(fn.Err[lntypes.ChannelParty](err))
+	})
+	q.activeQuiescenceReq = fn.None[StfuReq]()
+
+	return true
 }
 
 // OnResume accepts a no return closure that will run when the quiescer is
@@ -601,6 +640,7 @@ func (q *quiescerNoop) IsQuiescent() bool                    { return false }
 func (q *quiescerNoop) OnResume(hook func())                 { hook() }
 func (q *quiescerNoop) Resume()                              {}
 func (q *quiescerNoop) AssumeQuiescent(lntypes.ChannelParty) {}
+func (q *quiescerNoop) RefuseInit(error) bool                { return false }
 func (q *quiescerNoop) QuiescenceInitiator() fn.Result[lntypes.ChannelParty] {
 	return fn.Err[lntypes.ChannelParty](ErrNoQuiescenceInitiator)
 }
