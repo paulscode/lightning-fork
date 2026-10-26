@@ -1422,8 +1422,8 @@ func TestLinkCommitSigAfterPeerLock(t *testing.T) {
 }
 
 // TestLinkHeldBounded checks the peer's messages held for a splice step are
-// bounded: the step not coming in time, or too many held, the connection
-// drops, rather than the link holding them for good.
+// bounded: the step not coming in time, or too many or too large held, the
+// connection drops, rather than the link holding them for good.
 func TestLinkHeldBounded(t *testing.T) {
 	t.Parallel()
 
@@ -1490,6 +1490,41 @@ func TestLinkHeldBounded(t *testing.T) {
 					"dropped the connection")
 			}
 		}
+	})
+
+	// Few but large, each handed over before the next: the mailbox stays
+	// near empty, and the link's byte bound is what drops the peer.
+	t.Run("too large", func(t *testing.T) {
+		t.Parallel()
+
+		s := newSpliceLinkHarness(t)
+		htlc := heldUpdate(s)
+
+		// An odd record pads each to about 61 KB.
+		const pad = 60_000
+		big := *htlc
+		big.ExtraData = append(
+			lnwire.ExtraOpaqueData{101, 0xfd, pad >> 8, pad & 0xff},
+			make([]byte, pad)...,
+		)
+		size, err := wireMessageSize(&big)
+		require.NoError(t, err)
+		require.Greater(t, size, uint32(pad))
+
+		mb, ok := s.link.mailBox.(*memoryMailBox)
+		require.True(t, ok)
+		drained := func() bool {
+			mb.wireCond.L.Lock()
+			defer mb.wireCond.L.Unlock()
+
+			return mb.wireMessages.Len() == 0
+		}
+		for range maxWireBytes/size + 2 {
+			s.link.HandleChannelUpdate(&big)
+			require.Eventually(t, drained, 5*time.Second,
+				time.Millisecond)
+		}
+		s.requireFailure(t, LinkFailureDisconnect)
 	})
 
 	// Below both, nothing fails.
