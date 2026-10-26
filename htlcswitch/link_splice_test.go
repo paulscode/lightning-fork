@@ -1422,8 +1422,8 @@ func TestLinkCommitSigAfterPeerLock(t *testing.T) {
 }
 
 // TestLinkHeldBounded checks the peer's messages held for a splice step are
-// bounded: the step not coming in time, or too many held, the connection
-// drops, rather than the link holding them for good.
+// bounded: the step not coming in time, or too many or too large held, the
+// connection drops, rather than the link holding them for good.
 func TestLinkHeldBounded(t *testing.T) {
 	t.Parallel()
 
@@ -1490,6 +1490,41 @@ func TestLinkHeldBounded(t *testing.T) {
 					"dropped the connection")
 			}
 		}
+	})
+
+	// Few but large, each handed over before the next: the mailbox stays
+	// near empty, and the link's byte bound is what drops the peer.
+	t.Run("too large", func(t *testing.T) {
+		t.Parallel()
+
+		s := newSpliceLinkHarness(t)
+		htlc := heldUpdate(s)
+
+		// An odd record pads each to about 61 KB.
+		const pad = 60_000
+		big := *htlc
+		big.ExtraData = append(
+			lnwire.ExtraOpaqueData{101, 0xfd, pad >> 8, pad & 0xff},
+			make([]byte, pad)...,
+		)
+		size, err := wireMessageSize(&big)
+		require.NoError(t, err)
+		require.Greater(t, size, uint32(pad))
+
+		mb, ok := s.link.mailBox.(*memoryMailBox)
+		require.True(t, ok)
+		drained := func() bool {
+			mb.wireCond.L.Lock()
+			defer mb.wireCond.L.Unlock()
+
+			return mb.wireMessages.Len() == 0
+		}
+		for range maxWireBytes/size + 2 {
+			s.link.HandleChannelUpdate(&big)
+			require.Eventually(t, drained, 5*time.Second,
+				time.Millisecond)
+		}
+		s.requireFailure(t, LinkFailureDisconnect)
 	})
 
 	// Below both, nothing fails.
@@ -1839,4 +1874,51 @@ func TestLinkTxSignaturesPastHeldUpdates(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	require.True(t, got, "tx_signatures stuck behind held updates")
+}
+
+// TestLinkShutdownWithdrawsStfu checks the peer's shutdown read while our
+// stfu is owed, our update_fee not yet locked in: the request for quiescence
+// is answered with ErrShutdownReceived and no stfu follows the shutdown, as
+// BOLT 2 allows no splice once it is sent. Later requests are refused.
+func TestLinkShutdownWithdrawsStfu(t *testing.T) {
+	t.Parallel()
+
+	s := newSpliceLinkHarnessWith(t, func(cfg *ChannelLinkConfig) {
+		cfg.FeeEstimator = chainfee.NewStaticEstimator(50_000, 253)
+	})
+	require.Eventually(t, s.link.EligibleToForward, 5*time.Second,
+		10*time.Millisecond)
+	require.NoError(t, <-s.link.runSpliceReq(
+		func(ctx context.Context) error {
+			return s.link.handleUpdateFee(ctx)
+		},
+	))
+	nextSent[*lnwire.UpdateFee](t, s)
+
+	refused := func(res <-chan fn.Result[lntypes.ChannelParty]) {
+		t.Helper()
+
+		select {
+		case r := <-res:
+			require.ErrorIs(t, r.Err(), ErrShutdownReceived)
+		case <-time.After(5 * time.Second):
+			t.Fatal("quiescence request not answered")
+		}
+	}
+
+	res := s.link.InitStfu()
+	s.link.ShutdownReceived()
+	refused(res)
+	refused(s.link.InitStfu())
+
+	timeout := time.After(300 * time.Millisecond)
+	for done := false; !done; {
+		select {
+		case msg := <-s.sent:
+			_, stfu := msg.(*lnwire.Stfu)
+			require.False(t, stfu, "stfu after the peer's shutdown")
+		case <-timeout:
+			done = true
+		}
+	}
 }

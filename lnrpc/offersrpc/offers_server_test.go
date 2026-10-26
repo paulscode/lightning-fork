@@ -804,3 +804,73 @@ func fetchPayAndList(t *testing.T, chain [32]byte) {
 	})
 	requireCode(t, err, codes.InvalidArgument)
 }
+
+// TestPayInvoiceStoredCanonical checks the invoice PayOffer is given keeps
+// with the payment in its canonical form, and that one larger than an onion
+// message could carry is refused rather than stored.
+func TestPayInvoiceStoredCanonical(t *testing.T) {
+	t.Parallel()
+
+	s := newTestServerOn(t, testChain)
+	ctx := context.Background()
+	node, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	msgr := &answeringMessenger{t: t, issuer: s.issuer, node: node}
+	client, err := offerpay.New(offerpay.Config{
+		Messenger: msgr, ChainHash: testChain, Timeout: 5 * time.Second,
+	})
+	require.NoError(t, err)
+	s.cfg.Deps.Client = client
+	var paid []*routing.LightningPayment
+	s.cfg.Deps.PayInvoice = func(_ context.Context,
+		p *routing.LightningPayment) ([32]byte, *route.Route, error) {
+
+		paid = append(paid, p)
+
+		return [32]byte{9}, &route.Route{}, nil
+	}
+
+	created, err := s.CreateOffer(ctx, &CreateOfferRequest{
+		Description: "coffee",
+	})
+	require.NoError(t, err)
+	fetched, err := s.FetchInvoice(ctx, &FetchInvoiceRequest{
+		Offer: created.Offer.Bolt12, AmountMsat: 5000,
+	})
+	require.NoError(t, err)
+
+	// Uppercase, split with a continuation: stored as fetched.
+	lni := fetched.Bolt12
+	split := strings.ToUpper(lni[:20]) + "+\n  " +
+		strings.ToUpper(lni[20:])
+	resp, err := s.PayOffer(ctx, &PayOfferRequest{Invoice: split})
+	require.NoError(t, err)
+	require.Equal(t, lni, resp.Bolt12)
+	require.Len(t, paid, 1)
+	require.Equal(t, []byte(lni), paid[0].PaymentRequest)
+
+	// The same invoice, signed again with a payer note that takes it
+	// past an onion message: refused, nothing paid.
+	_, data, err := bolt12.Decode(lni)
+	require.NoError(t, err)
+	inv, err := bolt12.DecodeInvoice(data)
+	require.NoError(t, err)
+	inv.InvreqPayerNote = tlv.SomeRecordT(
+		tlv.NewPrimitiveRecord[tlv.TlvType89](
+			[]byte(strings.Repeat("a", 40_000)),
+		),
+	)
+	sig, err := bolt12.SignInvoice(inv, s.issuer)
+	require.NoError(t, err)
+	inv.Signature = tlv.SomeRecordT(
+		tlv.NewPrimitiveRecord[tlv.TlvType240](sig),
+	)
+	raw, err := inv.Encode()
+	require.NoError(t, err)
+	big, err := bolt12.Encode("lni", raw)
+	require.NoError(t, err)
+	_, err = s.PayOffer(ctx, &PayOfferRequest{Invoice: big})
+	requireCode(t, err, codes.InvalidArgument)
+	require.ErrorContains(t, err, "onion message")
+	require.Len(t, paid, 1)
+}

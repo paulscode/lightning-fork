@@ -446,6 +446,11 @@ type Machine struct {
 	// splices are refused from then on.
 	misbehaved bool
 
+	// peerShutdown is set once the peer's shutdown for the channel has
+	// been read on this connection: BOLT 2 allows no splice from then on,
+	// ours or the peer's. Under mu.
+	peerShutdown bool
+
 	// reestablished is set once the peer's channel_reestablish has been
 	// handled on this connection: splice_locked may be sent from then on.
 	// lockedTold is the splice whose splice_locked the peer has had on
@@ -853,9 +858,64 @@ func (m *Machine) Refusal() string {
 
 	case m.cfg.Chain != nil && !m.cfg.Chain.Synced():
 		return codeChainNotSynced
+
+	// The peer's shutdown, which the channel's state doesn't show until
+	// we answer it.
+	case m.shutdownReceived():
+		return codeClosing
 	}
 
 	return ""
+}
+
+// ShutdownReceived tells the machine the peer sent shutdown for the channel:
+// no splice starts from then on. A splice of ours still waiting for
+// quiescence fails with "closing", its coins released, and reports whether
+// it did; one the peer's stfu answers later is ended with tx_abort. Called
+// as the message is read, before the close begins: our answer to it, which
+// the channel's state shows, comes later. Safe from any goroutine; it waits
+// for the machine only with a splice of ours preparing.
+func (m *Machine) ShutdownReceived() bool {
+	m.mu.Lock()
+	m.peerShutdown = true
+	m.mu.Unlock()
+
+	if !m.Preparing() {
+		return false
+	}
+
+	result := make(chan bool, 1)
+	m.enqueue(func() {
+		a := m.active
+		if a == nil || a.request == nil || a.phase != phasePreparing {
+			result <- false
+			return
+		}
+		m.failOurs(codeClosing, "the peer sent shutdown")
+		result <- true
+	})
+
+	select {
+	case ok := <-result:
+		return ok
+	case <-m.quit:
+		return false
+	}
+}
+
+// shutdownReceived reports whether the peer's shutdown has been read on this
+// connection.
+func (m *Machine) shutdownReceived() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.peerShutdown
+}
+
+// closing reports whether either side sent shutdown: BOLT 2 allows no
+// splice from then on.
+func (m *Machine) closing() bool {
+	return m.shutdownReceived() || shutdownSent(m.cfg.Channel.State())
 }
 
 // spliceable returns why the channel can't be spliced now, or "".
@@ -887,7 +947,7 @@ func (m *Machine) spliceable() string {
 		state.HasChanStatus(channeldb.ChanStatusLocalCloseInitiator),
 		state.HasChanStatus(channeldb.ChanStatusRemoteCloseInitiator),
 		state.HasChanStatus(channeldb.ChanStatusFundingSpentUnknown),
-		shutdownSent(state):
+		m.closing():
 
 		return codeClosing
 	}

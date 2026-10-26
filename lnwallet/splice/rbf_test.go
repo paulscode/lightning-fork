@@ -425,6 +425,24 @@ func TestAcceptSpliceReplacementRefused(t *testing.T) {
 		requireDisconnected(t, h)
 	})
 
+	// The peer's shutdown read: as for splice_init, a warning and the
+	// connection closed. The splice carries on.
+	t.Run("after the peer's shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		h := newAcceptorHarness(t)
+		first := startAliceSplice(t, h, 40_000_000, 2_500)
+		first.construct(t, h)
+		signSplice(t, h, first, nil)
+
+		require.False(t, h.machine.ShutdownReceived())
+		rbf(h, 5_000)
+		w := next[*lnwire.Warning](t, h)
+		require.Contains(t, string(w.Data), "after shutdown")
+		requireDisconnected(t, h)
+		require.Len(t, h.bob.PendingFundings(), 1)
+	})
+
 	t.Run("after our splice_locked", func(t *testing.T) {
 		t.Parallel()
 
@@ -765,7 +783,7 @@ func TestReplacementWithoutContribution(t *testing.T) {
 // TestTxAbortWithoutSplice checks a tx_abort for a splice we don't have is
 // echoed, as BOLT 2 asks (the Core Lightning port waits for the echo), every
 // time, and that an echo, empty, isn't: two idle nodes of ours stop after
-// one rather than echoing each other for good.
+// one rather than echoing each other for good. Either ends quiescence.
 func TestTxAbortWithoutSplice(t *testing.T) {
 	t.Parallel()
 
@@ -778,6 +796,18 @@ func TestTxAbortWithoutSplice(t *testing.T) {
 
 	// A quiescence the peer won ends with it.
 	requireResumed(t, h)
+
+	// An empty one, no splice of ours out: not echoed, but it ends the
+	// peer's quiescence, so ours ends too.
+	h.machine.HandleSpliceMessage(&lnwire.TxAbort{
+		ChannelID: h.machine.cfg.ChanID,
+	})
+	requireResumed(t, h)
+	select {
+	case msg := <-h.peer.msgs:
+		t.Fatalf("sent %T", msg)
+	case <-time.After(100 * time.Millisecond):
+	}
 
 	p := newSplicePair(t)
 	var aborts atomic.Int32

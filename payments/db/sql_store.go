@@ -1219,6 +1219,10 @@ func (s *SQLStore) DeletePayment(ctx context.Context, paymentHash lntypes.Hash,
 func (s *SQLStore) InitPayment(ctx context.Context, paymentHash lntypes.Hash,
 	paymentCreationInfo *PaymentCreationInfo) error {
 
+	if err := paymentCreationInfo.checkSize(); err != nil {
+		return err
+	}
+
 	// Create the payment in the database.
 	err := s.db.ExecTx(ctx, sqldb.WriteTxOpt(), func(db SQLQueries) error {
 		existingPayment, err := db.FetchPayment(ctx, paymentHash[:])

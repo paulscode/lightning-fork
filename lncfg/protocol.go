@@ -36,7 +36,7 @@ type ProtocolOptions struct {
 	// channels with peers that also signal it store the remote party's
 	// per-commitment secrets individually instead of requiring them to
 	// come from a shachain.
-	IndependentSecrets bool `long:"independent-secrets" description:"if set, signal option_independent_secrets, so new channels with peers that also signal it store every per-commitment secret the peer reveals individually, instead of requiring them to come from a shachain. This lets a peer generate its secrets with k-of-n signers. Once any channel has used it, the database moves to version 39 and lnd can't be downgraded to a version that doesn't read it."`
+	IndependentSecrets bool `long:"independent-secrets" description:"if set, signal option_independent_secrets, so new channels with peers that also signal it store every per-commitment secret the peer reveals individually, instead of requiring them to come from a shachain. This lets a peer generate its secrets with k-of-n signers. The database moves to version 39 as soon as a channel with it is saved, even one a peer has only started opening, and older releases then refuse to open the database."`
 
 	// TaprootOverlayChans should be set if we want to enable support for
 	// the experimental taproot overlay chan type.

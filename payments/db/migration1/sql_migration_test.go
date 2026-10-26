@@ -1119,6 +1119,86 @@ func TestMigratePaymentWithMetadata(t *testing.T) {
 	assertPaymentDataMatches(t, ctx, kvDB, sqlStore, paymentHash)
 }
 
+// TestMigratePaymentIntentType checks the migration records a BOLT 12
+// invoice paid as a BOLT 12 intent, in either case, as the native store
+// writes one, and a BOLT11 request as a BOLT11 one.
+func TestMigratePaymentIntentType(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	kvDB := setupTestKVDB(t)
+
+	requests := map[string]PaymentIntentType{
+		"lnbc800n1test":  PaymentIntentTypeBolt11,
+		"lni1qqgtest":    PaymentIntentTypeBolt12,
+		"LNI1QQGTEST":    PaymentIntentTypeBolt12,
+		"lnbcrt1lni1abc": PaymentIntentTypeBolt11,
+	}
+	hashes := make(map[string][32]byte)
+	err := kvdb.Update(kvDB, func(tx kvdb.RwTx) error {
+		paymentsBucket, err := tx.CreateTopLevelBucket(
+			paymentsRootBucket,
+		)
+		if err != nil {
+			return err
+		}
+		indexBucket, err := tx.CreateTopLevelBucket(paymentsIndexBucket)
+		if err != nil {
+			return err
+		}
+
+		seq := uint64(0)
+		for request := range requests {
+			seq++
+			hash := createTestPaymentHash(t, int(seq))
+			hashes[request] = hash
+			err := createTestPayment(
+				t, paymentsBucket, indexBucket,
+				paymentTestConfig{
+					hash:           hash,
+					seqNum:         seq,
+					value:          80000,
+					creationTime:   time.Unix(1, 0),
+					paymentRequest: request,
+					attemptID:      seq,
+					numHops:        1,
+					baseChannelID:  500000,
+					baseTimeLock:   900000,
+				},
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}, func() {})
+	require.NoError(t, err)
+
+	sqlStore := setupTestSQLDB(t)
+	require.NoError(t, runPaymentsMigration(ctx, kvDB, sqlStore))
+
+	for request, want := range requests {
+		hash := hashes[request]
+		err := sqlStore.db.ExecTx(ctx, sqldb.ReadTxOpt(),
+			func(db SQLQueries) error {
+				row, err := db.FetchPayment(ctx, hash[:])
+				if err != nil {
+					return err
+				}
+				require.True(t, row.IntentType.Valid, request)
+				require.Equal(t, int16(want),
+					row.IntentType.Int16, request)
+				require.Equal(t, []byte(request),
+					row.IntentPayload)
+
+				return nil
+			}, sqldb.NoOpReset,
+		)
+		require.NoError(t, err)
+	}
+}
+
 // TestMigratePaymentWithAllFeatures tests migration with all optional
 // features enabled.
 func TestMigratePaymentWithAllFeatures(t *testing.T) {

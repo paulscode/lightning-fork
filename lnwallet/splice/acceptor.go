@@ -52,6 +52,14 @@ func (m *Machine) handleSpliceInit(msg *lnwire.SpliceInit) {
 			"started quiescence")
 		return
 	}
+	// BOLT 2: a node that received shutdown sends a warning and closes
+	// the connection. Shutdown we sent only, the peer may not have read
+	// before its splice_init: refused with tx_abort, as spliceable has
+	// it.
+	if m.shutdownReceived() {
+		m.warnAndDisconnect("splice_init after shutdown")
+		return
+	}
 
 	if code := m.spliceable(); code != "" {
 		m.abort(code, "")

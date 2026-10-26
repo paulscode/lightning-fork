@@ -40,6 +40,11 @@ func (m *Machine) handleTxInitRbf(msg *lnwire.TxInitRbf) {
 			"started quiescence")
 		return
 	}
+	// After shutdown, as for splice_init.
+	if m.shutdownReceived() {
+		m.warnAndDisconnect("tx_init_rbf after shutdown")
+		return
+	}
 
 	// A splice still negotiated or signed can't be replaced, and a
 	// tx_abort would end it: the peer broke the protocol.
@@ -356,6 +361,9 @@ func (m *Machine) checkTxInitRbf(msg *lnwire.TxInitRbf) (string, string) {
 
 	case m.cfg.Disabled:
 		return codeDisabled, ""
+
+	case shutdownSent(m.cfg.Channel.State()):
+		return codeClosing, ""
 
 	case m.misbehaved || m.cfg.Limits.isMisbehaved(m.cfg.ChanID):
 		return codePeerMisbehaved, ""

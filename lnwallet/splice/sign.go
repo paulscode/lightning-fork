@@ -544,9 +544,13 @@ func (m *Machine) handleTxAbort(msg *lnwire.TxAbort) {
 	// An empty one is an echo: ours carry no reason, nor the Core
 	// Lightning port's, while every first tx_abort, ours and the port's,
 	// gives one. Not answered, or two nodes echo each other for good.
+	// Like any tx_abort it ends the peer's quiescence, so it ends ours
+	// too: the link would otherwise hold the peer's updates that follow
+	// until the wait for them ran out.
 	case a == nil && len(msg.Data) == 0:
 		log.Debugf("ChannelID(%v): tx_abort echo without a splice",
 			m.cfg.ChanID)
+		m.resume()
 
 	// One we no longer have, or never had: echoed, the port waiting for
 	// the echo and taking nothing else until it comes. Not counted as

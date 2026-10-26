@@ -52,34 +52,51 @@ func TestIndependentSecretsDependsOnChannelType(t *testing.T) {
 }
 
 // TestCustomFeaturesRefuseKnownBits checks that custom-init and
-// custom-nodeann can't set a bit lnd defines, such as either bit of
-// option_independent_secrets: the odd one would turn the add-on on with its
-// option off, and the even one isn't valid outside channel_type.
+// custom-nodeann can't set either bit of option_independent_secrets: the odd
+// one would turn the add-on on with its option off, and the even one isn't
+// valid outside channel_type. Other bits lnd defines are taken as before,
+// unless already set.
 func TestCustomFeaturesRefuseKnownBits(t *testing.T) {
 	t.Parallel()
+
+	custom := func(set Set, bits ...lnwire.FeatureBit) error {
+		_, err := NewManager(Config{
+			NoIndependentSecrets: true,
+			CustomFeatures: map[Set][]lnwire.FeatureBit{
+				set: bits,
+			},
+		})
+
+		return err
+	}
 
 	for _, set := range []Set{SetInit, SetNodeAnn} {
 		for _, bit := range []lnwire.FeatureBit{
 			lnwire.IndependentSecretsOptional,
 			lnwire.IndependentSecretsRequired,
 		} {
-			_, err := NewManager(Config{
-				NoIndependentSecrets: true,
-				CustomFeatures: map[Set][]lnwire.FeatureBit{
-					set: {bit},
-				},
-			})
-			require.ErrorIs(t, err, lnwire.ErrFeatureStandard,
+			require.ErrorIs(t, custom(set, bit),
+				lnwire.ErrFeatureStandard,
 				"set %v, bit %v", set, bit)
 		}
 
-		// An unknown bit is still accepted.
-		_, err := NewManager(Config{
-			CustomFeatures: map[Set][]lnwire.FeatureBit{
-				set: {lnwire.FeatureBit(333)},
-			},
-		})
-		require.NoError(t, err, "set %v", set)
+		// Bits lnd defines but leaves unset, which earlier releases
+		// took, and an unknown bit.
+		for _, bit := range []lnwire.FeatureBit{
+			lnwire.InitialRoutingSync,
+			lnwire.AnchorsOptional,
+			lnwire.PaymentMetadataOptional,
+			lnwire.Bolt11BlindedPathsOptional,
+			lnwire.FeatureBit(333),
+		} {
+			require.NoError(t, custom(set, bit),
+				"set %v, bit %v", set, bit)
+		}
+
+		// One already set is refused, as before.
+		err := custom(set, lnwire.DataLossProtectRequired)
+		require.ErrorContains(t, err, "already set")
+		require.NotErrorIs(t, err, lnwire.ErrFeatureStandard)
 	}
 }
 

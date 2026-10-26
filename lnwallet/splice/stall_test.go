@@ -3,6 +3,7 @@
 package splice
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -699,6 +700,116 @@ func TestSpliceShutdownWhileQuiescing(t *testing.T) {
 		t.Fatal("not resumed")
 	}
 	require.False(t, alice.machine.Busy())
+}
+
+// TestSpliceRefusedAfterPeerShutdown checks a splice asked for once the
+// peer's shutdown has been read, before we answer it and the channel's state
+// shows the close: refused with "closing", as the estimate reports it,
+// nothing sent and no coin leased. lnd sent stfu and splice_init then, which
+// the Core Lightning port refused with a warning.
+func TestSpliceRefusedAfterPeerShutdown(t *testing.T) {
+	t.Parallel()
+
+	alice, _ := soloAlice(t)
+	alice.fund(t, 1, 5_000_000)
+	require.Empty(t, alice.machine.Refusal())
+
+	require.False(t, alice.machine.ShutdownReceived())
+	require.Equal(t, codeClosing, alice.machine.Refusal())
+
+	_, err := alice.machine.Splice(Request{
+		Direction: DirectionIn, Amount: 1_000_000, FeeRate: 2_500,
+	})
+	require.ErrorIs(t, err, ErrRefused)
+	require.ErrorContains(t, err, codeClosing)
+	require.Zero(t, alice.wallet.leaseCount())
+	require.False(t, alice.machine.Busy())
+	select {
+	case msg := <-alice.peer.msgs:
+		t.Fatalf("sent %T", msg)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestSplicePeerShutdownWhileQuiescing checks our splice waiting for
+// quiescence when the peer's shutdown arrives: it fails with "closing" at
+// once, its coins released. Our stfu still owed, the link withdraws it and
+// nothing follows; our stfu out and answered, a tx_abort ends the quiescence
+// we won. The shutdown read only as the link withdraws our stfu, the splice
+// fails with "closing" too, not as a failure to quiesce.
+func TestSplicePeerShutdownWhileQuiescing(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []string{"withdrawn", "answered", "flag only"} {
+		t.Run(c, func(t *testing.T) {
+			t.Parallel()
+
+			alice, _ := soloAlice(t)
+			alice.fund(t, 1, 5_000_000)
+			alice.link.stfuGate = make(chan struct{})
+
+			updates, err := alice.machine.Splice(Request{
+				Direction: DirectionIn, Amount: 1_000_000,
+				FeeRate: 2_500,
+			})
+			require.NoError(t, err)
+			requireUpdates(t, updates, StatePreparing)
+			require.NotZero(t, alice.wallet.leaseCount())
+
+			if c == "flag only" {
+				alice.machine.mu.Lock()
+				alice.machine.peerShutdown = true
+				alice.machine.mu.Unlock()
+			} else {
+				m := alice.machine
+				require.True(t, m.ShutdownReceived())
+				u := requireUpdates(t, updates, StateAborted)
+				require.Contains(t, u.Reason, codeClosing)
+				require.Zero(t, alice.wallet.leaseCount())
+				require.False(t, alice.machine.Busy())
+			}
+
+			if c != "answered" {
+				alice.link.stfuErr = errors.New("withdrawn")
+			}
+			close(alice.link.stfuGate)
+
+			if c == "flag only" {
+				u := requireUpdates(t, updates, StateAborted)
+				require.Contains(t, u.Reason, codeClosing)
+				require.Zero(t, alice.wallet.leaseCount())
+			}
+			if c != "answered" {
+				select {
+				case msg := <-alice.peer.msgs:
+					t.Fatalf("sent %T", msg)
+				case <-alice.link.resumed:
+					t.Fatal("resumed quiescence never had")
+				case <-time.After(200 * time.Millisecond):
+				}
+
+				return
+			}
+
+			select {
+			case msg := <-alice.peer.msgs:
+				abort, ok := msg.(*lnwire.TxAbort)
+				require.True(t, ok, "%T", msg)
+				require.Equal(t, codeClosing,
+					string(abort.Data))
+			case <-time.After(5 * time.Second):
+				t.Fatal("nothing sent")
+			}
+			select {
+			case <-alice.link.resumed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("not resumed")
+			}
+			alice.peer.mu.Lock()
+			require.Nil(t, alice.peer.disconnected)
+			alice.peer.mu.Unlock()
+		})
+	}
 }
 
 // TestSpliceStfuUnanswered checks a peer that never answers our stfu: past

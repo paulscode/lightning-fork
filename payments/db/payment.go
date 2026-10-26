@@ -72,6 +72,11 @@ func (r FailureReason) String() string {
 	return "unknown"
 }
 
+// MaxPaymentRequestSize is the largest payment request InitPayment stores.
+// A BOLT 11 request is far below it, and a BOLT 12 invoice comes in an onion
+// message of at most 32 KiB.
+const MaxPaymentRequestSize = 64 * 1024
+
 // PaymentCreationInfo is the information necessary to have ready when
 // initiating a payment, moving it into state InFlight.
 type PaymentCreationInfo struct {
@@ -93,6 +98,17 @@ type PaymentCreationInfo struct {
 	// wire message (UpdateAddHTLC) only and therefore do not affect the
 	// onion payload size.
 	FirstHopCustomRecords lnwire.CustomRecords
+}
+
+// checkSize refuses a payment request over MaxPaymentRequestSize.
+func (p *PaymentCreationInfo) checkSize() error {
+	if len(p.PaymentRequest) > MaxPaymentRequestSize {
+		return fmt.Errorf("%w: %d bytes, over %d",
+			ErrPaymentRequestTooLarge, len(p.PaymentRequest),
+			MaxPaymentRequestSize)
+	}
+
+	return nil
 }
 
 // String returns a human-readable description of the payment creation info.

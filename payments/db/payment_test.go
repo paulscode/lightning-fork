@@ -450,6 +450,26 @@ func genInfo(t *testing.T) (*PaymentCreationInfo, lntypes.Preimage) {
 	return creationInfo, preimage
 }
 
+// TestInitPaymentRequestSize checks InitPayment refuses a payment request
+// over MaxPaymentRequestSize, and stores one at it.
+func TestInitPaymentRequestSize(t *testing.T) {
+	t.Parallel()
+
+	paymentDB, _ := NewTestDB(t)
+	ctx := t.Context()
+
+	info, _ := genInfo(t)
+	info.PaymentRequest = make([]byte, MaxPaymentRequestSize+1)
+	err := paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
+	require.ErrorIs(t, err, ErrPaymentRequestTooLarge)
+	_, err = paymentDB.FetchPayment(ctx, info.PaymentIdentifier)
+	require.ErrorIs(t, err, ErrPaymentNotInitiated)
+
+	info.PaymentRequest = info.PaymentRequest[:MaxPaymentRequestSize]
+	err = paymentDB.InitPayment(ctx, info.PaymentIdentifier, info)
+	require.NoError(t, err)
+}
+
 // TestDeleteFailedAttempts checks that DeleteFailedAttempts properly removes
 // failed HTLCs from finished payments.
 func TestDeleteFailedAttempts(t *testing.T) {

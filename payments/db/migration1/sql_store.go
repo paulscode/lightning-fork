@@ -23,6 +23,10 @@ type PaymentIntentType int16
 const (
 	// PaymentIntentTypeBolt11 indicates a BOLT11 invoice payment.
 	PaymentIntentTypeBolt11 PaymentIntentType = 0
+
+	// PaymentIntentTypeBolt12 indicates a BOLT 12 invoice payment: the
+	// payload is the lni1 invoice paid, signed by its issuer.
+	PaymentIntentTypeBolt12 PaymentIntentType = 1
 )
 
 // HTLCAttemptResolutionType represents the type of HTLC attempt resolution.

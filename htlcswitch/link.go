@@ -464,8 +464,10 @@ type channelLink struct {
 	// adding or locking, or an update sent once the peer ended
 	// quiescence on the exchange of tx_signatures, before our splice
 	// machine has. Everything after it waits too, in order. heldTimer
-	// ends the wait.
+	// ends the wait. heldBytes is their encoded size, held to the
+	// mailbox's budget.
 	held      []lnwire.Message
+	heldBytes uint32
 	heldTimer *time.Timer
 
 	// peerTxSigs is set once the peer's tx_signatures or tx_abort has
@@ -2000,23 +2002,52 @@ func (l *channelLink) handleUpstreamMsg(ctx context.Context,
 
 	// Behind a held message: in order, after it.
 	if len(l.held) > 0 {
-		if len(l.held) >= maxHeldMessages {
-			l.failf(LinkFailureError{
-				code:          ErrInvalidUpdate,
-				FailureAction: LinkFailureDisconnect,
-			}, "over %d messages held", maxHeldMessages)
-
-			return
-		}
-		l.held = append(l.held, msg)
+		l.hold(msg)
 
 		return
 	}
 
 	if l.processUpstreamMsg(ctx, msg) {
-		l.held = []lnwire.Message{msg}
+		l.hold(msg)
 		l.heldTimer = time.NewTimer(l.heldWait())
 	}
+}
+
+// hold adds a message to those held, failing the link over the bounds the
+// mailbox keeps to: as many messages, and as many bytes. The mailbox stays
+// near empty while the link holds what it hands over, so these are what
+// bound the peer's messages in memory.
+func (l *channelLink) hold(msg lnwire.Message) {
+	size, err := wireMessageSize(msg)
+	if err != nil {
+		l.failf(LinkFailureError{
+			code:          ErrInternalError,
+			FailureAction: LinkFailureDisconnect,
+		}, "unable to size held %T: %v", msg, err)
+
+		return
+	}
+
+	switch {
+	case len(l.held) >= maxHeldMessages:
+		l.failf(LinkFailureError{
+			code:          ErrInvalidUpdate,
+			FailureAction: LinkFailureDisconnect,
+		}, "over %d messages held", maxHeldMessages)
+
+		return
+
+	case l.heldBytes+size > maxWireBytes:
+		l.failf(LinkFailureError{
+			code:          ErrInvalidUpdate,
+			FailureAction: LinkFailureDisconnect,
+		}, "over %d bytes held", maxWireBytes)
+
+		return
+	}
+
+	l.held = append(l.held, msg)
+	l.heldBytes += size
 }
 
 // heldWait is how long held messages wait.
@@ -2029,7 +2060,8 @@ func (l *channelLink) heldWait() time.Duration {
 }
 
 // maxHeldMessages and heldMessageTimeout bound the messages held behind one
-// the link can't take up yet, and how long they wait.
+// the link can't take up yet, and how long they wait; maxWireBytes their
+// size.
 const (
 	maxHeldMessages    = 1000
 	heldMessageTimeout = time.Minute
@@ -2063,9 +2095,12 @@ func (l *channelLink) replayHeld(ctx context.Context) {
 		if l.processUpstreamMsg(ctx, l.held[0]) {
 			return
 		}
+		size, _ := wireMessageSize(l.held[0])
+		l.heldBytes -= min(size, l.heldBytes)
 		l.held = l.held[1:]
 	}
 	l.held = nil
+	l.heldBytes = 0
 	if l.heldTimer != nil {
 		l.heldTimer.Stop()
 		l.heldTimer = nil
