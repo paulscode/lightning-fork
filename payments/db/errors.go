@@ -141,6 +141,10 @@ var (
 	ErrNoDuplicateSequenceNumber = errors.New("duplicate payment " +
 		"sequence number not found")
 
+	// ErrPaymentRequestTooLarge is returned by InitPayment for a payment
+	// request over MaxPaymentRequestSize.
+	ErrPaymentRequestTooLarge = errors.New("payment request too large")
+
 	// ErrNoSequenceNrIndex is returned when an attempt to lookup a payment
 	// index is made for a sequence number that is not indexed.
 	//

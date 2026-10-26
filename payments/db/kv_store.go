@@ -184,6 +184,10 @@ func initKVStore(db kvdb.Backend) error {
 func (p *KVStore) InitPayment(_ context.Context, paymentHash lntypes.Hash,
 	info *PaymentCreationInfo) error {
 
+	if err := info.checkSize(); err != nil {
+		return err
+	}
+
 	// Obtain a new sequence number for this payment. This is used
 	// to sort the payments in order of creation, and also acts as
 	// a unique identifier for each payment.
