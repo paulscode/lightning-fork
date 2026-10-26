@@ -271,16 +271,20 @@ func newManager(cfg Config, desc setDesc) (*Manager, error) {
 					"already set", custom)
 			}
 
-			// A bit lnd defines is set by its own option, if at
-			// all, not as a custom bit: otherwise custom-init could
-			// turn on a feature its option leaves off, such as
-			// option_independent_secrets, which moves the database
-			// to a version older releases can't open. The same rule
-			// applies to updates at runtime (ValidateUpdate).
-			if name, known := lnwire.Features[custom]; known {
+			// option_independent_secrets is set by its own option
+			// alone: as a custom bit, custom-init could turn it on
+			// with protocol.independent-secrets off, moving the
+			// database to a version older releases can't open, and
+			// its even bit isn't valid outside channel_type. Other
+			// bits lnd defines are taken here as they always were;
+			// updates at runtime refuse them all (ValidateUpdate).
+			if custom == lnwire.IndependentSecretsRequired ||
+				custom == lnwire.IndependentSecretsOptional {
+
 				return nil, fmt.Errorf("feature bit: %v (%v) "+
-					"is defined by lnd and can't be set as "+
-					"a custom feature: %w", custom, name,
+					"is set by protocol.independent-"+
+					"secrets, not as a custom feature: %w",
+					custom, lnwire.Features[custom],
 					lnwire.ErrFeatureStandard)
 			}
 
