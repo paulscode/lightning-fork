@@ -475,6 +475,18 @@ func migrateIndexEntry(ctx context.Context, seqKey, indexVal []byte,
 	return nil
 }
 
+// paymentIntentType tells a stored payment request's kind, as the native
+// SQL store does: a BOLT 12 invoice (lni1...) or a BOLT11 request.
+func paymentIntentType(request []byte) PaymentIntentType {
+	if len(request) >= 4 &&
+		bytes.EqualFold(request[:4], []byte("lni1")) {
+
+		return PaymentIntentTypeBolt12
+	}
+
+	return PaymentIntentTypeBolt11
+}
+
 // migratePayment migrates a single payment from KV to SQL.
 func migratePayment(ctx context.Context, payment *MPPayment, hash lntypes.Hash,
 	sqlDB SQLMigrationQueries, stats *MigrationStats,
@@ -539,10 +551,11 @@ func migratePayment(ctx context.Context, payment *MPPayment, hash lntypes.Hash,
 	// Only insert a row if we have an actual intent payload. For legacy
 	// hash-only/keysend-style payments, the intent may be absent.
 	if len(payment.Info.PaymentRequest) > 0 {
+		intentType := paymentIntentType(payment.Info.PaymentRequest)
 		_, err = sqlDB.InsertPaymentIntent(
 			ctx, sqlc.InsertPaymentIntentParams{
 				PaymentID:     paymentID,
-				IntentType:    int16(PaymentIntentTypeBolt11),
+				IntentType:    int16(intentType),
 				IntentPayload: payment.Info.PaymentRequest,
 			},
 		)
