@@ -13,6 +13,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/bolt12"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -592,14 +593,31 @@ func fetchError(err error) error {
 	return status.Error(codes.Unknown, err.Error())
 }
 
+// canonicalInvoice returns a BOLT 12 string re-encoded as this node writes
+// one, lowercase and without '+' continuations, refusing one whose data is
+// more than an onion message could carry.
+func canonicalInvoice(s string) (string, error) {
+	hrp, data, err := bolt12.Decode(strings.TrimSpace(s))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > sphinx.MaxOnionMessagePayloadSize {
+		return "", fmt.Errorf("invoice of %d bytes is over the %d an "+
+			"onion message carries", len(data),
+			sphinx.MaxOnionMessagePayloadSize)
+	}
+
+	return bolt12.Encode(hrp, data)
+}
+
 // PayOffer fetches an invoice for an offer and pays it, or pays an invoice
 // fetched earlier.
 func (s *Server) PayOffer(ctx context.Context,
 	req *PayOfferRequest) (*PayOfferResponse, error) {
 
 	var (
-		inv    *bolt12.Invoice
-		bolt12 string
+		inv     *bolt12.Invoice
+		invoice string
 	)
 	switch {
 	case req.Offer != "" && req.Invoice != "":
@@ -612,10 +630,18 @@ func (s *Server) PayOffer(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
-		inv, bolt12 = fetched.Invoice, fetched.Bolt12
+		inv, invoice = fetched.Invoice, fetched.Bolt12
 
 	case req.Invoice != "":
-		decoded, err := s.cfg.Deps.Manager.DecodeBolt12(req.Invoice)
+		// Kept with the payment, attempts that fail included, so
+		// held to what an onion message could have brought, as a
+		// fetched invoice is, and kept in its canonical form.
+		canonical, err := canonicalInvoice(req.Invoice)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument,
+				err.Error())
+		}
+		decoded, err := s.cfg.Deps.Manager.DecodeBolt12(canonical)
 		if err != nil {
 			return nil, status.Error(codes.InvalidArgument,
 				err.Error())
@@ -635,7 +661,7 @@ func (s *Server) PayOffer(ctx context.Context,
 			return nil, status.Error(codes.InvalidArgument,
 				err.Error())
 		}
-		inv, bolt12 = decoded.Invoice, strings.TrimSpace(req.Invoice)
+		inv, invoice = decoded.Invoice, canonical
 
 	default:
 		return nil, status.Error(codes.InvalidArgument,
@@ -674,7 +700,7 @@ func (s *Server) PayOffer(ctx context.Context,
 	// The invoice paid is the payment's request: kept with the payment,
 	// it is, with the preimage, the proof of what was paid and to whom
 	// (the issuer signed it), as a BOLT11 request is for those payments.
-	intent.PaymentRequest = []byte(bolt12)
+	intent.PaymentRequest = []byte(invoice)
 
 	hash := intent.Identifier()
 	preimage, rt, err := s.cfg.Deps.PayInvoice(ctx, intent)
@@ -710,7 +736,7 @@ func (s *Server) PayOffer(ctx context.Context,
 		return nil, status.Errorf(codes.Aborted,
 			"payment failed: %v; payment hash %x; retry with "+
 				"this invoice, not the offer: %s", err, hash[:],
-			bolt12)
+			invoice)
 	}
 	var fee uint64
 	if rt != nil {
@@ -718,7 +744,7 @@ func (s *Server) PayOffer(ctx context.Context,
 	}
 
 	return &PayOfferResponse{
-		Bolt12:          bolt12,
+		Bolt12:          invoice,
 		PaymentHash:     hash[:],
 		PaymentPreimage: preimage[:],
 		AmountMsat:      amount,
