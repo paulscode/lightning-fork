@@ -1150,7 +1150,7 @@ func (g *grpcAdmin) RestoreChannelBackups(ctx context.Context,
 }
 
 func (g *grpcAdmin) IdentityPubkey(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, sha256InfoTimeout)
 	defer cancel()
 
 	info, err := g.main.GetInfo(ctx, &lnrpc.GetInfoRequest{})

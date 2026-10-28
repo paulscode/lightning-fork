@@ -563,19 +563,11 @@ func (s *Server) connect() error {
 	if s.sup != nil {
 		// Ends with the node too: preparing can wait minutes for a
 		// node catching up, and stopping this one must not wait on it.
-		ctx, cancel := context.WithTimeout(
-			context.Background(), sha256ReadyWait+dialTimeout,
+		// Room for the wait and the three GetInfo calls after it.
+		ctx, cancel := s.untilQuit(
+			sha256ReadyWait + 3*sha256InfoTimeout,
 		)
-		done := make(chan struct{})
-		go func() {
-			select {
-			case <-s.quit:
-				cancel()
-			case <-done:
-			}
-		}()
 		err := s.sup.prepare(ctx)
-		close(done)
 		cancel()
 		if err != nil {
 			return err
@@ -604,7 +596,11 @@ func (s *Server) connect() error {
 	// keep the bridge down on every restart, and this one runs inside the
 	// node it is checking. It is already refused where it counts: no swap
 	// is sized against a height that may be stale. Say so and carry on.
-	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	//
+	// Room for this node and three GetInfo calls on the SHA256 node, each
+	// of which a busy chain node can make slow; ended with the node, so
+	// stopping does not wait on them.
+	ctx, cancel := s.untilQuit(dialTimeout + 3*sha256InfoTimeout)
 	defer cancel()
 
 	local, err := s.local.Reachable(ctx)
@@ -694,6 +690,23 @@ func (s *Server) connect() error {
 	}
 
 	return nil
+}
+
+// untilQuit is a context that ends after d or when the bridge stops, whichever
+// comes first.
+func (s *Server) untilQuit(d time.Duration) (context.Context,
+	context.CancelFunc) {
+
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	go func() {
+		select {
+		case <-s.quit:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	return ctx, cancel
 }
 
 // remoteNode is the SHA256 node once the bridge has connected, or nil.

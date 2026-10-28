@@ -534,6 +534,15 @@ func (r *Remote) Check(ctx context.Context) error {
 	return nil
 }
 
+// sha256InfoTimeout bounds one GetInfo on the SHA256 node.
+//
+// Longer than any other call is given: stock lnd answers it only after asking
+// its chain node for the best block and whether it is synced, through a
+// client that queues every request and retries, so a busy chain node holds it
+// up for tens of seconds while the node is otherwise fine. Every wait on it
+// ends with the bridge too, so stopping is no slower for it.
+const sha256InfoTimeout = time.Minute
+
 // Reachable confirms the node answers, without requiring that it has caught up.
 //
 // This is what startup needs. Dialling succeeds against a node that is not
@@ -543,7 +552,7 @@ func (r *Remote) Check(ctx context.Context) error {
 // already refused at quote time, and refusing to start on it would mean a
 // SHA256 node restart takes this one down too.
 func (r *Remote) Reachable(ctx context.Context) (BlockInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, sha256InfoTimeout)
 	defer cancel()
 
 	info, err := r.BestBlock(ctx)
@@ -566,7 +575,7 @@ func (r *Remote) Reachable(ctx context.Context) (BlockInfo, error) {
 func (r *Remote) CheckChain(ctx context.Context, network,
 	localKey string) error {
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, sha256InfoTimeout)
 	defer cancel()
 
 	info, err := r.main.GetInfo(ctx, &lnrpc.GetInfoRequest{})
