@@ -202,6 +202,11 @@ type service struct {
 	// than every poll. Guarded by chainMu.
 	headerRead map[string]int32
 
+	// tipWarns is, per chain, how reading its tip has been failing, for
+	// as long as it has.
+	tipMu    sync.Mutex
+	tipWarns map[string]*tipWarn
+
 	// sideOf remembers which direction each swap belongs to, so that what
 	// is already committed can be counted per side.
 	//

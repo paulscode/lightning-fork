@@ -39,7 +39,7 @@ func (s *service) start() {
 	// that already exist is the difference between quoting in seconds and
 	// quoting tomorrow.
 	s.backfill(s.ctx)
-	s.sample(s.ctx)
+	s.sample(s.ctx, sampleTimeout)
 
 	// After the balances can be read, because that is what it sizes from.
 	s.sizeInventory(s.ctx)
@@ -107,7 +107,7 @@ func (s *service) poll(ctx context.Context) {
 		case <-tick.C:
 		}
 
-		s.sample(ctx)
+		s.sample(ctx, sha256InfoTimeout)
 
 		// Retried until each direction has been sized from a real
 		// balance. A node whose peer was still reconnecting at startup
@@ -117,79 +117,176 @@ func (s *service) poll(ctx context.Context) {
 	}
 }
 
-// sample adds each chain's tip to its observer.
+// sampleTimeout bounds reading this node's tip, and the SHA256 node's while
+// the bridge starts: stopping this node waits for a start under way, and a
+// longer wait there would hold that up.
+const sampleTimeout = 20 * time.Second
+
+// tipSource is one chain's tip, as sample reads it.
+type tipSource struct {
+	// name keys headerRead and tipWarns; label is the chain's name in
+	// what is logged.
+	name, label string
+
+	// wait bounds reading it.
+	wait time.Duration
+
+	read func(context.Context) (BlockInfo, error)
+	at   func(context.Context, int32) (BlockInfo, error)
+	obs  *chainrate.Observer
+}
+
+// sample adds each chain's tip to its observer, waiting up to sha256Wait for
+// the SHA256 node's: stock lnd asks its chain node before it answers, and a
+// busy one can take most of a minute.
 //
 // A failure is logged and dropped rather than retried here: the next tick is
 // the retry, and an observer that goes stale refuses to estimate, which
 // refuses the quotes that would have been sized against it. That is the right
 // way round.
-func (s *service) sample(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+func (s *service) sample(ctx context.Context, sha256Wait time.Duration) {
+	for _, src := range []tipSource{
+		{"blake2b", "BLAKE2b", sampleTimeout, s.local.BestBlock,
+			s.local.BlockAt, s.b2bChain},
+		{"bitcoin", "SHA256", sha256Wait, s.remote.BestBlock,
+			s.remote.BlockAt, s.shaChain},
+	} {
+		s.sampleTip(ctx, src)
+	}
+}
+
+// sampleTip adds one chain's tip to its observer; see sample.
+func (s *service) sampleTip(ctx context.Context, src tipSource) {
+	ctx, cancel := context.WithTimeout(ctx, src.wait)
 	defer cancel()
 
-	for _, src := range []struct {
-		name string
-		read func(context.Context) (BlockInfo, error)
-		at   func(context.Context, int32) (BlockInfo, error)
-		obs  *chainrate.Observer
-	}{
-		{"blake2b", s.local.BestBlock, s.local.BlockAt, s.b2bChain},
-		{"bitcoin", s.remote.BestBlock, s.remote.BlockAt, s.shaChain},
-	} {
-		info, err := src.read(ctx)
-		if err != nil {
-			log.Warnf("Bridge could not read the %s tip: %v",
-				src.name, err)
+	info, err := src.read(ctx)
+	if err != nil {
+		s.tipUnread(src, err)
 
-			continue
-		}
-		if info.Height == 0 || info.Time.IsZero() {
-			continue
-		}
-		// A node catching up (after every restart, for a while) reports
-		// its backend's tip height beside its wallet's best header time,
-		// which belong to different blocks: that pair would rewrite a
-		// block's time and skew the spacing every margin is sized on. A
-		// synced node's pair is one block's, but for a block arriving
-		// between the two reads, which is rare and leaves one block's time
-		// at most one block early: within what the bounds allow for.
-		if !info.SyncedToChain {
-			continue
-		}
+		return
+	}
+	s.tipRead(src)
+	if info.Height == 0 || info.Time.IsZero() {
+		return
+	}
+	// A node catching up (after every restart, for a while) reports its
+	// backend's tip height beside its wallet's best header time, which
+	// belong to different blocks: that pair would rewrite a block's time
+	// and skew the spacing every margin is sized on. A synced node's pair
+	// is one block's, but for a block arriving between the two reads,
+	// which is rare and leaves one block's time at most one block early:
+	// within what the bounds allow for.
+	if !info.SyncedToChain {
+		return
+	}
 
-		s.chainMu.Lock()
-		read := s.headerRead[src.name] == info.Height
-		s.chainMu.Unlock()
-		if read {
-			// This tip's header is already in the observer, with
-			// its difficulty; between blocks there is nothing new.
-			continue
-		}
+	s.chainMu.Lock()
+	read := s.headerRead[src.name] == info.Height
+	s.chainMu.Unlock()
+	if read {
+		// This tip's header is already in the observer, with its
+		// difficulty; between blocks there is nothing new.
+		return
+	}
 
-		// The tip's own header, for its difficulty: the observer
-		// carries spacing across a retarget by scaling the previous
-		// epoch by the difficulty change, and without it the bridge
-		// refuses every swap for the first hundred blocks of each new
-		// epoch, most of a day. A header that cannot be read leaves
-		// the tip without one, and it is read again next poll.
-		block := chainrate.Block{Height: info.Height, Time: info.Time}
-		hdr, err := src.at(ctx, info.Height)
-		haveHeader := err == nil && hdr.Height == info.Height &&
-			!hdr.Time.IsZero()
-		if haveHeader {
-			block.Time = hdr.Time
-			block.Difficulty = hdr.difficulty()
-		} else if err != nil {
-			log.Debugf("Bridge could not read the %s tip's header "+
-				"at %d: %v", src.name, info.Height, err)
-		}
+	// The tip's own header, for its difficulty: the observer carries
+	// spacing across a retarget by scaling the previous epoch by the
+	// difficulty change, and without it the bridge refuses every swap for
+	// the first hundred blocks of each new epoch, most of a day. A header
+	// that cannot be read leaves the tip without one, and it is read again
+	// next poll.
+	block := chainrate.Block{Height: info.Height, Time: info.Time}
+	hdr, err := src.at(ctx, info.Height)
+	haveHeader := err == nil && hdr.Height == info.Height &&
+		!hdr.Time.IsZero()
+	if haveHeader {
+		block.Time = hdr.Time
+		block.Difficulty = hdr.difficulty()
+	} else if err != nil {
+		log.Debugf("Bridge could not read the %s tip's header at "+
+			"%d: %v", src.label, info.Height, err)
+	}
 
-		s.chainMu.Lock()
-		err = src.obs.Add(block)
-		if err == nil && haveHeader && block.Difficulty > 0 {
-			s.headerRead[src.name] = info.Height
-		}
-		s.chainMu.Unlock()
+	s.chainMu.Lock()
+	err = src.obs.Add(block)
+	if err == nil && haveHeader && block.Difficulty > 0 {
+		s.headerRead[src.name] = info.Height
+	}
+	s.chainMu.Unlock()
+}
+
+// tipWarnEvery is how often a tip that still cannot be read is warned about
+// again. Every poll would be twice a minute for as long as a node is in
+// trouble, which buries everything else in the log.
+const tipWarnEvery = 10 * time.Minute
+
+// tipWarn is how reading one chain's tip has been failing.
+type tipWarn struct {
+	// failed is how many reads in a row have failed.
+	failed int
+
+	// said is when that was last logged as a warning.
+	said time.Time
+}
+
+// fail counts a failed read and reports whether to warn about it: the first
+// of a run, then once every tipWarnEvery.
+func (w *tipWarn) fail(now time.Time) bool {
+	w.failed++
+	if w.failed > 1 && now.Sub(w.said) < tipWarnEvery {
+		return false
+	}
+	w.said = now
+
+	return true
+}
+
+// tipUnread logs a tip that could not be read; see tipWarn.
+func (s *service) tipUnread(src tipSource, err error) {
+	why := err.Error()
+	if src.name == "bitcoin" && timedOut(err) {
+		why = slowGetInfo(false, src.wait)
+	}
+
+	s.tipMu.Lock()
+	if s.tipWarns == nil {
+		s.tipWarns = make(map[string]*tipWarn)
+	}
+	w := s.tipWarns[src.name]
+	if w == nil {
+		w = &tipWarn{}
+		s.tipWarns[src.name] = w
+	}
+	warn, failed := w.fail(time.Now()), w.failed
+	s.tipMu.Unlock()
+
+	switch {
+	case !warn:
+		log.Debugf("Bridge could not read the %s tip: %v", src.label,
+			err)
+
+	case failed == 1:
+		log.Warnf("Bridge could not read the %s tip: %s", src.label,
+			why)
+
+	default:
+		log.Warnf("Bridge still cannot read the %s tip after %d "+
+			"tries, one every %v: %s", src.label, failed,
+			pollInterval, why)
+	}
+}
+
+// tipRead notes a tip that was read, saying so if it had not been.
+func (s *service) tipRead(src tipSource) {
+	s.tipMu.Lock()
+	w := s.tipWarns[src.name]
+	delete(s.tipWarns, src.name)
+	s.tipMu.Unlock()
+
+	if w != nil {
+		log.Infof("Bridge reads the %s tip again, after %d failed "+
+			"tries", src.label, w.failed)
 	}
 }
 
