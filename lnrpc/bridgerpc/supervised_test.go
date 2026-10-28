@@ -44,6 +44,9 @@ type fakeSha256Node struct {
 	restoreErr   error
 	restoreCalls int
 
+	// unlockErr is what UnlockWallet answers instead, when set.
+	unlockErr error
+
 	// writeAdmin is where InitWallet writes the admin macaroon, as lnd
 	// does.
 	writeAdmin string
@@ -83,6 +86,9 @@ func (f fakeUnlocker) UnlockWallet(_ context.Context, pw []byte) error {
 	defer f.n.mu.Unlock()
 
 	f.n.unlockWith = pw
+	if f.n.unlockErr != nil {
+		return f.n.unlockErr
+	}
 	if !bytes.Equal(pw, f.n.password) {
 		return status.Error(codes.Unknown, "invalid passphrase")
 	}
@@ -474,6 +480,99 @@ func TestSupervisorUnlocks(t *testing.T) {
 	state, detail := s.report()
 	require.Equal(t, sha256Locked, state)
 	require.Contains(t, detail, "did not create")
+}
+
+// lockedNode is a supervisor over a node that has a wallet and is locked, with
+// the password this node keeps for it and its admin macaroon in place.
+func lockedNode(t *testing.T) (*supervisor, *fakeSha256Node) {
+	t.Helper()
+
+	fake := &fakeSha256Node{state: lnrpc.WalletState_LOCKED}
+	fake.identity = testIdentity(t)
+	s, cfg := newTestSupervisor(t, fake)
+	startNode(t, cfg)
+	pw, admin := cfg.SHA256PasswordFile, cfg.SHA256AdminMacaroonPath
+	require.NoError(t, os.MkdirAll(filepath.Dir(pw), 0700))
+	require.NoError(t, os.WriteFile(pw, []byte("0123456789abcdef"), 0600))
+	fake.password = []byte("0123456789abcdef")
+	require.NoError(t, os.MkdirAll(filepath.Dir(admin), 0700))
+	require.NoError(t, os.WriteFile(admin, fake.adminMac, 0600))
+
+	return s, fake
+}
+
+// An unlock lnd ran out of time over is a node slow to start, never a wrong
+// password: lnd times out opening a wallet it is opening itself from its
+// password file. It is waited on, as starting, and only once it has lasted is
+// it a failure, which still says nothing of the password. Only lnd saying the
+// passphrase is invalid is a wrong password.
+func TestSupervisorTellsASlowUnlockFromAWrongPassword(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		slow bool
+		says string
+	}{
+		{"bbolt's lock wait", status.Error(codes.Unknown, "timeout"),
+			true, "slow to open its wallet"},
+		{"lnd's unlock wait", status.Error(codes.Unknown,
+			"got no unlock message before timeout"), true,
+			"slow to open its wallet"},
+		{"the bridge's wait", status.Error(codes.DeadlineExceeded,
+			"context deadline exceeded"), true,
+			"slow to open its wallet"},
+		{"a wrong password", status.Error(codes.Unknown,
+			"invalid passphrase for master private key"), false,
+			"does not open it"},
+		{"anything else", status.Error(codes.Unknown,
+			"wallet not found"), false, "lnd would not open it"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake := lockedNode(t)
+			fake.unlockErr = tc.err
+			clock := time.Now()
+			s.now = func() time.Time { return clock }
+
+			err := s.prepare(context.Background())
+			state, detail := s.report()
+			require.Contains(t, detail, tc.says)
+			if !tc.slow {
+				require.NotErrorIs(t, err, errSha256Pending)
+				require.Equal(t, sha256Locked, state)
+				if tc.says != "does not open it" {
+					require.NotContains(t, detail,
+						"password")
+				}
+
+				return
+			}
+
+			require.ErrorIs(t, err, errSha256Pending)
+			require.Equal(t, sha256Starting, state)
+			require.Contains(t, detail, "not a wrong password")
+			require.NotContains(t, detail, "does not open it")
+
+			clock = clock.Add(sha256StartTimeout - time.Second)
+			require.ErrorIs(t, s.prepare(context.Background()),
+				errSha256Pending)
+
+			clock = clock.Add(2 * time.Second)
+			err = s.prepare(context.Background())
+			require.Error(t, err)
+			require.NotErrorIs(t, err, errSha256Pending)
+			state, detail = s.report()
+			require.Equal(t, sha256Locked, state)
+			require.Contains(t, detail, "slow to open its wallet")
+			require.Contains(t, detail, "for 5m0s")
+			require.NotContains(t, detail, "does not open it")
+
+			// Once it opens, the bridge goes on.
+			fake.mu.Lock()
+			fake.unlockErr = nil
+			fake.mu.Unlock()
+			require.NoError(t, s.prepare(context.Background()))
+		})
+	}
 }
 
 // A node whose identity is not the one the derived seed makes is refused: it

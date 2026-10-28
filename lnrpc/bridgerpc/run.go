@@ -349,6 +349,20 @@ func notAnswering(err error) bool {
 	return false
 }
 
+// timedOut reports a call the node took too long over or cut off, as opposed
+// to one it refused or that found nothing listening.
+func timedOut(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.DeadlineExceeded, codes.Canceled:
+		return true
+	}
+
+	return false
+}
+
 // drive runs a swap to completion in the background.
 //
 // It uses the service's own context, not the caller's. The caller may hang up
