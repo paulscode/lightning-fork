@@ -5,6 +5,7 @@ package bridgerpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -238,4 +239,68 @@ func (d *deadlineMain) GetInfo(ctx context.Context, in *lnrpc.GetInfoRequest,
 	}
 
 	return d.fakeMain.GetInfo(ctx, in, opts...)
+}
+
+// Status says how often the bridge really tries again: every ten seconds
+// while the SHA256 node is on its way, which the platforms' health checks read
+// as starting.
+func TestStatusSaysHowOftenItTries(t *testing.T) {
+	t.Parallel()
+
+	s := serverWith(t, true, &fakeNode{synced: true})
+	s.setStartErr(fmt.Errorf("%w: the SHA256 Lightning node is slow",
+		errSha256Pending))
+	resp, err := s.Status(context.Background(), &StatusRequest{})
+	require.NoError(t, err)
+	require.Contains(t, strings.Join(resp.Refusals, "\n"),
+		"cannot start, and tries again every 10s: the SHA256 "+
+			"Lightning node is not ready yet: the SHA256 "+
+			"Lightning node is slow")
+
+	s.setStartErr(errors.New("broken"))
+	resp, err = s.Status(context.Background(), &StatusRequest{})
+	require.NoError(t, err)
+	require.Contains(t, strings.Join(resp.Refusals, "\n"),
+		"tries again every 1m0s: broken")
+}
+
+// A connected SHA256 node that runs out of time over GetInfo is said to be
+// slow, with why, in the summary and the refusals both, and asked once: the
+// platforms' health checks give Status 25 seconds.
+func TestStatusSaysTheSHA256NodeIsSlow(t *testing.T) {
+	t.Parallel()
+
+	main := &countingMain{fakeMain: &fakeMain{
+		infoErr: status.Error(codes.DeadlineExceeded,
+			"context deadline exceeded"),
+	}}
+	r := remote(nil, nil, nil)
+	r.main = main
+	s := serverWith(t, true, &fakeNode{synced: true})
+	s.mu.Lock()
+	s.remote = r
+	s.mu.Unlock()
+
+	resp, err := s.Status(context.Background(), &StatusRequest{})
+	require.NoError(t, err)
+	slow := "the SHA256 Lightning node did not answer GetInfo within " +
+		"10s; lnd answers it only after asking its chain node " +
+		"(bitcoind), which may be busy, restarting or overloaded"
+	require.Equal(t, slow, resp.Sha256Node.GetDetail())
+	require.Contains(t, resp.Refusals, slow)
+	require.Equal(t, 1, main.infos)
+}
+
+// countingMain counts GetInfo calls.
+type countingMain struct {
+	*fakeMain
+	infos int
+}
+
+func (c *countingMain) GetInfo(ctx context.Context, in *lnrpc.GetInfoRequest,
+	opts ...grpc.CallOption) (*lnrpc.GetInfoResponse, error) {
+
+	c.infos++
+
+	return c.fakeMain.GetInfo(ctx, in, opts...)
 }

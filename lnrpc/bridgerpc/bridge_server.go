@@ -501,6 +501,15 @@ const retryInterval = time.Minute
 // between each would make a first start take several for no reason.
 const pendingRetryInterval = 10 * time.Second
 
+// retryEvery is how often the retry loop tries again after err.
+func retryEvery(err error) time.Duration {
+	if errors.Is(err, errSha256Pending) {
+		return pendingRetryInterval
+	}
+
+	return retryInterval
+}
+
 // retry brings the bridge up, trying at once and then every retryInterval
 // until it is up or the node stops.
 func (s *Server) retry() {
@@ -511,11 +520,8 @@ func (s *Server) retry() {
 		err := s.connect()
 		s.setStartErr(err)
 
-		wait := retryInterval
+		wait := retryEvery(err)
 		pending := errors.Is(err, errSha256Pending)
-		if pending {
-			wait = pendingRetryInterval
-		}
 		switch {
 		case err == nil:
 			return
@@ -1258,7 +1264,7 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 						fmt.Sprintf("it cannot start to "+
 							"finish them, and tries "+
 							"again every %v: %v",
-							retryInterval, why))
+							retryEvery(why), why))
 				}
 			}
 			resp.Sha256Node = s.sha256Summary(ctx)
@@ -1270,6 +1276,8 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	// The SHA256 node first and whatever the bridge's own state: it is
 	// the usual reason the bridge is not up.
 	resp.Sha256Node = s.sha256Summary(ctx)
+	summaryFailed := s.remoteNode() != nil &&
+		resp.Sha256Node.GetState() == sha256Unreachable
 
 	s.mu.RLock()
 	journalErr := s.journalErr
@@ -1284,8 +1292,27 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	if err := s.local.Check(ctx); err != nil {
 		resp.Refusals = append(resp.Refusals, err.Error())
 	}
-	if remote := s.remoteNode(); remote != nil {
-		if err := remote.Check(ctx); err != nil {
+	// Within what the platforms' health checks wait for Status (25 s on
+	// StartOS), with the summary's own wait: a check cut off there says
+	// only that the node is starting, and nothing of why. A node the
+	// summary could not read is said to be so without asking it again.
+	switch remote := s.remoteNode(); {
+	case remote == nil:
+
+	case summaryFailed:
+		resp.Refusals = append(resp.Refusals,
+			resp.Sha256Node.GetDetail())
+
+	default:
+		checkCtx, cancel := context.WithTimeout(ctx,
+			sha256SummaryTimeout)
+		err := remote.Check(checkCtx)
+		cancel()
+		if timedOut(err) {
+			err = errors.New(slowGetInfo(false,
+				sha256SummaryTimeout))
+		}
+		if err != nil {
 			resp.Refusals = append(resp.Refusals, err.Error())
 		}
 	}
@@ -1303,7 +1330,7 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		} else if why != nil {
 			msg = fmt.Sprintf("the bridge is enabled but cannot "+
 				"start, and tries again every %v: %v",
-				retryInterval, why)
+				retryEvery(why), why)
 		}
 		resp.Refusals = append(resp.Refusals, msg)
 		s.reportRate(resp, nil)

@@ -76,6 +76,9 @@ func (s *Server) sha256Summary(ctx context.Context) *Sha256Node {
 		out.State = sha256Unreachable
 		out.Detail = fmt.Sprintf("the SHA256 Lightning node does not "+
 			"answer: %v", err)
+		if timedOut(err) {
+			out.Detail = slowGetInfo(false, sha256SummaryTimeout)
+		}
 
 		return out
 	}
