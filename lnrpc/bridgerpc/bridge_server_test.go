@@ -5,6 +5,7 @@ package bridgerpc
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +162,36 @@ func TestDriverRefusesWithoutAccessToTheNode(t *testing.T) {
 		t.Fatal("a sub-server with no access to the node reported no " +
 			"refusals")
 	}
+}
+
+// While it starts, a SHA256 node that runs out of time over GetInfo is said to
+// be slow, with why, not a node that does not answer: waited on as starting
+// when this node runs it, and retried at the usual pace when it does not.
+func TestStartSaysTheSHA256NodeIsSlow(t *testing.T) {
+	slow := fmt.Errorf("SHA256 node: reading the SHA256 node's tip: %w",
+		status.Error(codes.DeadlineExceeded,
+			"context deadline exceeded"))
+
+	srv, _, err := New(&Config{
+		Enabled: true, ToSHA256: true, SHA256RPCHost: "x:10009",
+	})
+	require.NoError(t, err)
+	err = srv.slowSha256(slow)
+	require.NotErrorIs(t, err, errSha256Pending)
+	require.ErrorContains(t, err, "the bridge cannot use the SHA256 "+
+		"node at x:10009 yet: the SHA256 Lightning node did not "+
+		"answer GetInfo within 1m0s; lnd answers it only after "+
+		"asking its chain node (bitcoind)")
+
+	require.ErrorIs(t, err, slow)
+
+	sup, _ := newTestSupervisor(t, &fakeSha256Node{})
+	srv.sup = sup
+	err = srv.slowSha256(slow)
+	require.ErrorIs(t, err, errSha256Pending)
+	state, detail := sup.report()
+	require.Equal(t, sha256Starting, state)
+	require.Contains(t, detail, "is running but did not answer GetInfo")
 }
 
 // The waits on the SHA256 node's GetInfo while the bridge starts are a minute

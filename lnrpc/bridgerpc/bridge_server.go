@@ -612,6 +612,9 @@ func (s *Server) connect() error {
 	remote, err := remoteNode.Reachable(ctx)
 	if err != nil {
 		_ = conn.Close()
+		if timedOut(err) {
+			return s.slowSha256(err)
+		}
 
 		return fmt.Errorf("the bridge cannot use the SHA256 node at "+
 			"%s: %w", s.cfg.SHA256RPCHost, err)
@@ -624,6 +627,9 @@ func (s *Server) connect() error {
 		s.local.NodeKey()); err != nil {
 
 		_ = conn.Close()
+		if timedOut(err) {
+			return s.slowSha256(err)
+		}
 
 		return fmt.Errorf("the bridge will not use the SHA256 node at "+
 			"%s: %w", s.cfg.SHA256RPCHost, err)
@@ -674,6 +680,9 @@ func (s *Server) connect() error {
 	s.mu.Unlock()
 	s.rateMu.Unlock()
 
+	if s.sup != nil {
+		s.sup.answered()
+	}
 	log.Infof("Bridge is up, serving %d direction(s) through the SHA256 "+
 		"node at %s", len(svc.sides), s.cfg.SHA256RPCHost)
 
@@ -707,6 +716,20 @@ func (s *Server) untilQuit(d time.Duration) (context.Context,
 	}()
 
 	return ctx, cancel
+}
+
+// slowSha256 is why the bridge cannot start when the SHA256 node took too
+// long over GetInfo: it says why that usually is, and a supervised node is
+// waited on, for a while, as one on its way up (see supervisor.slow).
+func (s *Server) slowSha256(err error) error {
+	if s.sup != nil {
+		return s.sup.slow(sha256Unreachable,
+			slowGetInfo(true, sha256InfoTimeout), err)
+	}
+
+	return fmt.Errorf("the bridge cannot use the SHA256 node at %s yet: "+
+		"%s: %w", s.cfg.SHA256RPCHost,
+		slowGetInfo(false, sha256InfoTimeout), err)
 }
 
 // remoteNode is the SHA256 node once the bridge has connected, or nil.

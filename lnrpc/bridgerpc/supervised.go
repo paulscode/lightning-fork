@@ -450,6 +450,23 @@ func (s *supervisor) slow(state, detail string, cause error) error {
 		lasted.Round(time.Minute)), cause)
 }
 
+// infoFailed reports a GetInfo the node did not answer, while preparing it.
+func (s *supervisor) infoFailed(err error) error {
+	if timedOut(err) {
+		return s.slow(sha256Unreachable,
+			slowGetInfo(true, sha256InfoTimeout), err)
+	}
+
+	return s.fail(sha256Unreachable, "the SHA256 Lightning node does "+
+		"not answer", err)
+}
+
+// answered notes that the bridge is up, so a node slow again later is given
+// its full time again.
+func (s *supervisor) answered() {
+	s.slowSince = time.Time{}
+}
+
 // notAnswering reports a node that has started before and does not answer:
 // starting, for a while, and then failing.
 func (s *supervisor) notAnswering(cause error) error {
@@ -967,8 +984,7 @@ func (s *supervisor) macaroonCurrent(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	return false, s.fail(sha256Unreachable, "the SHA256 Lightning node "+
-		"does not answer", err)
+	return false, s.infoFailed(err)
 }
 
 // macaroonRefused reports whether an error is the node refusing the macaroon
@@ -1016,8 +1032,7 @@ func (s *supervisor) checkIdentity(ctx context.Context,
 
 	got, err := conn.IdentityPubkey(ctx)
 	if err != nil {
-		return s.fail(sha256Unreachable, "the SHA256 Lightning node "+
-			"does not answer", err)
+		return s.infoFailed(err)
 	}
 
 	want, err := Sha256NodeKey(entropy, s.coinType)

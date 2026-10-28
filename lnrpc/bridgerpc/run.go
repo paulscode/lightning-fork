@@ -363,6 +363,25 @@ func timedOut(err error) bool {
 	return false
 }
 
+// slowGetInfo says that the SHA256 node did not answer GetInfo within a wait,
+// and why that usually is. running is whether it is known to be up, having
+// answered something else.
+//
+// Stock lnd answers GetInfo only after asking its chain node for the best
+// block and whether it is synced, through a client that queues and retries,
+// so a chain node that is busy holds it up long after every other call would
+// have answered.
+func slowGetInfo(running bool, within time.Duration) string {
+	who := "the SHA256 Lightning node did not answer"
+	if running {
+		who = "the SHA256 Lightning node is running but did not answer"
+	}
+
+	return fmt.Sprintf("%s GetInfo within %v; lnd answers it only after "+
+		"asking its chain node (bitcoind), which may be busy, "+
+		"restarting or overloaded", who, within)
+}
+
 // drive runs a swap to completion in the background.
 //
 // It uses the service's own context, not the caller's. The caller may hang up

@@ -44,8 +44,10 @@ type fakeSha256Node struct {
 	restoreErr   error
 	restoreCalls int
 
-	// unlockErr is what UnlockWallet answers instead, when set.
+	// unlockErr and infoErr are what UnlockWallet and GetInfo answer
+	// instead, when set.
 	unlockErr error
+	infoErr   error
 
 	// writeAdmin is where InitWallet writes the admin macaroon, as lnd
 	// does.
@@ -155,6 +157,9 @@ func (f fakeAdmin) IdentityPubkey(context.Context) (string, error) {
 	if f.n.rejectBaked && !bytes.Equal(f.mac, f.n.adminMac) {
 		return "", status.Error(codes.Unknown,
 			"verification failed: signature mismatch")
+	}
+	if f.n.infoErr != nil {
+		return "", f.n.infoErr
 	}
 
 	return f.n.identity, nil
@@ -571,6 +576,67 @@ func TestSupervisorTellsASlowUnlockFromAWrongPassword(t *testing.T) {
 			fake.unlockErr = nil
 			fake.mu.Unlock()
 			require.NoError(t, s.prepare(context.Background()))
+		})
+	}
+}
+
+// Stock lnd answers GetInfo only after asking its chain node, so a busy one
+// makes it run out of time while the node is otherwise fine: that is said, and
+// waited on as starting, until it has lasted. Cut off by the node (a stream
+// reset) is the same.
+func TestSupervisorWaitsForASlowGetInfo(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"deadline", status.Error(codes.DeadlineExceeded,
+			"context deadline exceeded")},
+		{"stream reset", status.Error(codes.Canceled, "stream "+
+			"terminated by RST_STREAM with error code: CANCEL")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake := lockedNode(t)
+			fake.state = lnrpc.WalletState_SERVER_ACTIVE
+			fake.infoErr = tc.err
+			clock := time.Now()
+			s.now = func() time.Time { return clock }
+
+			err := s.prepare(context.Background())
+			require.ErrorIs(t, err, errSha256Pending)
+			state, detail := s.report()
+			require.Equal(t, sha256Starting, state)
+			require.Contains(t, detail, "the SHA256 Lightning "+
+				"node is running but did not answer GetInfo "+
+				"within 1m0s")
+			require.Contains(t, detail, "its chain node "+
+				"(bitcoind), which may be busy, restarting or "+
+				"overloaded")
+
+			clock = clock.Add(sha256StartTimeout - time.Second)
+			require.ErrorIs(t, s.prepare(context.Background()),
+				errSha256Pending)
+
+			clock = clock.Add(2 * time.Second)
+			err = s.prepare(context.Background())
+			require.Error(t, err)
+			require.NotErrorIs(t, err, errSha256Pending)
+			state, detail = s.report()
+			require.Equal(t, sha256Unreachable, state)
+			require.Contains(t, detail, "did not answer GetInfo")
+			require.Contains(t, detail, "for 5m0s")
+
+			// Answering again, and the bridge up, gives the next
+			// slow spell its full time.
+			fake.mu.Lock()
+			fake.infoErr = nil
+			fake.mu.Unlock()
+			require.NoError(t, s.prepare(context.Background()))
+			s.answered()
+			fake.mu.Lock()
+			fake.infoErr = tc.err
+			fake.mu.Unlock()
+			require.ErrorIs(t, s.prepare(context.Background()),
+				errSha256Pending)
 		})
 	}
 }
