@@ -2902,7 +2902,16 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		numConfs := uint32(1)
 
 		go peer.WaitForChanToClose(
-			uint32(bestHeight), notifier, errChan, chanPoint,
+			uint32(bestHeight), notifier, func(err error) {
+				// Deliver without waiting, so that a reader
+				// that has already gone cannot hold up the
+				// notification.
+				select {
+				case errChan <- err:
+
+				default:
+				}
+			}, chanPoint,
 			&closingTxid, closingTx.TxOut[0].PkScript, numConfs,
 			func() {
 				// Respond to the local subsystem which
@@ -3064,7 +3073,9 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 			}
 
 			updateChan = closeUpdates.UpdateChan
-			errChan = closeUpdates.ErrChan
+			errChan = closeUpdates.ErrChan(
+				updateStream.Context(),
+			)
 		} else {
 			maxFee := chainfee.SatPerKVByte(
 				in.MaxFeePerVbyte * 1000,
@@ -4286,16 +4297,15 @@ func (r *rpcServer) fetchPendingForceCloseChannels() (pendingForceClose,
 			channel.IndependentSecrets =
 				historical.ChanType.HasIndependentSecrets()
 
-			// Get the number of forwarding packages from the
-			// historical channel.
-			fwdPkgs, err := historical.LoadFwdPkgs()
+			numFwdPkgs, err := historical.CountFwdPkgs()
 			if err != nil {
-				rpcsLog.Errorf("unable to load forwarding "+
+				rpcsLog.Errorf("unable to count forwarding "+
 					"packages for channel:%s, %v",
 					historical.ShortChannelID, err)
+
 				return nil, 0, err
 			}
-			channel.NumForwardingPackages = int64(len(fwdPkgs))
+			channel.NumForwardingPackages = int64(numFwdPkgs)
 
 			channel.RemoteBalance = int64(
 				historical.LocalCommitment.RemoteBalance.ToSatoshis(),
@@ -4485,11 +4495,12 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 			)
 		}
 
-		fwdPkgs, err := waitingClose.LoadFwdPkgs()
+		numForwardingPackages, err := waitingClose.CountFwdPkgs()
 		if err != nil {
-			rpcsLog.Errorf("unable to load forwarding packages "+
+			rpcsLog.Errorf("unable to count forwarding packages "+
 				"for channel:%s, %v",
 				waitingClose.ShortChannelID, err)
+
 			return nil, 0, err
 		}
 
@@ -4538,7 +4549,7 @@ func (r *rpcServer) fetchWaitingCloseChannels(
 				waitingClose.ChanType,
 			),
 			UnifiedSigs:           unifiedSigs,
-			NumForwardingPackages: int64(len(fwdPkgs)),
+			NumForwardingPackages: int64(numForwardingPackages),
 			ChanStatusFlags:       chanStatus.String(),
 			Private:               isPrivate(waitingClose),
 			Memo:                  string(waitingClose.Memo),

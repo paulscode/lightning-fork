@@ -545,7 +545,9 @@ type Config struct {
 	EnableUpfrontShutdown bool
 
 	// MaxAnchorsCommitFeeRate is the max commitment fee rate we'll use as
-	// the initiator for channels of the anchor type.
+	// the initiator for channels of the anchor type. A value below
+	// chainfee.FeePerKwFloor acts as the floor, as we never propose a
+	// commitment fee rate below it.
 	MaxAnchorsCommitFeeRate chainfee.SatPerKWeight
 
 	// DeleteAliasEdge allows the Manager to delete an alias channel edge
@@ -1631,6 +1633,23 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		return
 	}
 
+	// Reject a commitment fee rate below the floor that the channel state
+	// machine enforces for every later commitment. We can't raise the rate
+	// ourselves, as both sides need to construct the same commitment
+	// transactions. The floor applies to every commitment type, and the
+	// channel acceptor can't change the rate, so we check it before
+	// consulting the acceptor.
+	commitFeePerKw := chainfee.SatPerKWeight(msg.FeePerKiloWeight)
+	if commitFeePerKw < chainfee.FeePerKwFloor {
+		f.failFundingFlow(
+			peer, cid, lnwallet.ErrCommitFeeRateTooLow(
+				commitFeePerKw, chainfee.FeePerKwFloor,
+			),
+		)
+
+		return
+	}
+
 	// Send the OpenChannel request to the ChannelAcceptor to determine
 	// whether this node will accept the channel.
 	chanReq := &chanacceptor.ChannelAcceptRequest{
@@ -1785,7 +1804,7 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		NodeAddr:         peer.Address(),
 		LocalFundingAmt:  0,
 		RemoteFundingAmt: amt,
-		CommitFeePerKw:   chainfee.SatPerKWeight(msg.FeePerKiloWeight),
+		CommitFeePerKw:   commitFeePerKw,
 		FundingFeePerKw:  0,
 		PushMSat:         msg.PushAmount,
 		Flags:            msg.ChannelFlags,
@@ -1805,6 +1824,19 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		f.failFundingFlow(peer, cid, err)
 		return
 	}
+
+	// Until the reservation is added to activeReservations below, this
+	// function owns it and releases it when returning early.
+	reservationTracked := false
+	defer func() {
+		if reservationTracked {
+			return
+		}
+
+		if err := reservation.Cancel(); err != nil {
+			log.Errorf("Unable to cancel reservation: %v", err)
+		}
+	}()
 
 	log.Debugf("Initialized channel reservation: zeroConf=%v, psbt=%v, "+
 		"cannedShim=%v", reservation.IsZeroConf(),
@@ -1992,6 +2024,7 @@ func (f *Manager) fundeeProcessOpenChannel(peer lnpeer.Peer,
 		peer:              peer,
 	}
 	f.activeReservations[peerIDKey][msg.PendingChannelID] = resCtx
+	reservationTracked = true
 	f.resMtx.Unlock()
 
 	// Update the timestamp once the fundingOpenMsg has been handled.
@@ -3785,7 +3818,7 @@ func (f *Manager) receivedChannelReady(node *btcec.PublicKey,
 
 	// If we haven't insert the next revocation point, we haven't finished
 	// processing the channel ready message.
-	if channel.RemoteNextRevocation == nil {
+	if channel.RemoteNextRevocation.IsNone() {
 		return false, nil
 	}
 
@@ -4271,14 +4304,14 @@ func (f *Manager) handleChannelReady(peer lnpeer.Peer,
 		return
 	}
 
-	// If the RemoteNextRevocation is non-nil, then the channel has
+	// If the RemoteNextRevocation is set, then the channel has
 	// already been fully established and we've processed channel_ready
 	// for it at least once. We short-circuit inline to avoid redoing the
 	// heavy work in processChannelReady (DB writes, nonce generation,
 	// AddNewChannel) on every duplicate channel_ready the peer sends.
 	// Note that the happy path where the channel is actively being
 	// funded goes through the localDiscoverySignal branch above.
-	if channel.RemoteNextRevocation != nil {
+	if channel.RemoteNextRevocation.IsSome() {
 		// Even though we're ignoring the rest of the message, we
 		// still need to refresh the peer's alias if they negotiated
 		// the option_scid_alias feature and sent a (possibly updated)
@@ -4440,7 +4473,7 @@ func (f *Manager) processChannelReady(peer lnpeer.Peer,
 		}
 	}
 
-	// If the RemoteNextRevocation is non-nil, it means that we have
+	// If the RemoteNextRevocation is set, it means that we have
 	// already processed channelReady for this channel, so ignore. This
 	// check is after the alias logic so we store the peer's most recent
 	// alias. The spec requires us to validate that subsequent
@@ -4449,7 +4482,7 @@ func (f *Manager) processChannelReady(peer lnpeer.Peer,
 	// ignoring it. We are, however, required to *send* the same per
 	// commitment point, since another pedantic implementation might
 	// verify it.
-	if channel.RemoteNextRevocation != nil {
+	if channel.RemoteNextRevocation.IsSome() {
 		log.Infof("Received duplicate channelReady for "+
 			"ChannelID(%v), ignoring.", chanID)
 		return
@@ -4516,7 +4549,7 @@ func (f *Manager) processChannelReady(peer lnpeer.Peer,
 	// need to create the next commitment state for the remote party. So
 	// we'll insert that into the channel now before passing it along to
 	// other sub-systems.
-	err = channel.InsertNextRevocation(msg.NextPerCommitmentPoint)
+	err = channel.InsertNextRevocation(*msg.NextPerCommitmentPoint)
 	if err != nil {
 		log.Errorf("unable to insert next commitment point: %v", err)
 		return
@@ -5200,6 +5233,10 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 
 		commitFeePerKw = f.cfg.MaxAnchorsCommitFeeRate
 	}
+
+	// Never propose a commitment fee rate below the floor, as our peer
+	// would reject it. The floor takes precedence over a lower anchor cap.
+	commitFeePerKw = max(commitFeePerKw, chainfee.FeePerKwFloor)
 
 	var scidFeatureVal bool
 	if hasFeatures(

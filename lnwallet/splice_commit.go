@@ -1026,8 +1026,13 @@ func (lc *LightningChannel) restorePendingFundings() error {
 				return fmt.Errorf("splice %v without the "+
 					"peer's pending commitment", p.txid())
 			}
+			nextPoint, err := lc.channelState.RemoteNextRevocation.
+				UnwrapOrErr(ErrNoNextRevocation)
+			if err != nil {
+				return err
+			}
 			keyRing = DeriveCommitmentKeys(
-				lc.channelState.RemoteNextRevocation,
+				&nextPoint,
 				lntypes.Remote, lc.channelState.ChanType,
 				&lc.channelState.LocalChanCfg,
 				&lc.channelState.RemoteChanCfg,

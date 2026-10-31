@@ -4447,6 +4447,13 @@ func TestChannelLinkUpdateCommitFee(t *testing.T) {
 		{"bob", "alice", &lnwire.RevokeAndAck{}, false},
 		{"bob", "alice", &lnwire.CommitSig{}, false},
 		{"alice", "bob", &lnwire.RevokeAndAck{}, false},
+
+		// Fourth fee update.
+		{"alice", "bob", &lnwire.UpdateFee{}, false},
+		{"alice", "bob", &lnwire.CommitSig{}, false},
+		{"bob", "alice", &lnwire.RevokeAndAck{}, false},
+		{"bob", "alice", &lnwire.CommitSig{}, false},
+		{"alice", "bob", &lnwire.RevokeAndAck{}, false},
 	}
 	n.aliceServer.intersect(createInterceptorFunc("[alice] <-- [bob]",
 		"alice", messages, chanID, false))
@@ -4548,6 +4555,15 @@ func TestChannelLinkUpdateCommitFee(t *testing.T) {
 	// rate corresponding to the minimum relay fee.
 	newFeeRate = minRelayFee / 2
 	triggerFeeUpdate(newFeeRate, minRelayFee, minRelayFee, true)
+
+	// Triggering the link to update the fee of the channel with a fee
+	// estimate and a min relay fee below the fee floor, as the bitcoind
+	// and btcd estimators can report, should result in a fee rate at the
+	// floor rather than one the channel refuses to sign.
+	oneSatPerVByte := chainfee.SatPerVByte(1).FeePerKWeight()
+	triggerFeeUpdate(
+		oneSatPerVByte, oneSatPerVByte, chainfee.FeePerKwFloor, true,
+	)
 }
 
 // TestChannelLinkAcceptDuplicatePayment tests that if a link receives an
@@ -5831,6 +5847,10 @@ func (m *mockPackager) LoadFwdPkgs(tx kvdb.RTx) ([]*channeldb.FwdPkg, error) {
 	return nil, nil
 }
 
+func (*mockPackager) CountFwdPkgs(tx kvdb.RTx) (int, error) {
+	return 0, nil
+}
+
 func (*mockPackager) RemovePkg(tx kvdb.RwTx, height uint64) error {
 	return nil
 }
@@ -6071,7 +6091,8 @@ func TestChannelLinkFail(t *testing.T) {
 			func(c *channelLink) {
 				// Configure the channel so the
 				// revocation is invalid for its current state.
-				c.channel.State().RemoteNextRevocation = nil
+				c.channel.State().RemoteNextRevocation =
+					fn.None[btcec.PublicKey]()
 			},
 			func(t *testing.T, _ *Switch, c *channelLink,
 				remoteChannel *lnwallet.LightningChannel) {

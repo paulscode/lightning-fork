@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/actor"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -76,10 +77,10 @@ func TestPeerNoCloseDuringSplice(t *testing.T) {
 		CloseType: contractcourt.CloseRegular,
 		ChanPoint: &chanPoint,
 		Updates:   make(chan interface{}, 1),
-		Err:       make(chan error, 1),
+		Err:       actor.NewPromise[error](),
 	}
 	peer.handleLocalCloseReq(req)
-	require.ErrorIs(t, <-req.Err, errSpliceUnlocked)
+	require.ErrorIs(t, <-req.ErrChan(t.Context()), errSpliceUnlocked)
 
 	// The peer's.
 	peer.remoteFeatures = lnwire.EmptyFeatureVector()
@@ -131,11 +132,11 @@ func TestPeerClosesDisowned(t *testing.T) {
 		CloseType:    contractcourt.CloseRegular,
 		ChanPoint:    &chanPoint,
 		Updates:      make(chan interface{}, 1),
-		Err:          make(chan error, 1),
+		Err:          actor.NewPromise[error](),
 		NotIfClosing: true,
 	}
 	peer.HandleLocalCloseChanReqs(req)
-	closeErr, err := fn.RecvOrTimeout(req.Err, timeout)
+	closeErr, err := fn.RecvOrTimeout(req.ErrChan(t.Context()), timeout)
 	require.NoError(t, err)
 	require.ErrorIs(t, closeErr, errAlreadyClosing)
 }

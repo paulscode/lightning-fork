@@ -791,7 +791,7 @@ func (l *channelLink) eligibleToForward() bool {
 //
 // NOTE: MUST be called from the main event loop.
 func (l *channelLink) eligibleToUpdate() bool {
-	return l.channel.RemoteNextRevocation() != nil &&
+	return l.channel.RemoteNextRevocation().IsSome() &&
 		l.channel.ShortChanID() != hop.Source &&
 		l.isReestablished() &&
 		l.quiescer.CanSendUpdates()
@@ -4353,7 +4353,14 @@ func (l *channelLink) handleUpdateFee(ctx context.Context) error {
 		return fmt.Errorf("unable to sample network fee: %w", err)
 	}
 
-	minRelayFee := l.cfg.FeeEstimator.RelayFeePerKW()
+	// The estimator's min relay fee can be below the floor that
+	// validateCommitmentSanity enforces, e.g. when the bitcoind and btcd
+	// estimators cap the median feefilter of our peers at a low estimate
+	// for the next block. The floor takes precedence, so we neither
+	// propose a fee rate below it nor keep one that's already below it.
+	minRelayFee := max(
+		l.cfg.FeeEstimator.RelayFeePerKW(), chainfee.FeePerKwFloor,
+	)
 
 	newCommitFee := l.channel.IdealCommitFeeRate(
 		netFee, minRelayFee,
