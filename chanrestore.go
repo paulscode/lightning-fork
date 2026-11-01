@@ -1,6 +1,7 @@
 package lnd
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -87,6 +88,14 @@ func (e *ErrBackupWrongChain) Error() string {
 // activation by a node without these rules does not have.
 func checkBackupChain(ours chainhash.Hash,
 	backups ...chanbackup.Single) error {
+
+	// No chain has an all-zero hash. A restorer built without its chain
+	// hash would otherwise refuse every backup as foreign, with a message
+	// that blames the backup.
+	if ours == (chainhash.Hash{}) {
+		return errors.New("channel restorer has no chain hash to " +
+			"check backups against")
+	}
 
 	// Exactly the one this network used to advertise, and no other. The
 	// old scheme differed by network: mainnet used the id of the first
