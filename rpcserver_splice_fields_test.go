@@ -3,12 +3,16 @@ package lnd
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/shachain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -251,4 +255,67 @@ func TestLeastCandidateBalance(t *testing.T) {
 			rec(9_000, false, false),
 		}, 5_000,
 	))
+}
+
+// TestSpliceStatusOfChannelCopy checks that a channel's splice status can be
+// read from a copy of it, as a channel update event carries: the copy has no
+// database, so a stored shutdown cannot be read from it.
+func TestSpliceStatusOfChannelCopy(t *testing.T) {
+	t.Parallel()
+
+	ch := (&channeldb.OpenChannel{}).Copy()
+	require.Nil(t, ch.Db)
+	require.NotPanics(t, func() {
+		require.False(t, hasShutdownInfo(ch))
+	})
+}
+
+// TestSpliceFieldsOfChannelUpdate checks that the splice fields of a channel
+// update event, which carries a copy of the channel, come from the stored
+// channel: here, that a shutdown sent on it makes it closing.
+func TestSpliceFieldsOfChannelUpdate(t *testing.T) {
+	t.Parallel()
+
+	db, err := channeldb.MakeTestDB(t)
+	require.NoError(t, err)
+	cdb := db.ChannelStateDB()
+
+	priv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	remote := keychain.KeyDescriptor{PubKey: priv.PubKey()}
+	op := wire.OutPoint{Hash: chainhash.Hash{5}}
+	require.NoError(t, cdb.RestoreChannelShells(&channeldb.ChannelShell{
+		Chan: &channeldb.OpenChannel{
+			ChainHash:               chainreg.BitcoinMainNetParams.ChainHash,
+			FundingOutpoint:         op,
+			IdentityPub:             priv.PubKey(),
+			RemoteCurrentRevocation: priv.PubKey(),
+			RevocationStore:         shachain.NewRevocationStore(),
+			RevocationProducer: shachain.NewRevocationProducer(
+				chainhash.Hash{},
+			),
+			LocalChanCfg: channeldb.ChannelConfig{
+				MultiSigKey: remote,
+			},
+			RemoteChanCfg: channeldb.ChannelConfig{
+				MultiSigKey:         remote,
+				RevocationBasePoint: remote,
+				PaymentBasePoint:    remote,
+				DelayBasePoint:      remote,
+				HtlcBasePoint:       remote,
+			},
+		},
+	}))
+
+	stored, err := cdb.FetchChannel(op)
+	require.NoError(t, err)
+	require.NoError(t, stored.MarkShutdownSent(
+		channeldb.NewShutdownInfo(lnwire.DeliveryAddress{0x00}, true),
+	))
+
+	r := &rpcServer{server: &server{chanStateDB: cdb}}
+	channel := &lnrpc.Channel{}
+	r.addSpliceFields(stored.Copy(), channel)
+	require.Equal(t, spliceStatusClosing, channel.SpliceStatus)
+	require.Equal(t, op.String(), channel.ChannelPoint)
 }
