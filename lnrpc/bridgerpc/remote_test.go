@@ -217,7 +217,7 @@ func remote(m *fakeMain, i *fakeInvoices, r *fakeRouter) *Remote {
 	// history gets a clean refusal rather than a nil dereference, which is
 	// also what a node without ChainKit does.
 	return &Remote{
-		main: m, invoices: i, router: r,
+		main: m, invoices: i, router: r, now: time.Now,
 		chain: &fakeChain{at: func(int32) (int64, error) {
 			return 0, status.Error(
 				codes.Unimplemented,

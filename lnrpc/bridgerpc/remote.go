@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -42,6 +43,13 @@ type Remote struct {
 	invoices invoicesrpc.InvoicesClient
 	router   routerrpc.RouterClient
 	chain    chainrpc.ChainKitClient
+
+	// tip is the last height BestBlock read from the node synced to its
+	// chain, and tipAt when; see routeHeight. now is the clock, for tests.
+	tipMu sync.Mutex
+	tip   int32
+	tipAt time.Time
+	now   func() time.Time
 }
 
 // NewRemote wraps a connection to the SHA256 node.
@@ -51,6 +59,7 @@ func NewRemote(conn grpc.ClientConnInterface) *Remote {
 		invoices: invoicesrpc.NewInvoicesClient(conn),
 		router:   routerrpc.NewRouterClient(conn),
 		chain:    chainrpc.NewChainKitClient(conn),
+		now:      time.Now,
 	}
 }
 
@@ -691,8 +700,40 @@ func (r *Remote) BestBlock(ctx context.Context) (BlockInfo, error) {
 	if ts := info.GetBestHeaderTimestamp(); ts > 0 {
 		out.Time = time.Unix(ts, 0)
 	}
+	if out.SyncedToChain {
+		r.tipMu.Lock()
+		r.tip, r.tipAt = out.Height, r.now()
+		r.tipMu.Unlock()
+	}
 
 	return out, nil
+}
+
+// routeTipAge is how old a tip BestBlock read may be for routeHeight to use
+// it: the bridge reads one every pollInterval, and on a node slow to answer
+// GetInfo a read can take most of a minute more.
+const routeTipAge = 3 * pollInterval
+
+// routeHeight is the height a route's CLTV is counted from: the tip the
+// bridge last read, when it is recent, and otherwise the node's height now.
+//
+// A route search runs at every quote and again before every payout, and on a
+// node slow to answer GetInfo (stock lnd asks its chain node first) reading
+// the height there each time made the route check outlast its deadline, so a
+// funded swap waited at the gate until it was given back. A tip read a little
+// earlier is at most the node's height now, so the route's CLTV counted from
+// it is at least the real one: the payer is asked to hold a block or two
+// longer, never shorter. (The height the payout gate measures the held
+// payment against is read fresh, by BlockHeight.)
+func (r *Remote) routeHeight(ctx context.Context) (int32, error) {
+	r.tipMu.Lock()
+	tip, at := r.tip, r.tipAt
+	r.tipMu.Unlock()
+	if !at.IsZero() && r.now().Sub(at) <= routeTipAge {
+		return tip, nil
+	}
+
+	return r.BlockHeight(ctx)
 }
 
 // FindRoute asks the SHA256 node for a route to the invoice's destination
@@ -718,7 +759,7 @@ func (r *Remote) FindRoute(ctx context.Context, invoice string,
 	if err != nil {
 		return node.Route{}, fmt.Errorf("%w: %w", ErrInvoice, err)
 	}
-	height, err := r.BlockHeight(ctx)
+	height, err := r.routeHeight(ctx)
 	if err != nil {
 		return node.Route{}, err
 	}

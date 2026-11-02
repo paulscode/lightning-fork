@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -266,4 +267,62 @@ func TestRemoteSplitsByBlindedPathFeatures(t *testing.T) {
 	}
 	req.Features = nil
 	require.True(t, remoteSplits(req))
+}
+
+// A route check counts the route's CLTV from the tip the bridge last read,
+// while it is recent, without asking the node's height again: on a node slow
+// to answer GetInfo, reading it at every check made the check before each
+// payout outlast its deadline. An old tip, or one read while the node was
+// catching up, is not used.
+func TestRemoteFindRouteUsesTheRecentTip(t *testing.T) {
+	t.Parallel()
+
+	const fee, limit = 3_000, 120
+	slow := status.Error(codes.DeadlineExceeded, "context deadline "+
+		"exceeded")
+	setup := func(synced bool) (*Remote, *fakeMain, *time.Time) {
+		r, m := remoteRouting(splittablePayReq())
+		now := time.Unix(1_700_000_000, 0)
+		r.now = func() time.Time { return now }
+		m.info.SyncedToChain = synced
+		_, err := r.BestBlock(context.Background())
+		require.NoError(t, err)
+
+		// The node now answers routes but not GetInfo, and has
+		// mined two blocks since that read.
+		m.info, m.infoErr = nil, slow
+		m.routes = &lnrpc.QueryRoutesResponse{Routes: []*lnrpc.Route{{
+			TotalTimeLock: 1002 + 98, TotalFeesMsat: 1_250,
+		}}}
+
+		return r, m, &now
+	}
+
+	t.Run("recent", func(t *testing.T) {
+		t.Parallel()
+
+		r, _, now := setup(true)
+		*now = now.Add(routeTipAge)
+		got, err := r.FindRoute(context.Background(), "x", fee, limit)
+		require.NoError(t, err)
+		require.Equal(t, node.Route{CLTV: 100, FeeMsat: 1_250}, got,
+			"counted from the older tip: two blocks longer")
+	})
+
+	t.Run("too old", func(t *testing.T) {
+		t.Parallel()
+
+		r, _, now := setup(true)
+		*now = now.Add(routeTipAge + time.Second)
+		_, err := r.FindRoute(context.Background(), "x", fee, limit)
+		require.ErrorIs(t, err, slow)
+	})
+
+	t.Run("read while catching up", func(t *testing.T) {
+		t.Parallel()
+
+		r, _, _ := setup(false)
+		_, err := r.FindRoute(context.Background(), "x", fee, limit)
+		require.ErrorIs(t, err, slow)
+	})
 }
