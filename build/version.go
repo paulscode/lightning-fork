@@ -51,7 +51,7 @@ const (
 
 	// AppPreRelease MUST only contain characters from semanticAlphabet per
 	// the semantic versioning spec.
-	AppPreRelease = "beta-blake2b.21.2"
+	AppPreRelease = "beta-blake2b.21.3"
 )
 
 func init() {
