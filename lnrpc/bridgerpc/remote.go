@@ -727,21 +727,32 @@ func (r *Remote) FindRoute(ctx context.Context, invoice string,
 	for bit := range req.GetFeatures() {
 		features = append(features, lnrpc.FeatureBit(bit))
 	}
-	res, err := r.main.QueryRoutes(ctx, routeQuery(
-		req.GetDestination(), req.GetNumMsat(),
-		int32(req.GetCltvExpiry()), req.GetRouteHints(), features,
-		req.GetBlindedPaths(), maxFeeMsat, cltvLimit,
-	))
+	search := func(ctx context.Context, amtMsat uint64) (node.Route,
+		error) {
 
-	route, err := routeFrom(res, err, height)
+		res, err := r.main.QueryRoutes(ctx, routeQuery(
+			req.GetDestination(), int64(amtMsat),
+			int32(req.GetCltvExpiry()), req.GetRouteHints(),
+			features, req.GetBlindedPaths(), maxFeeMsat,
+			cltvLimit,
+		))
+
+		return routeFrom(res, err, height)
+	}
+
+	if req.GetNumMsat() < 0 {
+		return node.Route{}, fmt.Errorf("%w: amount %d msat",
+			ErrInvoice, req.GetNumMsat())
+	}
+	route, err := search(ctx, uint64(req.GetNumMsat()))
 	if !errors.Is(err, errNoSinglePath) || !remoteSplits(req) ||
 		req.GetNumMsat() <= 0 {
 
 		return route, err
 	}
 
-	return splitRoute(ctx, err, r.Balance, uint64(req.GetNumMsat()),
-		maxFeeMsat, cltvLimit)
+	return splitRoute(ctx, err, r.Balance, search,
+		uint64(req.GetNumMsat()), maxFeeMsat, cltvLimit)
 }
 
 // remoteSplits reports whether the SHA256 node's payment to the invoice may be

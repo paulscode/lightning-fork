@@ -5,11 +5,13 @@ package bridgerpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/routing"
 	"github.com/paulscode/lightning-fork-bridge/node"
 )
 
@@ -60,16 +62,33 @@ var errNoSinglePath = fmt.Errorf("%w: no single path carries it",
 // to it may still carry by splitting it, as the payout does (up to lnd's
 // default sixteen parts) when the invoice allows it.
 //
-// The route search finds single paths only, so it cannot say more. What a
-// split payment needs first is outbound to send it from: the paying node's
-// spendable balance, over its active channels and less their reserves (the
-// figure its Balance reads), has to cover the amount and the routing budget.
-// When it does, the payment is taken as routable, and its CLTV as the whole
-// limit, since no path was found to measure a shorter one: the payer is asked
-// to hold for the longest the payout may lock, which is the safe side.
+// The route search finds single paths only, so it cannot say more than two
+// things. What a split payment needs first is outbound to send it from: the
+// paying node's spendable balance, over its active channels and less their
+// reserves (the figure its Balance reads), has to cover the amount and the
+// routing budget. And its first part has to find a path: the router searches
+// for the whole amount, then halves it while no path is found, and gives up
+// when a part would fall under its smallest (see smallestPart). A search for
+// that smallest part, with mission control as the payout will see it, is the
+// router's own last try; without a path for it the payout fails at once with
+// no route, as it did for a quote taken on the balance alone after mission
+// control had written off the only way to the destination.
+//
+// When both hold, the payment is taken as routable, and its CLTV as the whole
+// limit, since the parts may take longer paths than the one found: the payer
+// is asked to hold for the longest the payout may lock, which is the safe
+// side.
 func splitRoute(ctx context.Context, noPath error,
-	balance func(context.Context) (uint64, error), amtMsat,
+	balance func(context.Context) (uint64, error),
+	search func(context.Context, uint64) (node.Route, error), amtMsat,
 	maxFeeMsat uint64, cltvLimit uint32) (node.Route, error) {
+
+	part, ok := smallestPart(amtMsat)
+	if !ok {
+		return node.Route{}, fmt.Errorf("%w; lnd does not split a "+
+			"payment under %d msat", noPath,
+			2*uint64(routing.DefaultShardMinAmt))
+	}
 
 	held, err := balance(ctx)
 	if err != nil {
@@ -83,7 +102,40 @@ func splitRoute(ctx context.Context, noPath error,
 			"several, with %d msat spendable", noPath, need, held)
 	}
 
+	_, err = search(ctx, part)
+	switch {
+	case errors.Is(err, node.ErrNoRoute):
+		return node.Route{}, fmt.Errorf("%w; nor for a part of %d "+
+			"msat, the smallest a split payment sends: %w", noPath,
+			part, err)
+
+	case err != nil:
+		return node.Route{}, fmt.Errorf("no single path (%v), and "+
+			"searching for a part of %d msat: %w", noPath, part,
+			err)
+	}
+
 	return node.Route{CLTV: cltvLimit, FeeMsat: maxFeeMsat}, nil
+}
+
+// smallestPart is the least lnd's router sends over one path when it splits a
+// payment of amtMsat, or false when it does not split one that small. It
+// halves a part that finds no path and searches again, until the half would
+// fall under routing.DefaultShardMinAmt (10,000 sat), so a payment under twice
+// that is never split. The bridge's payouts set no shard size of their own on
+// either node, and the SHA256 node is a stock lnd, which splits by the same
+// rule.
+func smallestPart(amtMsat uint64) (uint64, bool) {
+	least := uint64(routing.DefaultShardMinAmt)
+	part := amtMsat / 2
+	if part < least {
+		return 0, false
+	}
+	for part/2 >= least {
+		part /= 2
+	}
+
+	return part, true
 }
 
 // routeFrom reads a route search's answer: the route's CLTV counted from the

@@ -45,6 +45,12 @@ type fakeMain struct {
 	routes    *lnrpc.QueryRoutesResponse
 	routesErr error
 	routesReq *lnrpc.QueryRoutesRequest
+
+	// routesFor, when set, answers a route search in place of routes and
+	// routesErr; routesAsked records every search, routesReq the last.
+	routesFor func(*lnrpc.QueryRoutesRequest) (
+		*lnrpc.QueryRoutesResponse, error)
+	routesAsked []*lnrpc.QueryRoutesRequest
 }
 
 func (f *fakeMain) QueryRoutes(_ context.Context,
@@ -52,6 +58,10 @@ func (f *fakeMain) QueryRoutes(_ context.Context,
 	*lnrpc.QueryRoutesResponse, error) {
 
 	f.routesReq = in
+	f.routesAsked = append(f.routesAsked, in)
+	if f.routesFor != nil {
+		return f.routesFor(in)
+	}
 
 	return f.routes, f.routesErr
 }

@@ -354,19 +354,25 @@ func (l *Local) FindRoute(ctx context.Context, invoice string,
 	if err != nil {
 		return node.Route{}, fmt.Errorf("%w: %w", ErrInvoice, err)
 	}
-	res, err := l.deps.QueryRoutes(ctx, routeQuery(
-		hex.EncodeToString(pay.Destination.SerializeCompressed()),
-		int64(*pay.MilliSat), int32(delta),
-		invoicesrpc.CreateRPCRouteHints(pay.RouteHints), features,
-		blinded, maxFeeMsat, cltvLimit,
-	))
+	dest := hex.EncodeToString(pay.Destination.SerializeCompressed())
+	hints := invoicesrpc.CreateRPCRouteHints(pay.RouteHints)
+	search := func(ctx context.Context, amtMsat uint64) (node.Route,
+		error) {
 
-	route, err := routeFrom(res, err, height)
+		res, err := l.deps.QueryRoutes(ctx, routeQuery(
+			dest, int64(amtMsat), int32(delta), hints, features,
+			blinded, maxFeeMsat, cltvLimit,
+		))
+
+		return routeFrom(res, err, height)
+	}
+
+	route, err := search(ctx, uint64(*pay.MilliSat))
 	if !errors.Is(err, errNoSinglePath) || !localSplits(pay) {
 		return route, err
 	}
 
-	return splitRoute(ctx, err, l.Balance, uint64(*pay.MilliSat),
+	return splitRoute(ctx, err, l.Balance, search, uint64(*pay.MilliSat),
 		maxFeeMsat, cltvLimit)
 }
 

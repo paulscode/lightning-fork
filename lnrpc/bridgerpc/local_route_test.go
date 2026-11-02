@@ -383,8 +383,22 @@ func TestLocalFindRouteSplits(t *testing.T) {
 		return nil, status.Error(codes.Unknown, "unable to find a "+
 			"path to destination")
 	}
+	// A path for the smallest part lnd's router would split 150k into
+	// (halved three times, 18,750 sat), and none for more.
+	parts := func(req *lnrpc.QueryRoutesRequest) (
+		*lnrpc.QueryRoutesResponse, error) {
+
+		if req.AmtMsat > 18_750_000 {
+			return noPath(req)
+		}
+
+		return &lnrpc.QueryRoutesResponse{Routes: []*lnrpc.Route{{
+			TotalTimeLock: 1000 + 60, TotalFeesMsat: 100,
+		}}}, nil
+	}
 	split := splittableInvoice(t, amt, false)
 	single, _ := routedInvoice(t, amt)
+	small := splittableInvoice(t, 19_999_999, false)
 
 	for _, tc := range []struct {
 		name   string
@@ -395,26 +409,41 @@ func TestLocalFindRouteSplits(t *testing.T) {
 		balErr  error
 		want    node.Route
 		noRoute bool
+		asked   int
 	}{{
-		name: "two channels carry it", inv: split, search: noPath,
-		balance: 200_000_000,
-		want:    node.Route{CLTV: limit, FeeMsat: fee},
+		name: "two channels carry it", inv: split, search: parts,
+		balance: 200_000_000, asked: 2,
+		want: node.Route{CLTV: limit, FeeMsat: fee},
 	}, {
-		name: "exactly enough", inv: split, search: noPath,
+		name: "exactly enough", inv: split, search: parts,
 		balance: amt + fee,
 		want:    node.Route{CLTV: limit, FeeMsat: fee},
 	}, {
 		name: "not enough with the fee budget", inv: split,
-		search: noPath, balance: amt + fee - 1, noRoute: true,
+		search: parts, balance: amt + fee - 1, noRoute: true,
+	}, {
+		// Mission control has written off the only way there: the
+		// balance would carry a split, but no part finds a path, and
+		// the payout would fail at once.
+		name: "no path for any part", inv: split, search: noPath,
+		balance: 200_000_000, noRoute: true, asked: 2,
+	}, {
+		// lnd's router does not split under 20,000 sat.
+		name: "too small to split", inv: small, search: parts,
+		balance: 200_000_000, noRoute: true, asked: 1,
 	}, {
 		name: "an invoice that cannot be split", inv: single,
-		search: noPath, balance: 200_000_000, noRoute: true,
+		search: parts, balance: 200_000_000, noRoute: true,
 	}, {
 		name: "empty answer", inv: split, balance: 200_000_000,
-		search: func(*lnrpc.QueryRoutesRequest) (
+		search: func(req *lnrpc.QueryRoutesRequest) (
 			*lnrpc.QueryRoutesResponse, error) {
 
-			return &lnrpc.QueryRoutesResponse{}, nil
+			if req.AmtMsat == amt {
+				return &lnrpc.QueryRoutesResponse{}, nil
+			}
+
+			return parts(req)
 		},
 		want: node.Route{CLTV: limit, FeeMsat: fee},
 	}, {
@@ -427,13 +456,13 @@ func TestLocalFindRouteSplits(t *testing.T) {
 				"feature 42")
 		},
 	}, {
-		name: "balance unread", inv: split, search: noPath,
+		name: "balance unread", inv: split, search: parts,
 		balErr: errors.New("database is closed"),
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			l, _ := localRouting(tc.inv, tc.search)
+			l, asked := localRouting(tc.inv, tc.search)
 			l.deps.ChannelBalance = func(context.Context) (uint64,
 				error) {
 
@@ -452,6 +481,9 @@ func TestLocalFindRouteSplits(t *testing.T) {
 			default:
 				require.NoError(t, err)
 				require.Equal(t, tc.want, got)
+			}
+			if tc.asked > 0 {
+				require.Len(t, *asked, tc.asked)
 			}
 		})
 	}

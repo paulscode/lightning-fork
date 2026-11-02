@@ -53,6 +53,24 @@ func splittablePayReq() *lnrpc.PayReq {
 	}
 }
 
+// partsOnly is a route search that finds a path for amounts up to most msat
+// and answers noPath above it, as a destination reachable only by parts.
+func partsOnly(most int64, noPath error) func(*lnrpc.QueryRoutesRequest) (
+	*lnrpc.QueryRoutesResponse, error) {
+
+	return func(in *lnrpc.QueryRoutesRequest) (*lnrpc.QueryRoutesResponse,
+		error) {
+
+		if in.AmtMsat > most {
+			return nil, noPath
+		}
+
+		return &lnrpc.QueryRoutesResponse{Routes: []*lnrpc.Route{{
+			TotalTimeLock: 1000 + 60, TotalFeesMsat: 100,
+		}}}, nil
+	}
+}
+
 func TestRemoteFindRoute(t *testing.T) {
 	t.Parallel()
 
@@ -76,23 +94,87 @@ func TestRemoteFindRoute(t *testing.T) {
 	})
 
 	// Two 100k channels carry a 150k payout split, which no single path
-	// does: routable, for the whole CLTV limit.
+	// does: routable, for the whole CLTV limit, once the smallest part
+	// lnd's router would split it into (150k halved three times, 18,750
+	// sat) finds a path, as the payout's first part then will.
 	t.Run("split over two channels", func(t *testing.T) {
 		t.Parallel()
 
 		r, m := remoteRouting(splittablePayReq())
-		m.routesErr = noPath
+		m.routesFor = partsOnly(18_750_000, noPath)
 		got, err := r.FindRoute(context.Background(), "x", fee, limit)
 		require.NoError(t, err)
 		require.Equal(t, node.Route{CLTV: limit, FeeMsat: fee}, got)
 		require.True(t, m.lastChannelsReq.GetActiveOnly())
+		require.Len(t, m.routesAsked, 2)
+		part := m.routesAsked[1]
+		require.EqualValues(t, 18_750_000, part.AmtMsat)
+		require.Equal(t, "02aa", part.PubKey)
+		require.EqualValues(t, 18, part.FinalCltvDelta)
+		require.EqualValues(t, fee, part.FeeLimit.GetFixedMsat())
+		require.EqualValues(t, limit, part.CltvLimit)
+		require.True(t, part.UseMissionControl)
+	})
+
+	// The balance would carry a split, but not even the smallest part
+	// finds a path, as when mission control has written off the only
+	// channel to the destination: the payout would fail at once.
+	t.Run("no path for any part", func(t *testing.T) {
+		t.Parallel()
+
+		r, m := remoteRouting(splittablePayReq())
+		m.routesErr = noPath
+		_, err := r.FindRoute(context.Background(), "x", fee, limit)
+		require.ErrorIs(t, err, node.ErrNoRoute)
+		require.Len(t, m.routesAsked, 2)
+	})
+
+	t.Run("part search failed", func(t *testing.T) {
+		t.Parallel()
+
+		down := status.Error(codes.Unavailable, "connection refused")
+		r, m := remoteRouting(splittablePayReq())
+		m.routesFor = func(in *lnrpc.QueryRoutesRequest) (
+			*lnrpc.QueryRoutesResponse, error) {
+
+			if in.AmtMsat == 150_000_000 {
+				return nil, noPath
+			}
+
+			return nil, down
+		}
+		_, err := r.FindRoute(context.Background(), "x", fee, limit)
+		require.ErrorIs(t, err, down)
+		require.NotErrorIs(t, err, node.ErrNoRoute)
+	})
+
+	// lnd's router does not split a payment under twice its smallest
+	// part (20,000 sat), so no single path is final there.
+	t.Run("too small to split", func(t *testing.T) {
+		t.Parallel()
+
+		req := splittablePayReq()
+		req.NumMsat = 19_999_999
+		r, m := remoteRouting(req)
+		m.routesFor = partsOnly(0, noPath)
+		_, err := r.FindRoute(context.Background(), "x", fee, limit)
+		require.ErrorIs(t, err, node.ErrNoRoute)
+		require.Len(t, m.routesAsked, 1)
+		require.Nil(t, m.lastChannelsReq)
+
+		req = splittablePayReq()
+		req.NumMsat = 20_000_000
+		r, m = remoteRouting(req)
+		m.routesFor = partsOnly(10_000_000, noPath)
+		_, err = r.FindRoute(context.Background(), "x", fee, limit)
+		require.NoError(t, err)
 	})
 
 	t.Run("too little to split", func(t *testing.T) {
 		t.Parallel()
 
 		r, m := remoteRouting(splittablePayReq())
-		m.routesErr = noPath
+		m.routesFor = partsOnly(18_750_000, noPath)
 		m.channels.Channels = m.channels.Channels[:1]
 		_, err := r.FindRoute(context.Background(), "x", fee, limit)
 		require.ErrorIs(t, err, node.ErrNoRoute)
@@ -132,7 +214,7 @@ func TestRemoteFindRoute(t *testing.T) {
 		t.Parallel()
 
 		r, m := remoteRouting(splittablePayReq())
-		m.routesErr = noPath
+		m.routesFor = partsOnly(18_750_000, noPath)
 		m.channelsErr = errors.New("permission denied")
 		_, err := r.FindRoute(context.Background(), "x", fee, limit)
 		require.ErrorIs(t, err, m.channelsErr)
