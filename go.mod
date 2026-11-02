@@ -38,9 +38,9 @@ require (
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.10
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6
-	github.com/lightningnetwork/lnd/kvdb v1.4.16
-	github.com/lightningnetwork/lnd/queue v1.2.0
-	github.com/lightningnetwork/lnd/sqldb v1.0.13
+	github.com/lightningnetwork/lnd/kvdb v1.4.18
+	github.com/lightningnetwork/lnd/queue v1.2.1
+	github.com/lightningnetwork/lnd/sqldb v1.0.14
 	github.com/lightningnetwork/lnd/ticker v1.1.1
 	github.com/lightningnetwork/lnd/tlv v1.4.1
 	github.com/lightningnetwork/lnd/tor v1.1.7
@@ -226,13 +226,14 @@ retract v0.0.2
 // block id logic lives in a btcd fork that keeps upstream's module path.
 replace github.com/btcsuite/btcd => github.com/paulscode/btcd-blake2b v0.25.1-blake2b.8
 
-// txauthor with configurable hash types, so the wallet's own on-chain sends
-// can opt into the unified signature hash.
 // btcwallet asking the chain parameters for each coinbase's maturity, since
 // the Bitcoin BLAKE2b chain's depends on where the coinbase was mined
-// (lnwallet/btcwallet/coinbase_maturity.go).
-replace github.com/btcsuite/btcwallet => github.com/paulscode/btcwallet-blake2b v0.16.20-blake2b.1
+// (lnwallet/btcwallet/coinbase_maturity.go). Based on the btcwallet commit
+// required above; move them together.
+replace github.com/btcsuite/btcwallet => github.com/paulscode/btcwallet-blake2b v0.16.20-blake2b.2
 
+// txauthor with configurable hash types, so the wallet's own on-chain sends
+// can opt into the unified signature hash.
 replace github.com/btcsuite/btcwallet/wallet/txauthor => github.com/paulscode/btcwallet-blake2b/wallet/txauthor v1.3.5-blake2b.1
 
 replace github.com/lightninglabs/neutrino => github.com/paulscode/neutrino-blake2b v0.17.1-blake2b.1
