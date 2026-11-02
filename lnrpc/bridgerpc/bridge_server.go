@@ -1303,18 +1303,13 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		resp.Refusals = append(resp.Refusals,
 			resp.Sha256Node.GetDetail())
 
-	default:
-		checkCtx, cancel := context.WithTimeout(ctx,
-			sha256SummaryTimeout)
-		err := remote.Check(checkCtx)
-		cancel()
-		if timedOut(err) {
-			err = errors.New(slowGetInfo(false,
-				sha256SummaryTimeout))
-		}
-		if err != nil {
-			resp.Refusals = append(resp.Refusals, err.Error())
-		}
+	// The summary has just read the node's GetInfo, which is all its Check
+	// would ask again: a second GetInfo on a slow node could take Status
+	// past the health check's wait.
+	case !resp.Sha256Node.GetSyncedToChain():
+		resp.Refusals = append(resp.Refusals, fmt.Sprintf("SHA256 "+
+			"node: %v: at height %d", ErrNotSynced,
+			resp.Sha256Node.GetBlockHeight()))
 	}
 
 	svc := s.service()

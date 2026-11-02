@@ -291,6 +291,38 @@ func TestStatusSaysTheSHA256NodeIsSlow(t *testing.T) {
 	require.Equal(t, 1, main.infos)
 }
 
+// A connected SHA256 node that answers is asked GetInfo once by Status, which
+// says from that answer whether it is behind its chain.
+func TestStatusAsksTheSHA256NodeOnce(t *testing.T) {
+	t.Parallel()
+
+	for _, synced := range []bool{true, false} {
+		main := &countingMain{fakeMain: &fakeMain{
+			info: &lnrpc.GetInfoResponse{
+				SyncedToChain: synced, BlockHeight: 900,
+			},
+			channels: &lnrpc.ListChannelsResponse{},
+		}}
+		r := remote(nil, nil, nil)
+		r.main = main
+		s := serverWith(t, true, &fakeNode{synced: true})
+		s.mu.Lock()
+		s.remote = r
+		s.mu.Unlock()
+
+		resp, err := s.Status(context.Background(), &StatusRequest{})
+		require.NoError(t, err)
+		require.Equal(t, 1, main.infos, "synced %v", synced)
+		behind := "SHA256 node: node is not synced to its chain: at " +
+			"height 900"
+		if synced {
+			require.NotContains(t, resp.Refusals, behind)
+		} else {
+			require.Contains(t, resp.Refusals, behind)
+		}
+	}
+}
+
 // countingMain counts GetInfo calls.
 type countingMain struct {
 	*fakeMain
@@ -303,4 +335,18 @@ func (c *countingMain) GetInfo(ctx context.Context, in *lnrpc.GetInfoRequest,
 	c.infos++
 
 	return c.fakeMain.GetInfo(ctx, in, opts...)
+}
+
+func (c *countingMain) WalletBalance(context.Context,
+	*lnrpc.WalletBalanceRequest, ...grpc.CallOption) (
+	*lnrpc.WalletBalanceResponse, error) {
+
+	return &lnrpc.WalletBalanceResponse{}, nil
+}
+
+func (c *countingMain) ChannelBalance(context.Context,
+	*lnrpc.ChannelBalanceRequest, ...grpc.CallOption) (
+	*lnrpc.ChannelBalanceResponse, error) {
+
+	return &lnrpc.ChannelBalanceResponse{}, nil
 }
