@@ -578,7 +578,7 @@ func TestSampledTipsCarrySpacingAcrossARetarget(t *testing.T) {
 		sha.tip++
 		shaTip(main, sha)
 
-		svc.sample(context.Background())
+		svc.sample(context.Background(), sampleTimeout)
 	}
 
 	assertScaledSpacing(t, "BLAKE2b", svc.b2bChain, now)
@@ -642,7 +642,7 @@ func TestSampleIgnoresAnEmptyTip(t *testing.T) {
 			svc := serviceFor(t, usable(), f, remote(nil, nil, nil))
 			svc.local = NewLocal(deps)
 
-			svc.sample(context.Background())
+			svc.sample(context.Background(), sampleTimeout)
 
 			if _, err := svc.b2bChain.Estimate(
 				time.Now(),
@@ -1804,14 +1804,14 @@ func TestSampleTakesOnlyASyncedTip(t *testing.T) {
 	svc.local = NewLocal(deps)
 	before := svc.b2bChain.Len()
 
-	svc.sample(context.Background())
+	svc.sample(context.Background(), sampleTimeout)
 	if got := svc.b2bChain.Len(); got != before {
 		t.Fatalf("a tip from a node catching up was taken (%d -> %d)",
 			before, got)
 	}
 
 	tip.SyncedToChain = true
-	svc.sample(context.Background())
+	svc.sample(context.Background(), sampleTimeout)
 	if got := svc.b2bChain.Len(); got != before+1 {
 		t.Fatalf("a synced tip was not taken (%d -> %d)", before, got)
 	}
@@ -1873,4 +1873,54 @@ func TestQuoteRefusesAnOversizedInvoiceUnread(t *testing.T) {
 		t.Errorf("zpay32 refuses %d characters as too large",
 			maxInvoiceLength)
 	}
+}
+
+// A SHA256 tip that cannot be read is warned about once, then once every ten
+// minutes with how many tries have failed, rather than at every poll for as
+// long as it lasts; a node that ran out of time is said to be slow, with why;
+// and reading it again is said once.
+//
+// Not parallel: it swaps the package's logger.
+func TestAnUnreadTipIsWarnedAboutSparingly(t *testing.T) {
+	var out strings.Builder
+	before := log
+	UseLogger(btclog.NewSLogger(btclog.NewDefaultHandler(&out)))
+	t.Cleanup(func() { UseLogger(before) })
+
+	main := &fakeMain{info: &lnrpc.GetInfoResponse{}}
+	svc := serviceFor(t, usable(), &fakeNode{synced: true},
+		remote(main, nil, nil))
+	main.infoErr = status.Error(codes.DeadlineExceeded,
+		"context deadline exceeded")
+
+	for i := 0; i < 3; i++ {
+		svc.sample(context.Background(), sha256InfoTimeout)
+	}
+	logged := out.String()
+	require.Equal(t, 1, strings.Count(logged, "SHA256 tip"), logged)
+	require.Contains(t, logged, "Bridge could not read the SHA256 tip: "+
+		"the SHA256 Lightning node did not answer GetInfo within "+
+		"1m0s; lnd answers it only after asking its chain node "+
+		"(bitcoind), which may be busy, restarting or overloaded")
+
+	main.infoErr = nil
+	main.info = &lnrpc.GetInfoResponse{BlockHeight: 1}
+	svc.sample(context.Background(), sha256InfoTimeout)
+	require.Contains(t, out.String(), "Bridge reads the SHA256 tip "+
+		"again, after 3 failed tries")
+}
+
+func TestTipWarningsAreRationed(t *testing.T) {
+	t.Parallel()
+
+	var w tipWarn
+	now := time.Now()
+	require.True(t, w.fail(now), "the first failure is said")
+	for i := 1; i < int(tipWarnEvery/pollInterval); i++ {
+		now = now.Add(pollInterval)
+		require.False(t, w.fail(now), "try %d", i+1)
+	}
+	now = now.Add(pollInterval)
+	require.True(t, w.fail(now), "said again after tipWarnEvery")
+	require.Equal(t, 21, w.failed)
 }

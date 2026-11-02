@@ -161,6 +161,11 @@ type supervisor struct {
 	// found not answering, or zero. Only prepare touches it.
 	unansweredSince time.Time
 
+	// slowSince is when the node, answering, was first found too slow to
+	// use: an unlock or a GetInfo that ran out of time. Zero once the
+	// bridge is up. Only the bridge's retry loop touches it.
+	slowSince time.Time
+
 	mu     sync.Mutex
 	state  string
 	detail string
@@ -375,18 +380,91 @@ func (s *supervisor) ensureWallet(ctx context.Context, password []byte) error {
 
 	case lnrpc.WalletState_LOCKED:
 		// The platform starts the node with the password file, so it
-		// unlocks itself. Being found locked means it was started
-		// without it; unlocking here gets the bridge going, and the
-		// wrong password is reported rather than retried for ever.
+		// unlocks itself, and is found locked while it does. Started
+		// without the file it stays locked; unlocking here gets the
+		// bridge going, and a wrong password is reported rather than
+		// retried for ever.
 		if err := conn.UnlockWallet(ctx, password); err != nil {
-			return s.fail(sha256Locked, "the SHA256 node's wallet "+
-				"is locked and the password this node keeps "+
-				"for it does not open it; this node did not "+
-				"create that wallet", err)
+			return s.unlockFailed(err)
 		}
 	}
 
 	return s.waitActive(ctx, conn, created)
+}
+
+// unlockFailed reports an unlock the node did not do: a wrong password only
+// when lnd says so, and one it ran out of time over as a node slow to start.
+//
+// lnd times out opening a wallet file that is already open, and with its
+// password file it opens its wallet itself as it starts, with the wallet
+// state reading locked until it has: an unlock asked for then waits behind
+// that and ends with "timeout" (bbolt's lock wait, after db.bolt.dbtimeout),
+// however right the password.
+func (s *supervisor) unlockFailed(err error) error {
+	said := status.Convert(err).Message()
+	switch {
+	case wrongPassword(err):
+		return s.fail(sha256Locked, "the SHA256 node's wallet is "+
+			"locked and the password this node keeps for it does "+
+			"not open it (lnd says the passphrase is invalid); "+
+			"this node did not create that wallet", err)
+
+	case timedOut(err) || strings.Contains(strings.ToLower(said),
+		"timeout") || strings.Contains(said, "deadline exceeded"):
+
+		return s.slow(sha256Locked, fmt.Sprintf("the SHA256 node is "+
+			"slow to open its wallet: lnd timed out opening it "+
+			"for the bridge (%s). It opens it itself as it "+
+			"starts, from its password file, and the bridge's "+
+			"request waits behind that; a slow start, not a wrong "+
+			"password", said), err)
+	}
+
+	return s.fail(sha256Locked, "the SHA256 node's wallet is locked and "+
+		"lnd would not open it", err)
+}
+
+// wrongPassword reports lnd refusing a wallet password, which it says with
+// btcwallet's "invalid passphrase for master private key" (or public key)
+// under the Unknown code.
+func wrongPassword(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()),
+		"invalid passphrase")
+}
+
+// slow reports a node that answers but takes too long over what the bridge
+// needs: on its way, for a while, and then failing in state, so a node that
+// stays like that is said to be failing rather than starting for ever.
+func (s *supervisor) slow(state, detail string, cause error) error {
+	now := s.now()
+	if s.slowSince.IsZero() {
+		s.slowSince = now
+	}
+	lasted := now.Sub(s.slowSince)
+	if lasted < sha256StartTimeout {
+		return s.pending(sha256Starting, detail)
+	}
+
+	return s.fail(state, fmt.Sprintf("%s. It has been like this for %v: "+
+		"look at the SHA256 node's log", detail,
+		lasted.Round(time.Minute)), cause)
+}
+
+// infoFailed reports a GetInfo the node did not answer, while preparing it.
+func (s *supervisor) infoFailed(err error) error {
+	if timedOut(err) {
+		return s.slow(sha256Unreachable,
+			slowGetInfo(true, sha256InfoTimeout), err)
+	}
+
+	return s.fail(sha256Unreachable, "the SHA256 Lightning node does "+
+		"not answer", err)
+}
+
+// answered notes that the bridge is up, so a node slow again later is given
+// its full time again.
+func (s *supervisor) answered() {
+	s.slowSince = time.Time{}
 }
 
 // notAnswering reports a node that has started before and does not answer:
@@ -906,8 +984,7 @@ func (s *supervisor) macaroonCurrent(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	return false, s.fail(sha256Unreachable, "the SHA256 Lightning node "+
-		"does not answer", err)
+	return false, s.infoFailed(err)
 }
 
 // macaroonRefused reports whether an error is the node refusing the macaroon
@@ -955,8 +1032,7 @@ func (s *supervisor) checkIdentity(ctx context.Context,
 
 	got, err := conn.IdentityPubkey(ctx)
 	if err != nil {
-		return s.fail(sha256Unreachable, "the SHA256 Lightning node "+
-			"does not answer", err)
+		return s.infoFailed(err)
 	}
 
 	want, err := Sha256NodeKey(entropy, s.coinType)
@@ -1150,7 +1226,7 @@ func (g *grpcAdmin) RestoreChannelBackups(ctx context.Context,
 }
 
 func (g *grpcAdmin) IdentityPubkey(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, sha256InfoTimeout)
 	defer cancel()
 
 	info, err := g.main.GetInfo(ctx, &lnrpc.GetInfoRequest{})

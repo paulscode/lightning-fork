@@ -501,6 +501,15 @@ const retryInterval = time.Minute
 // between each would make a first start take several for no reason.
 const pendingRetryInterval = 10 * time.Second
 
+// retryEvery is how often the retry loop tries again after err.
+func retryEvery(err error) time.Duration {
+	if errors.Is(err, errSha256Pending) {
+		return pendingRetryInterval
+	}
+
+	return retryInterval
+}
+
 // retry brings the bridge up, trying at once and then every retryInterval
 // until it is up or the node stops.
 func (s *Server) retry() {
@@ -511,11 +520,8 @@ func (s *Server) retry() {
 		err := s.connect()
 		s.setStartErr(err)
 
-		wait := retryInterval
+		wait := retryEvery(err)
 		pending := errors.Is(err, errSha256Pending)
-		if pending {
-			wait = pendingRetryInterval
-		}
 		switch {
 		case err == nil:
 			return
@@ -563,19 +569,11 @@ func (s *Server) connect() error {
 	if s.sup != nil {
 		// Ends with the node too: preparing can wait minutes for a
 		// node catching up, and stopping this one must not wait on it.
-		ctx, cancel := context.WithTimeout(
-			context.Background(), sha256ReadyWait+dialTimeout,
+		// Room for the wait and the three GetInfo calls after it.
+		ctx, cancel := s.untilQuit(
+			sha256ReadyWait + 3*sha256InfoTimeout,
 		)
-		done := make(chan struct{})
-		go func() {
-			select {
-			case <-s.quit:
-				cancel()
-			case <-done:
-			}
-		}()
 		err := s.sup.prepare(ctx)
-		close(done)
 		cancel()
 		if err != nil {
 			return err
@@ -604,7 +602,11 @@ func (s *Server) connect() error {
 	// keep the bridge down on every restart, and this one runs inside the
 	// node it is checking. It is already refused where it counts: no swap
 	// is sized against a height that may be stale. Say so and carry on.
-	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	//
+	// Room for this node and three GetInfo calls on the SHA256 node, each
+	// of which a busy chain node can make slow; ended with the node, so
+	// stopping does not wait on them.
+	ctx, cancel := s.untilQuit(dialTimeout + 3*sha256InfoTimeout)
 	defer cancel()
 
 	local, err := s.local.Reachable(ctx)
@@ -616,6 +618,9 @@ func (s *Server) connect() error {
 	remote, err := remoteNode.Reachable(ctx)
 	if err != nil {
 		_ = conn.Close()
+		if timedOut(err) {
+			return s.slowSha256(err)
+		}
 
 		return fmt.Errorf("the bridge cannot use the SHA256 node at "+
 			"%s: %w", s.cfg.SHA256RPCHost, err)
@@ -628,6 +633,9 @@ func (s *Server) connect() error {
 		s.local.NodeKey()); err != nil {
 
 		_ = conn.Close()
+		if timedOut(err) {
+			return s.slowSha256(err)
+		}
 
 		return fmt.Errorf("the bridge will not use the SHA256 node at "+
 			"%s: %w", s.cfg.SHA256RPCHost, err)
@@ -678,6 +686,9 @@ func (s *Server) connect() error {
 	s.mu.Unlock()
 	s.rateMu.Unlock()
 
+	if s.sup != nil {
+		s.sup.answered()
+	}
 	log.Infof("Bridge is up, serving %d direction(s) through the SHA256 "+
 		"node at %s", len(svc.sides), s.cfg.SHA256RPCHost)
 
@@ -694,6 +705,37 @@ func (s *Server) connect() error {
 	}
 
 	return nil
+}
+
+// untilQuit is a context that ends after d or when the bridge stops, whichever
+// comes first.
+func (s *Server) untilQuit(d time.Duration) (context.Context,
+	context.CancelFunc) {
+
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	go func() {
+		select {
+		case <-s.quit:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	return ctx, cancel
+}
+
+// slowSha256 is why the bridge cannot start when the SHA256 node took too
+// long over GetInfo: it says why that usually is, and a supervised node is
+// waited on, for a while, as one on its way up (see supervisor.slow).
+func (s *Server) slowSha256(err error) error {
+	if s.sup != nil {
+		return s.sup.slow(sha256Unreachable,
+			slowGetInfo(true, sha256InfoTimeout), err)
+	}
+
+	return fmt.Errorf("the bridge cannot use the SHA256 node at %s yet: "+
+		"%s: %w", s.cfg.SHA256RPCHost,
+		slowGetInfo(false, sha256InfoTimeout), err)
 }
 
 // remoteNode is the SHA256 node once the bridge has connected, or nil.
@@ -1222,7 +1264,7 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 						fmt.Sprintf("it cannot start to "+
 							"finish them, and tries "+
 							"again every %v: %v",
-							retryInterval, why))
+							retryEvery(why), why))
 				}
 			}
 			resp.Sha256Node = s.sha256Summary(ctx)
@@ -1234,6 +1276,8 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	// The SHA256 node first and whatever the bridge's own state: it is
 	// the usual reason the bridge is not up.
 	resp.Sha256Node = s.sha256Summary(ctx)
+	summaryFailed := s.remoteNode() != nil &&
+		resp.Sha256Node.GetState() == sha256Unreachable
 
 	s.mu.RLock()
 	journalErr := s.journalErr
@@ -1248,8 +1292,27 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 	if err := s.local.Check(ctx); err != nil {
 		resp.Refusals = append(resp.Refusals, err.Error())
 	}
-	if remote := s.remoteNode(); remote != nil {
-		if err := remote.Check(ctx); err != nil {
+	// Within what the platforms' health checks wait for Status (25 s on
+	// StartOS), with the summary's own wait: a check cut off there says
+	// only that the node is starting, and nothing of why. A node the
+	// summary could not read is said to be so without asking it again.
+	switch remote := s.remoteNode(); {
+	case remote == nil:
+
+	case summaryFailed:
+		resp.Refusals = append(resp.Refusals,
+			resp.Sha256Node.GetDetail())
+
+	default:
+		checkCtx, cancel := context.WithTimeout(ctx,
+			sha256SummaryTimeout)
+		err := remote.Check(checkCtx)
+		cancel()
+		if timedOut(err) {
+			err = errors.New(slowGetInfo(false,
+				sha256SummaryTimeout))
+		}
+		if err != nil {
 			resp.Refusals = append(resp.Refusals, err.Error())
 		}
 	}
@@ -1267,7 +1330,7 @@ func (s *Server) Status(ctx context.Context, _ *StatusRequest) (
 		} else if why != nil {
 			msg = fmt.Sprintf("the bridge is enabled but cannot "+
 				"start, and tries again every %v: %v",
-				retryInterval, why)
+				retryEvery(why), why)
 		}
 		resp.Refusals = append(resp.Refusals, msg)
 		s.reportRate(resp, nil)
