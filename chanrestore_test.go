@@ -46,4 +46,14 @@ func TestCheckBackupChain(t *testing.T) {
 	// refused too.
 	require.Error(t, checkBackupChain(ours, chanbackup.Single{}))
 	_ = chainhash.Hash{}
+
+	// A restorer that was never given its own chain hash refuses to
+	// restore anything, and says so instead of blaming the backup.
+	for _, backups := range [][]chanbackup.Single{
+		nil, {{ChainHash: ours}},
+	} {
+		err := checkBackupChain(chainhash.Hash{}, backups...)
+		require.ErrorContains(t, err, "no chain hash")
+		require.False(t, errors.As(err, &wrong), err)
+	}
 }

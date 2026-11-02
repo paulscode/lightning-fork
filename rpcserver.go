@@ -8108,6 +8108,7 @@ func (r *rpcServer) RestoreChannelBackups(ctx context.Context,
 		db:         r.server.chanStateDB,
 		secretKeys: r.server.cc.KeyRing,
 		chainArb:   r.server.chainArb,
+		chainHash:  r.cfg.ActiveNetParams.ChainHash,
 	}
 
 	// We'll accept either a list of Single backups, or a single Multi

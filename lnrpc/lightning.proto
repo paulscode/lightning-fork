@@ -3433,9 +3433,9 @@ message WalletBalanceResponse {
 
     // Coinbase outputs this wallet holds that are not yet deep enough for a
     // spend of them to relay, and so are counted in no other balance here.
-    // On the Bitcoin BLAKE2b chain that is 6480 confirmations while the long
-    // coinbase maturity rule is deployed, rather than 100. It covers the whole
-    // wallet, and is 0 when an account was asked for.
+    // On the Bitcoin BLAKE2b chain that is 6480 confirmations for a coinbase
+    // mined before block 979919 and 25920 for one from it, rather than 100. It
+    // covers the whole wallet, and is 0 when an account was asked for.
     int64 immature_coinbase_balance = 1001;
 }
 

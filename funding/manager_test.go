@@ -5960,8 +5960,8 @@ func TestFundingManagerCoinbase(t *testing.T) {
 	// open and sends channel_ready, which Bob, having forgotten the
 	// channel, will not answer. The funding confirmed at height 1, so
 	// that height is the relay coinbase maturity.
-	maturityHeight := int32(chainreg.BitcoinRegTestNetParams.Params.
-		RelayCoinbaseMaturity())
+	maturityHeight := chainreg.BitcoinRegTestNetParams.Params.
+		RelayCoinbaseMaturityAt(1)
 	alice.mockNotifier.epochChan <- &chainntnfs.BlockEpoch{
 		Height: maturityHeight,
 	}

@@ -540,6 +540,18 @@ func (r *rpcServer) SpliceChannel(in *lnrpc.SpliceChannelRequest,
 func (r *rpcServer) addSpliceFields(ch *channeldb.OpenChannel,
 	channel *lnrpc.Channel) {
 
+	// A channel update event carries a copy of the channel, which has no
+	// database to read its splices or a sent shutdown from. Read those
+	// from the stored channel, as a listing does.
+	if ch.Db == nil {
+		stored, err := r.server.chanStateDB.FetchChannel(
+			ch.FundingOutpoint,
+		)
+		if err == nil {
+			ch = stored
+		}
+	}
+
 	channel.ChannelPoint = ch.CurrentFundingOutpoint().String()
 	channel.OriginalChannelPoint = ch.FundingOutpoint.String()
 
@@ -973,6 +985,12 @@ func (r *rpcServer) currentFunding(op wire.OutPoint) wire.OutPoint {
 
 // hasShutdownInfo reports whether we sent shutdown on the channel.
 func hasShutdownInfo(ch *channeldb.OpenChannel) bool {
+	// A copy of the channel has no database to read it from, as with
+	// SpliceRecords.
+	if ch.Db == nil {
+		return false
+	}
+
 	info, err := ch.ShutdownInfo()
 
 	return err == nil && info.IsSome()

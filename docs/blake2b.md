@@ -411,12 +411,15 @@ descriptors are written.
 
 ## Long coinbase maturity
 
-Knots deploys a temporary rule
+Knots 29.4.2 deployed a temporary rule
 ([bitcoinknots/bitcoin#419](https://github.com/bitcoinknots/bitcoin/pull/419))
 that raises the wait on newly mined coins from 100 blocks to 6480, roughly 45
-days at a ten minute block target. The release notes say a full year is being
-considered for October 2026, and after that withholding rewards entirely from
-blocks not produced through the miner's own DATUM Gateway.
+days at a ten minute block target, for coinbases from block 973440. Knots 29.4.3
+(#468) keeps that for those coinbases and holds every coinbase from block 979919
+on for 180 days, 25920 blocks, until RDTS expires: a coinbase whose block's
+parent has a median time past at or after 2027-09-01 needs 100 again. Knots'
+release notes say the wait may be extended to 350 days, and made contingent on
+mining through the miner's own DATUM Gateway.
 
 **Open channels are not affected.** A Lightning transaction spends the P2WSH
 funding output, not a coinbase, so the rule never touches a commitment, an HTLC
@@ -425,19 +428,19 @@ close one over this.
 
 ### The rule has two faces
 
-Consensus refuses a spend only inside a deployment window, and only for coins
-mined at or after the start height. Relay is blunter: an upgraded node requires
-the full 6480 blocks of *every* coinbase spend it will accept into its mempool,
-whatever height the coin was mined at, and it keeps requiring it after the
-window closes. Knots' own wallet follows relay rather than consensus.
+Consensus refuses a spend only for coins mined at or after a rule's start
+height, and the 45-day rule only inside its deployment window (spends included
+from block 973440 to 979919). Relay is blunter: an upgraded node requires 6480
+blocks of *every* coinbase mined before block 979919, whatever height it was
+mined at, and keeps requiring it after that window closed; a coinbase from block
+979919 on needs 25920. Knots' own wallet follows relay rather than consensus.
 
 Two consequences that surprise people:
 
 - A coinbase mined well before the fork, buried 200 blocks deep, is a
   consensus-valid spend that no upgraded node will relay.
-- The relay rule is not height-gated. `CoinbaseMaturityLong` is a static
-  chainparam, so a node starts enforcing it the moment it is upgraded, not at
-  the flag day.
+- The relay rule is not gated by the tip's height, only by the coin's. A node
+  starts enforcing it the moment it is upgraded, not at the flag day.
 
 ### What this node does
 
@@ -458,12 +461,13 @@ commitment and close transactions cannot relay, and a channel you cannot
 close on time is worse than one you cannot open yet. A peer following these
 rules refuses such a channel anyway, so in practice the coins are better
 spent on an ordinary channel once they mature. The depth comes from
-`chaincfg.Params.RelayCoinbaseMaturity()` in btcd-blake2b, which returns the
-ordinary 100 blocks on any network without the deployment.
+`chaincfg.Params.RelayCoinbaseMaturityAt(height)` in btcd-blake2b, for the
+height the coinbase was mined at, which returns the ordinary 100 blocks on any
+network without the deployment.
 
 The wait is for the chain to reach a height, not for a confirmation count.
 That is not a style choice: `chainntnfs` refuses any confirmation request
-above `MaxNumConfs`, which is 144, so asking for 6480 fails the registration
+above `MaxNumConfs`, which is 144, so asking for 6480 or 25920 fails the registration
 and leaves the channel pending for good with one line in the log. Builds up
 to and including `0.21.3-beta-blake2b.10` had exactly that bug; it was found
 by running the rule for real rather than a scaled stand-in, which is the whole
@@ -471,12 +475,15 @@ argument for doing so.
 
 ### The node's own wallet
 
-The wallet spends a coinbase output only once a spend of it will relay: 6480
-confirmations on mainnet while the rule is deployed, not 100. Coin selection
-happens inside upstream `github.com/btcsuite/btcwallet`, which filters
-coinbase outputs against `chainParams.CoinbaseMaturity`. That field has to stay
-at 100 for anything validating blocks, so lnd hands btcwallet a copy of the
-chain parameters with the relay depth in it, and changes nothing else.
+The wallet spends a coinbase output only once a spend of it will relay: on
+mainnet 6480 confirmations for a coinbase mined before block 979919 and 25920
+for one from it, not 100. Coin selection happens inside
+`github.com/btcsuite/btcwallet`, which upstream filters every coinbase output
+against one `chainParams.CoinbaseMaturity`. One number cannot hold both depths,
+so lnd builds against a btcwallet fork
+([paulscode/btcwallet-blake2b](https://github.com/paulscode/btcwallet-blake2b),
+`wallet/coinbase_maturity.go`) that asks `RelayCoinbaseMaturityAt` for each
+coinbase's own height, and leaves `CoinbaseMaturity` at 100.
 
 Every path that selects coins follows: `SendOutputs`, `CreateSimpleTx`,
 `FundPsbt`, `ListUnspentWitness`, and so channel opens funded from the node
@@ -486,8 +493,9 @@ the same as a coinbase younger than 100 blocks anywhere else;
 spendable at the relay depth, when it counts in the wallet's balances again.
 
 Releases up to `0.21.3-beta-blake2b.12` offered such a coin after 100
-confirmations. A send or channel open built from it was refused by the first
-node it reached; nothing was lost, the operation failed.
+confirmations, and releases up to `0.21.4-beta-blake2b.21.2` after 6480 for
+a coinbase from block 979919. A send or channel open built from it was refused
+by the first node it reached; nothing was lost, the operation failed.
 
 ## Resizing channels (splicing)
 
