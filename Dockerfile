@@ -37,10 +37,6 @@ RUN apk add --no-cache --update alpine-sdk \
 # Start a new, final image.
 FROM alpine AS final
 
-# Force Go to use the cgo based DNS resolver. This is required to ensure DNS
-# queries required to connect to linked containers succeed.
-ENV GODEBUG netdns=cgo
-
 # Define a root volume for data persistence.
 VOLUME /root/.lnd
 
