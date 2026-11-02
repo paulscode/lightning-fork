@@ -12,6 +12,7 @@ import (
 
 	"github.com/paulscode/lightning-fork-bridge/chainrate"
 	"github.com/paulscode/lightning-fork-bridge/inventory"
+	"github.com/paulscode/lightning-fork-bridge/runner"
 	"github.com/paulscode/lightning-fork-bridge/store"
 	"github.com/paulscode/lightning-fork-bridge/swap"
 )
@@ -393,5 +394,34 @@ func TestBothDirectionsPriceAgainstTheSHA256Position(t *testing.T) {
 		t.Errorf("toBLAKE2b's spread moved with the BTCB2 balance (%g "+
 			"against %g); it must follow the SHA256 position",
 			revDrainedB2B, revFull)
+	}
+}
+
+// The route check before a payout from the SHA256 node is given as long as a
+// GetInfo there, since stock lnd asks its chain node for the height before
+// each route search; a payout from this node keeps the module's default.
+func TestTheSHA256GateRouteCheckIsGivenAMinute(t *testing.T) {
+	t.Parallel()
+
+	cfg := usable()
+	cfg.ToBLAKE2b = true
+	svc := serviceFor(t, cfg, &fakeNode{synced: true},
+		remote(&fakeMain{}, nil, nil))
+	seen := map[string]time.Duration{}
+	for _, sd := range svc.sides {
+		seen[sd.name] = sd.runner.RouteTimeout
+	}
+	want := map[string]time.Duration{
+		"toSHA256":  sha256InfoTimeout,
+		"toBLAKE2b": runner.DefaultRouteTimeout,
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("directions %v, want %v", seen, want)
+	}
+	for name, d := range want {
+		if seen[name] != d {
+			t.Errorf("%s gate route check %v, want %v", name,
+				seen[name], d)
+		}
 	}
 }

@@ -454,15 +454,31 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 			In: sd.in, Out: sd.out, Store: s.journal,
 			Policy: s.res.margin,
 		},
-		Store:       s.journal,
-		Rates:       runner.Rates(s.spacing(invert)),
-		PriceCheck:  s.priceCheck(sd),
-		Log:         bridgeLogger(name),
-		FundedGrace: s.res.fundedGrace,
-		Alert:       s.markAlerted,
+		Store:        s.journal,
+		Rates:        runner.Rates(s.spacing(invert)),
+		PriceCheck:   s.priceCheck(sd),
+		Log:          bridgeLogger(name),
+		FundedGrace:  s.res.fundedGrace,
+		Alert:        s.markAlerted,
+		RouteTimeout: gateRouteTimeout(invert),
 	}
 
 	return sd
+}
+
+// gateRouteTimeout bounds the route check before each payout. Paying from the
+// SHA256 node, as long as one GetInfo there: stock lnd asks its chain node
+// for the height before every route search, and a split payout searches
+// twice, so a busy chain node that GetInfo is given a minute for would run
+// the module's default of 30 s out at every check, and the funded swap would
+// wait until it was given back. The invoice's own expiry still cuts the check
+// short.
+func gateRouteTimeout(paysBLAKE2b bool) time.Duration {
+	if paysBLAKE2b {
+		return runner.DefaultRouteTimeout
+	}
+
+	return sha256InfoTimeout
 }
 
 // inBLAKE2bMsat converts an amount of SHA256 millisatoshis into BLAKE2b ones at the
