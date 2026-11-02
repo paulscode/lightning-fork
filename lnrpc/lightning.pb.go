@@ -10580,9 +10580,9 @@ type WalletBalanceResponse struct {
 	AccountBalance map[string]*WalletAccountBalance `protobuf:"bytes,4,rep,name=account_balance,json=accountBalance,proto3" json:"account_balance,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Coinbase outputs this wallet holds that are not yet deep enough for a
 	// spend of them to relay, and so are counted in no other balance here.
-	// On the Bitcoin BLAKE2b chain that is 6480 confirmations while the long
-	// coinbase maturity rule is deployed, rather than 100. It covers the whole
-	// wallet, and is 0 when an account was asked for.
+	// On the Bitcoin BLAKE2b chain that is 6480 confirmations for a coinbase
+	// mined before block 979919 and 25920 for one from it, rather than 100. It
+	// covers the whole wallet, and is 0 when an account was asked for.
 	ImmatureCoinbaseBalance int64 `protobuf:"varint,1001,opt,name=immature_coinbase_balance,json=immatureCoinbaseBalance,proto3" json:"immature_coinbase_balance,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache

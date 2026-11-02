@@ -222,10 +222,15 @@ retract v0.0.2
 
 // Lightning Fork follows the Bitcoin BLAKE2b chain; the block header and
 // block id logic lives in a btcd fork that keeps upstream's module path.
-replace github.com/btcsuite/btcd => github.com/paulscode/btcd-blake2b v0.25.1-blake2b.7
+replace github.com/btcsuite/btcd => github.com/paulscode/btcd-blake2b v0.25.1-blake2b.8
 
 // txauthor with configurable hash types, so the wallet's own on-chain sends
 // can opt into the unified signature hash.
+// btcwallet asking the chain parameters for each coinbase's maturity, since
+// the Bitcoin BLAKE2b chain's depends on where the coinbase was mined
+// (lnwallet/btcwallet/coinbase_maturity.go).
+replace github.com/btcsuite/btcwallet => github.com/paulscode/btcwallet-blake2b v0.16.20-blake2b.1
+
 replace github.com/btcsuite/btcwallet/wallet/txauthor => github.com/paulscode/btcwallet-blake2b/wallet/txauthor v1.3.5-blake2b.1
 
 replace github.com/lightningnetwork/lnd/fn/v2 => ./fn
