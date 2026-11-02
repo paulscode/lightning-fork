@@ -156,12 +156,17 @@ func (s *service) sample(ctx context.Context, sha256Wait time.Duration) {
 }
 
 // sampleTip adds one chain's tip to its observer; see sample.
-func (s *service) sampleTip(ctx context.Context, src tipSource) {
-	ctx, cancel := context.WithTimeout(ctx, src.wait)
+func (s *service) sampleTip(parent context.Context, src tipSource) {
+	ctx, cancel := context.WithTimeout(parent, src.wait)
 	defer cancel()
 
 	info, err := src.read(ctx)
 	if err != nil {
+		// The bridge stopping cuts a read off, which says nothing
+		// about the node; warning that it is slow would.
+		if parent.Err() != nil {
+			return
+		}
 		s.tipUnread(src, err)
 
 		return
@@ -272,7 +277,7 @@ func (s *service) tipUnread(src tipSource, err error) {
 
 	default:
 		log.Warnf("Bridge still cannot read the %s tip after %d "+
-			"tries, one every %v: %s", src.label, failed,
+			"tries, at least %v apart: %s", src.label, failed,
 			pollInterval, why)
 	}
 }

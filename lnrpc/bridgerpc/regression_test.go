@@ -1908,6 +1908,15 @@ func TestAnUnreadTipIsWarnedAboutSparingly(t *testing.T) {
 	svc.sample(context.Background(), sha256InfoTimeout)
 	require.Contains(t, out.String(), "Bridge reads the SHA256 tip "+
 		"again, after 3 failed tries")
+
+	// A read the bridge cut off itself, stopping, is not the node's
+	// doing and is not said to be.
+	out.Reset()
+	main.infoErr = status.Error(codes.Canceled, "context canceled")
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	svc.sample(stopped, sha256InfoTimeout)
+	require.NotContains(t, out.String(), "SHA256 tip", out.String())
 }
 
 func TestTipWarningsAreRationed(t *testing.T) {
