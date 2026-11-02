@@ -700,11 +700,15 @@ func (r *Remote) BestBlock(ctx context.Context) (BlockInfo, error) {
 	if ts := info.GetBestHeaderTimestamp(); ts > 0 {
 		out.Time = time.Unix(ts, 0)
 	}
+	// A node that has fallen behind leaves no tip for routeHeight, which
+	// then asks the height and is refused, as before.
+	r.tipMu.Lock()
 	if out.SyncedToChain {
-		r.tipMu.Lock()
 		r.tip, r.tipAt = out.Height, r.now()
-		r.tipMu.Unlock()
+	} else {
+		r.tip, r.tipAt = 0, time.Time{}
 	}
+	r.tipMu.Unlock()
 
 	return out, nil
 }

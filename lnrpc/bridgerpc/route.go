@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/paulscode/lightning-fork-bridge/node"
 )
@@ -72,9 +73,12 @@ var errNoSinglePath = fmt.Errorf("%w: no single path carries it",
 // that smallest part, with mission control as the payout will see it, is the
 // router's own last try; without a path for it the payout fails at once with
 // no route, as it did for a quote taken on the balance alone after mission
-// control had written off the only way to the destination.
+// control had written off the only way to the destination. In at most
+// sixteen parts one carries at least a sixteenth of the payment, so the part
+// searched for is that when it is more (see partToProbe).
 //
-// When both hold, the payment is taken as routable, and its CLTV as the whole
+// Neither proves the parts together get through; they only rule out a
+// payout that cannot. When both hold, the payment is taken as routable, and its CLTV as the whole
 // limit, since the parts may take longer paths than the one found: the payer
 // is asked to hold for the longest the payout may lock, which is the safe
 // side.
@@ -83,7 +87,7 @@ func splitRoute(ctx context.Context, noPath error,
 	search func(context.Context, uint64) (node.Route, error), amtMsat,
 	maxFeeMsat uint64, cltvLimit uint32) (node.Route, error) {
 
-	part, ok := smallestPart(amtMsat)
+	part, ok := partToProbe(amtMsat)
 	if !ok {
 		return node.Route{}, fmt.Errorf("%w; lnd does not split a "+
 			"payment under %d msat", noPath,
@@ -106,8 +110,8 @@ func splitRoute(ctx context.Context, noPath error,
 	switch {
 	case errors.Is(err, node.ErrNoRoute):
 		return node.Route{}, fmt.Errorf("%w; nor for a part of %d "+
-			"msat, the smallest a split payment sends: %w", noPath,
-			part, err)
+			"msat, which a split payment cannot do without: %w",
+			noPath, part, err)
 
 	case err != nil:
 		return node.Route{}, fmt.Errorf("no single path (%v), and "+
@@ -116,6 +120,27 @@ func splitRoute(ctx context.Context, noPath error,
 	}
 
 	return node.Route{CLTV: cltvLimit, FeeMsat: maxFeeMsat}, nil
+}
+
+// maxParts is how many parts lnd's router splits a payment into at most:
+// its default, since the bridge's payouts set none.
+const maxParts = routerrpc.DefaultMaxParts
+
+// partToProbe is the part a split payment of amtMsat cannot go without a
+// path for, or false when lnd does not split one that small: the smallest
+// part the router sends (see smallestPart), or a sixteenth of the payment
+// when that is more, since in at most sixteen parts one carries at least
+// that.
+func partToProbe(amtMsat uint64) (uint64, bool) {
+	part, ok := smallestPart(amtMsat)
+	if !ok {
+		return 0, false
+	}
+	if least := (amtMsat + maxParts - 1) / maxParts; least > part {
+		part = least
+	}
+
+	return part, true
 }
 
 // smallestPart is the least lnd's router sends over one path when it splits a

@@ -318,6 +318,17 @@ func TestRemoteFindRouteUsesTheRecentTip(t *testing.T) {
 		require.ErrorIs(t, err, slow)
 	})
 
+	t.Run("fallen behind since", func(t *testing.T) {
+		t.Parallel()
+
+		r, m, _ := setup(true)
+		m.info, m.infoErr = &lnrpc.GetInfoResponse{BlockHeight: 1002}, nil
+		_, err := r.BestBlock(context.Background())
+		require.NoError(t, err)
+		_, err = r.FindRoute(context.Background(), "x", fee, limit)
+		require.ErrorIs(t, err, ErrNotSynced)
+	})
+
 	t.Run("read while catching up", func(t *testing.T) {
 		t.Parallel()
 

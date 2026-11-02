@@ -251,7 +251,8 @@ channels and a 150k payout), it is quoted if the paying node's spendable
 balance on its active channels covers the payout and its fee budget, and the
 smallest part lnd would split it into finds a path (lnd halves a part that
 finds none, down to 10,000 sat, and does not split a payout under 20,000 sat
-at all). It is sized to the whole time-lock budget, since the parts may take
+at all), as does a sixteenth of the payout when that is more (lnd splits into
+at most sixteen parts). It is sized to the whole time-lock budget, since the parts may take
 longer paths than the one found. A
 funded swap with no route when it comes to pay (channels still coming up
 after a restart, say) waits for one, and is given back if none appears in
