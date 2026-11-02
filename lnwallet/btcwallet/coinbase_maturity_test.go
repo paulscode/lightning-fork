@@ -7,32 +7,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWalletChainParams checks that btcwallet is handed the relay depth for
-// coinbase maturity where the long rule is deployed, that the caller's params
-// are left alone, and that networks without the rule are unchanged.
-func TestWalletChainParams(t *testing.T) {
+// TestCoinbaseMaturity checks the depth the wallet holds a coinbase for: on
+// mainnet 6480 blocks for one mined before 979919 and 25920 from it (Bitcoin
+// Knots 29.4.3), and the ordinary 100 on a network without those rules.
+func TestCoinbaseMaturity(t *testing.T) {
 	t.Parallel()
 
 	main := &chaincfg.MainNetParams
-	require.True(t, main.CoinbaseMaturityLongDeployed(),
-		"mainnet should carry the long coinbase maturity rule")
+	require.EqualValues(t, 6480, coinbaseMaturity(main, 961640))
+	require.EqualValues(t, 6480, coinbaseMaturity(main, 979918))
+	require.EqualValues(t, 25920, coinbaseMaturity(main, 979919))
+	require.EqualValues(t, 25920, coinbaseMaturity(main, 1_000_000))
 
-	before := main.CoinbaseMaturity
-	got := walletChainParams(main)
-
-	require.NotSame(t, main, got)
-	require.Equal(t, main.RelayCoinbaseMaturity(),
-		int32(got.CoinbaseMaturity))
-	require.Equal(t, before, main.CoinbaseMaturity,
-		"the caller's params were changed")
-	require.Equal(t, main.Name, got.Name)
-	require.Equal(t, main.GenesisHash, got.GenesisHash)
-
-	// A network without the rule keeps its params as they are.
-	reg := &chaincfg.RegressionNetParams
-	if !reg.CoinbaseMaturityLongDeployed() {
-		require.Same(t, reg, walletChainParams(reg))
-	}
-
-	require.Nil(t, walletChainParams(nil))
+	require.EqualValues(t, 100, coinbaseMaturity(
+		&chaincfg.RegressionNetParams, 979919,
+	))
 }

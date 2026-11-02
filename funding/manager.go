@@ -1399,10 +1399,15 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 		// channel is only usable once we can spend the funding output,
 		// and that means getting a commitment or a close through the
 		// network's mempools, not merely past its block validation.
-		// Under the long maturity rule those differ by thousands of
+		// Under the long maturity rules those differ by thousands of
 		// blocks, and marking the channel active on the shorter of the
-		// two would leave us unable to close it on time.
-		maturity := f.cfg.Wallet.Cfg.NetParams.RelayCoinbaseMaturity()
+		// two would leave us unable to close it on time. The depth
+		// depends on where the coinbase was mined, which for a funding
+		// output that is the coinbase is the funding height.
+		fundingHeight := confChannel.shortChanID.BlockHeight
+		maturity := f.cfg.Wallet.Cfg.NetParams.RelayCoinbaseMaturityAt(
+			int32(fundingHeight),
+		)
 		numCoinbaseConfs := uint32(maturity)
 
 		if uint32(channel.NumConfsRequired) > numCoinbaseConfs {
@@ -1426,7 +1431,6 @@ func (f *Manager) advancePendingChannelState(channel *channeldb.OpenChannel,
 		// catastrophe, and the funding transaction's own confirmation,
 		// which we have already waited out above, is the part that
 		// needed the stronger guarantee.
-		fundingHeight := confChannel.shortChanID.BlockHeight
 		maturityHeight := fundingHeight + numCoinbaseConfs - 1
 
 		log.Infof("ChannelPoint(%v) is funded by a coinbase; waiting "+
