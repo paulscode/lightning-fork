@@ -17,6 +17,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/rpcperms"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -47,7 +48,11 @@ type fakeSha256Node struct {
 	// unlockErr and infoErr are what UnlockWallet and GetInfo answer
 	// instead, when set.
 	unlockErr error
-	infoErr   error
+
+	// unlockRaced has the node unlock itself as the bridge asks, so it
+	// answers that it is already unlocked.
+	unlockRaced bool
+	infoErr     error
 
 	// writeAdmin is where InitWallet writes the admin macaroon, as lnd
 	// does.
@@ -88,6 +93,12 @@ func (f fakeUnlocker) UnlockWallet(_ context.Context, pw []byte) error {
 	defer f.n.mu.Unlock()
 
 	f.n.unlockWith = pw
+	if f.n.unlockRaced {
+		f.n.state = lnrpc.WalletState_SERVER_ACTIVE
+
+		return status.Error(codes.Unknown,
+			rpcperms.ErrWalletUnlocked.Error())
+	}
 	if f.n.unlockErr != nil {
 		return f.n.unlockErr
 	}
@@ -776,4 +787,43 @@ func TestCoinTypeFor(t *testing.T) {
 
 		require.EqualValues(t, 1, coinTypeFor(n), n)
 	}
+}
+
+// A slow spell ends when the node is next on its way for another reason, so
+// the next slow answer, after a long catch-up say, is given its full time as
+// starting rather than said to have lasted since the first one.
+func TestSupervisorSlowSpellEndsWhenTheNodeIsOnItsWay(t *testing.T) {
+	s, fake := lockedNode(t)
+	fake.state = lnrpc.WalletState_SERVER_ACTIVE
+	slow := status.Error(codes.DeadlineExceeded, "context deadline exceeded")
+	fake.infoErr = slow
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+
+	require.ErrorIs(t, s.prepare(context.Background()), errSha256Pending)
+
+	// Thirty minutes on its way for another reason: not started.
+	cert := s.cfg.SHA256TLSCertPath
+	require.NoError(t, os.Remove(cert))
+	clock = clock.Add(30 * time.Minute)
+	require.ErrorIs(t, s.prepare(context.Background()), errSha256Pending)
+	require.NoError(t, os.WriteFile(cert, []byte("cert"), 0600))
+
+	require.ErrorIs(t, s.prepare(context.Background()), errSha256Pending)
+	state, detail := s.report()
+	require.Equal(t, sha256Starting, state)
+	require.NotContains(t, detail, "It has been like this")
+}
+
+// The node can finish unlocking itself from its password file between the
+// bridge reading it locked and asking it to unlock, and lnd then refuses the
+// unlock as already done: that is the node on its way, not a wallet lnd would
+// not open.
+func TestSupervisorTakesAnUnlockTheNodeBeatItTo(t *testing.T) {
+	s, fake := lockedNode(t)
+	fake.unlockRaced = true
+
+	require.NoError(t, s.prepare(context.Background()))
+	state, _ := s.report()
+	require.Equal(t, sha256Ready, state)
 }

@@ -23,6 +23,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/rpcperms"
 	"gopkg.in/macaroon.v2"
 )
 
@@ -221,16 +222,30 @@ func (s *supervisor) record(state, detail string) {
 }
 
 // pending records a state the node is on its way through and returns the
-// error that has the bridge try again soon: not a fault.
+// error that has the bridge try again soon: not a fault. The node is not
+// being slow then, so a slow spell before it is over (see slow).
 func (s *supervisor) pending(state, detail string) error {
+	s.slowSince = time.Time{}
+
+	return s.waiting(state, detail)
+}
+
+func (s *supervisor) waiting(state, detail string) error {
 	s.record(state, detail)
 
 	return fmt.Errorf("%w: %s", errSha256Pending, detail)
 }
 
 // fail records a state that needs something done and returns an error saying
-// what, which the bridge reports and retries at its ordinary pace.
+// what, which the bridge reports and retries at its ordinary pace. Like
+// pending, it ends a slow spell.
 func (s *supervisor) fail(state, detail string, cause error) error {
+	s.slowSince = time.Time{}
+
+	return s.failing(state, detail, cause)
+}
+
+func (s *supervisor) failing(state, detail string, cause error) error {
 	s.record(state, detail)
 	if cause != nil {
 		return fmt.Errorf("%s: %w", detail, cause)
@@ -384,7 +399,13 @@ func (s *supervisor) ensureWallet(ctx context.Context, password []byte) error {
 		// without the file it stays locked; unlocking here gets the
 		// bridge going, and a wrong password is reported rather than
 		// retried for ever.
-		if err := conn.UnlockWallet(ctx, password); err != nil {
+		//
+		// It can finish between the state read and the unlock, which
+		// lnd then refuses as already done: the node is on its way.
+		err := conn.UnlockWallet(ctx, password)
+		if err != nil && !strings.Contains(err.Error(),
+			rpcperms.ErrWalletUnlocked.Error()) {
+
 			return s.unlockFailed(err)
 		}
 	}
@@ -442,11 +463,11 @@ func (s *supervisor) slow(state, detail string, cause error) error {
 	}
 	lasted := now.Sub(s.slowSince)
 	if lasted < sha256StartTimeout {
-		return s.pending(sha256Starting, detail)
+		return s.waiting(sha256Starting, detail)
 	}
 
-	return s.fail(state, fmt.Sprintf("%s. It has been like this for %v: "+
-		"look at the SHA256 node's log", detail,
+	return s.failing(state, fmt.Sprintf("%s. It has been like this for "+
+		"%v: look at the SHA256 node's log", detail,
 		lasted.Round(time.Minute)), cause)
 }
 
