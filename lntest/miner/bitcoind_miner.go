@@ -153,6 +153,12 @@ func (b *BitcoindMinerBackend) Start(setupChain bool,
 		fmt.Sprintf("-rpcpassword=%s", b.rpcPass),
 		fmt.Sprintf("-rpcport=%d", rpcPort),
 		fmt.Sprintf("-bind=127.0.0.1:%d", b.p2pPort),
+		// Bitcoin Knots, listening for Tor by default, takes the first
+		// -bind for its onion service and treats every connection to it
+		// as Tor, without the whitelist above. Transactions then reach
+		// the chain backend only at the random inventory interval,
+		// sometimes too late for a test.
+		"-listenonion=0",
 		"-rpcallowip=127.0.0.1",
 		"-server",
 		// Run in foreground for easier process management.
@@ -173,6 +179,7 @@ func (b *BitcoindMinerBackend) Start(setupChain bool,
 	}
 
 	cmdArgs = append(cmdArgs, b.extraArgs...)
+	cmdArgs = append(cmdArgs, node.Blake2bBitcoindArgs()...)
 
 	// Start bitcoind process.
 	b.cmd = exec.Command("bitcoind", cmdArgs...)

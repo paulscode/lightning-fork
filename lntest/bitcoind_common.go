@@ -183,6 +183,7 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string,
 		"-v2transport=0",
 	}
 	cmdArgs = append(cmdArgs, extraArgs...)
+	cmdArgs = append(cmdArgs, node.Blake2bBitcoindArgs()...)
 	bitcoind := exec.Command("bitcoind", cmdArgs...)
 
 	err = bitcoind.Start()
