@@ -84,7 +84,9 @@ cancelled invoices, the bridge's cancelled hold invoices among them, and a
 quote reads those as well as the bridge's journal, so that a payment hash a
 payer already paid into is not quoted again if the journal has lost its
 record. The bridge runs with them on, and this node logs a warning at startup
-when either is on here.
+when either is on here. A swap whose hold invoice is deleted this way still
+ends, as given back, unless it had already paid out; that one is listed in
+`needs_operator`, since the deleted invoice was its only claim.
 
 `lncli bridge status` says whether the bridge can serve swaps right now and,
 if not, why, and how far the SHA256 node has got (`sha256_node`). If the SHA256

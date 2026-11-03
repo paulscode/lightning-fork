@@ -108,7 +108,7 @@
     },
     "/v2/bridge/resolve": {
       "post": {
-        "summary": "lncli: `bridge resolve`\nResolveSwap decides a swap the bridge stopped in paying for the operator,\nby asking the paying node again what became of the payment. None or\nfailed: the swap fails, and the payer's held payment is cancelled, which\nrefunds them. Succeeded: the payer's payment is settled with the preimage\nand the swap is paid. Still in flight: refused, since the payment may yet\ngo either way. Only for an admin macaroon, and only for a swap\nneeds_operator lists as stopped, not one raised while it is still being\ndriven.",
+        "summary": "lncli: `bridge resolve`\nResolveSwap decides a swap the bridge stopped in paying or paid for the\noperator. Stopped in paying, it asks the paying node again what became of\nthe payment. None or failed: the swap fails, and the payer's held payment\nis cancelled, which refunds them. Succeeded: the payer's payment is\nsettled with the preimage and the swap is paid. Still in flight: refused,\nsince the payment may yet go either way. Stopped in paid, it asks the\nincoming node again for the hold invoice. No record: the swap is lost.\nThere after all: the bridge settles it if it still can. Only for an admin\nmacaroon, and only for a swap needs_operator lists as stopped, not one\nraised while it is still being driven.",
         "operationId": "Bridge_ResolveSwap",
         "responses": {
           "200": {

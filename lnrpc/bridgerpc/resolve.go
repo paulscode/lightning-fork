@@ -15,8 +15,8 @@ import (
 
 var (
 	// errNotStopped is returned when the operator asks to resolve a swap
-	// the bridge has not stopped for them in paying.
-	errNotStopped = errors.New("the swap is not stopped in paying")
+	// the bridge has not stopped for them in paying or paid.
+	errNotStopped = errors.New("the swap is not stopped in paying or paid")
 
 	// errStillInFlight is returned when the paying node says the payment
 	// of a stopped swap is still going.
@@ -52,7 +52,7 @@ func (s *service) resolve(ctx context.Context, hash node.Hash) (store.Record,
 	if err != nil {
 		return store.Record{}, err
 	}
-	if rec.State != swap.Paying {
+	if rec.State != swap.Paying && rec.State != swap.Paid {
 		return rec, fmt.Errorf("%w: it is %v", errNotStopped, rec.State)
 	}
 
@@ -69,6 +69,10 @@ func (s *service) resolve(ctx context.Context, hash node.Hash) (store.Record,
 	if err != nil {
 		return rec, fmt.Errorf("finding the direction that pays it: %w",
 			err)
+	}
+
+	if rec.State == swap.Paid {
+		return s.resolvePaid(ctx, sd, rec)
 	}
 
 	pmt, err := sd.out.LookupPayment(ctx, rec.Outgoing())
@@ -119,6 +123,47 @@ func (s *service) resolve(ctx context.Context, hash node.Hash) (store.Record,
 		"reports %v, so the swap is %v", hash, pmt.State, rec.State)
 
 	s.drive(sd, hash)
+
+	return rec, nil
+}
+
+// resolvePaid decides a swap the runner stopped in paid: paid out, and the
+// incoming node had no record of the hold invoice whose HTLC settling would
+// claim the payer's payment. lnd deletes only a cancelled invoice, so the
+// claim is gone, unless the bridge was reading a node other than the one that
+// issued it or one restored from an older backup. Asking for this is the
+// operator saying they have ruled those out. What the node says now decides
+// it:
+//
+//   - Still no record: the swap is lost, as it is when the invoice is there
+//     but can no longer be claimed, and stays listed as lost.
+//   - The invoice is there after all: the runner takes the swap back, and
+//     settles it or files it lost by what the invoice is doing.
+func (s *service) resolvePaid(ctx context.Context, sd *side,
+	rec store.Record) (store.Record, error) {
+
+	said := "has the hold invoice"
+	_, err := sd.in.LookupInvoice(ctx, rec.Hash)
+	switch {
+	case errors.Is(err, node.ErrUnknownHash):
+		said = "has no record of the hold invoice"
+		_, err = sd.runner.Driver.Apply(ctx, &rec, swap.IncomingUnsettleable)
+		if err != nil {
+			return rec, fmt.Errorf("recording the outcome: %w", err)
+		}
+
+	case err != nil:
+		return rec, fmt.Errorf("asking the incoming node: %w", err)
+	}
+
+	s.stoppedMu.Lock()
+	delete(s.stopped, rec.Hash)
+	s.stoppedMu.Unlock()
+
+	log.Infof("Bridge swap %x resolved by the operator: paid out, and the "+
+		"incoming node %s, so the swap is %v", rec.Hash, said, rec.State)
+
+	s.drive(sd, rec.Hash)
 
 	return rec, nil
 }

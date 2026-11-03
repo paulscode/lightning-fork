@@ -213,12 +213,13 @@ var bridgeSwapCommand = cli.Command{
 
 var bridgeResolveCommand = cli.Command{
 	Name:      "resolve",
-	Usage:     "Decide a swap the bridge stopped while paying.",
+	Usage:     "Decide a swap the bridge stopped while paying or paid.",
 	ArgsUsage: "payment_hash",
 	Description: `
-	For a swap 'lncli bridge status' lists in needs_operator as stopped
-	while paying: the bridge started its payment, and the paying node has
-	no record of it. That almost always means the payment never left, but
+	For a swap 'lncli bridge status' lists in needs_operator as stopped.
+
+	Stopped while paying: the bridge started its payment, and the paying
+	node has no record of it. That almost always means the payment never left, but
 	the bridge cannot rule out a paying node whose database was restored
 	from a backup, or whose payments were deleted by hand. Rule those out
 	first, then run this.
@@ -232,8 +233,19 @@ var bridgeResolveCommand = cli.Command{
 	The bridge must still point at the SHA256 node it used for the swap,
 	the one that made the payment for a payout on the SHA256 chain:
 	another node has no record of the payment, which reads as never sent
-	and refunds a payer whose payout may have been made. A swap raised in
-	needs_operator while the bridge is still driving it is refused.`,
+	and refunds a payer whose payout may have been made.
+
+	Stopped while paid: the payout was made, and the node that took the
+	payer's payment has no record of the hold invoice that claims it. lnd
+	deletes only a cancelled invoice, so the claim is almost certainly
+	gone. Rule out first that the bridge points at another node than the
+	one that issued it, and that the node's database was restored from an
+	older backup. Then this asks that node again. No record: the swap is
+	recorded as lost. There after all: the bridge settles it if it still
+	can.
+
+	A swap raised in needs_operator while the bridge is still driving it
+	is refused.`,
 	Action: actionDecorator(func(ctx *cli.Context) error {
 		if ctx.NArg() != 1 {
 			return cli.ShowCommandHelp(ctx, "resolve")

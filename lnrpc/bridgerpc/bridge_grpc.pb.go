@@ -61,14 +61,16 @@ type BridgeClient interface {
 	//only for an admin macaroon.
 	ExportSha256Seed(ctx context.Context, in *ExportSha256SeedRequest, opts ...grpc.CallOption) (*ExportSha256SeedResponse, error)
 	// lncli: `bridge resolve`
-	//ResolveSwap decides a swap the bridge stopped in paying for the operator,
-	//by asking the paying node again what became of the payment. None or
-	//failed: the swap fails, and the payer's held payment is cancelled, which
-	//refunds them. Succeeded: the payer's payment is settled with the preimage
-	//and the swap is paid. Still in flight: refused, since the payment may yet
-	//go either way. Only for an admin macaroon, and only for a swap
-	//needs_operator lists as stopped, not one raised while it is still being
-	//driven.
+	//ResolveSwap decides a swap the bridge stopped in paying or paid for the
+	//operator. Stopped in paying, it asks the paying node again what became of
+	//the payment. None or failed: the swap fails, and the payer's held payment
+	//is cancelled, which refunds them. Succeeded: the payer's payment is
+	//settled with the preimage and the swap is paid. Still in flight: refused,
+	//since the payment may yet go either way. Stopped in paid, it asks the
+	//incoming node again for the hold invoice. No record: the swap is lost.
+	//There after all: the bridge settles it if it still can. Only for an admin
+	//macaroon, and only for a swap needs_operator lists as stopped, not one
+	//raised while it is still being driven.
 	ResolveSwap(ctx context.Context, in *ResolveSwapRequest, opts ...grpc.CallOption) (*Swap, error)
 }
 
@@ -190,14 +192,16 @@ type BridgeServer interface {
 	//only for an admin macaroon.
 	ExportSha256Seed(context.Context, *ExportSha256SeedRequest) (*ExportSha256SeedResponse, error)
 	// lncli: `bridge resolve`
-	//ResolveSwap decides a swap the bridge stopped in paying for the operator,
-	//by asking the paying node again what became of the payment. None or
-	//failed: the swap fails, and the payer's held payment is cancelled, which
-	//refunds them. Succeeded: the payer's payment is settled with the preimage
-	//and the swap is paid. Still in flight: refused, since the payment may yet
-	//go either way. Only for an admin macaroon, and only for a swap
-	//needs_operator lists as stopped, not one raised while it is still being
-	//driven.
+	//ResolveSwap decides a swap the bridge stopped in paying or paid for the
+	//operator. Stopped in paying, it asks the paying node again what became of
+	//the payment. None or failed: the swap fails, and the payer's held payment
+	//is cancelled, which refunds them. Succeeded: the payer's payment is
+	//settled with the preimage and the swap is paid. Still in flight: refused,
+	//since the payment may yet go either way. Stopped in paid, it asks the
+	//incoming node again for the hold invoice. No record: the swap is lost.
+	//There after all: the bridge settles it if it still can. Only for an admin
+	//macaroon, and only for a swap needs_operator lists as stopped, not one
+	//raised while it is still being driven.
 	ResolveSwap(context.Context, *ResolveSwapRequest) (*Swap, error)
 	mustEmbedUnimplementedBridgeServer()
 }

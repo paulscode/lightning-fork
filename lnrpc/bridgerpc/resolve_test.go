@@ -64,6 +64,16 @@ type resolveFixture struct {
 func newResolveFixture(t *testing.T, pmt node.Payment) *resolveFixture {
 	t.Helper()
 
+	return newStoppedFixture(t, pmt, swap.Paying, true)
+}
+
+// newStoppedFixture is a swap the runner stopped in state, whose hold invoice
+// the incoming node has (invoiceKnown) or has deleted.
+func newStoppedFixture(t *testing.T, pmt node.Payment, state swap.State,
+	invoiceKnown bool) *resolveFixture {
+
+	t.Helper()
+
 	fx := &resolveFixture{
 		settled:   make(chan node.Preimage, 1),
 		cancelled: make(chan node.Hash, 1),
@@ -79,7 +89,7 @@ func newResolveFixture(t *testing.T, pmt node.Payment) *resolveFixture {
 		return InvoiceStatus{
 			State: InvoiceAccepted, AmountMsat: 1000,
 			ExpiryHeight: 500,
-		}, true, nil
+		}, invoiceKnown, nil
 	}
 	deps.SettleInvoice = func(_ context.Context, pre [32]byte) error {
 		select {
@@ -123,12 +133,17 @@ func newResolveFixture(t *testing.T, pmt node.Payment) *resolveFixture {
 	}
 
 	now := time.Now()
-	require.NoError(t, svc.journal.Put(ctx, store.Record{
-		Hash: fx.hash, State: swap.Paying, Binding: swap.HashLinked,
+	rec := store.Record{
+		Hash: fx.hash, State: state, Binding: swap.HashLinked,
 		Invoice: "sideA-payout", IncomingMsat: 1000,
 		OutgoingMsat: 900, OutgoingCLTVLimit: 80,
 		Created: now, Updated: now,
-	}))
+	}
+	if state == swap.Paid {
+		rec.Preimage = fx.pre
+		rec.OutgoingPreimage = fx.pre
+	}
+	require.NoError(t, svc.journal.Put(ctx, rec))
 	svc.markStopped(fx.hash, "the paying node has no record")
 
 	fx.svc = svc
@@ -346,4 +361,46 @@ func TestDrivesRacingStop(t *testing.T) {
 		svc.stop()
 		wg.Wait()
 	}
+}
+
+// TestResolveAPaidSwapWhoseInvoiceIsGoneIsLost: the operator has ruled out
+// another node and a restored database, and the node still has no record of
+// the hold invoice, so the payout cannot be claimed back.
+func TestResolveAPaidSwapWhoseInvoiceIsGoneIsLost(t *testing.T) {
+	t.Parallel()
+
+	fx := newStoppedFixture(t, node.Payment{}, swap.Paid, false)
+
+	got, err := fx.resolve(t)
+	require.NoError(t, err)
+	require.Equal(t, swap.Lost.String(), got.State)
+	require.Equal(t, swap.Lost, fx.state(t))
+
+	asked, _ := fx.out.lookups()
+	require.Zero(t, asked, "a paid swap asks the incoming node, not the "+
+		"paying one")
+
+	ops := fx.svc.needsOperator(context.Background())
+	require.Len(t, ops, 1)
+	require.Contains(t, ops[0], "lost")
+}
+
+// TestResolveAPaidSwapWhoseInvoiceIsBackSettles: the node has the invoice
+// after all, so the runner takes the swap back and claims it.
+func TestResolveAPaidSwapWhoseInvoiceIsBackSettles(t *testing.T) {
+	t.Parallel()
+
+	fx := newStoppedFixture(t, node.Payment{}, swap.Paid, true)
+
+	got, err := fx.resolve(t)
+	require.NoError(t, err)
+	require.Equal(t, swap.Paid.String(), got.State)
+
+	select {
+	case pre := <-fx.settled:
+		require.Equal(t, fx.pre, node.Preimage(pre))
+	case <-time.After(10 * time.Second):
+		t.Fatal("the payer's payment was not settled")
+	}
+	require.Empty(t, fx.svc.needsOperator(context.Background()))
 }
