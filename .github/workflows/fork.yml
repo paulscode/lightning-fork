@@ -67,6 +67,12 @@ jobs:
             ./routing/... ./peer/... ./sweep/... ./contractcourt/... \
             ./invoices/... ./chanacceptor/... ./lncfg/... \
             ./shachain/... ./payments/... ./onionmessage/... ./autopilot/...
+      - name: Race detector (chain watcher and chain identity check)
+        # Upstream's unit-race job is switched off here (see the top). These
+        # packages hold the fork's own concurrent code: the chain watcher
+        # refreshes the channel it watches, which upstream's never does, and
+        # the chain identity check polls the node from its own goroutine.
+        run: go test -count=1 -race ./chainreg/... ./contractcourt/...
       - name: Watchtower tests
         # On their own: the client tests wait a fixed time for backups to
         # reach the tower, which a runner busy with the step above can miss.
