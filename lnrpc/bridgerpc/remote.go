@@ -45,10 +45,14 @@ type Remote struct {
 	chain    chainrpc.ChainKitClient
 
 	// tip is the last height BestBlock read from the node synced to its
-	// chain, and tipAt when; see routeHeight. now is the clock, for tests.
+	// chain, and tipAt when; see routeHeight. key is the identity key the
+	// last GetInfo gave, and keyAt when; see IdentityKey. now is the clock,
+	// for tests.
 	tipMu sync.Mutex
 	tip   int32
 	tipAt time.Time
+	key   string
+	keyAt time.Time
 	now   func() time.Time
 }
 
@@ -363,19 +367,45 @@ func (r *Remote) NodeKey(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("reading the SHA256 node's identity: %w",
 			err)
 	}
+	r.noteKey(info.GetIdentityPubkey())
 
 	return info.GetIdentityPubkey(), nil
 }
 
 // IdentityKey is the SHA256 node's identity key, as a swap records the node
 // that issued its hold invoice.
+//
+// From the bridge's last GetInfo when that is recent, as routeHeight takes
+// the tip: every toBLAKE2b quote asks for this, and stock lnd can take most
+// of a minute to answer GetInfo, which a quote would spend out of the
+// invoice's remaining life. The bridge polls GetInfo every pollInterval, and
+// a node behind this address is replaced by another only by an operator, not
+// within that.
 func (r *Remote) IdentityKey(ctx context.Context) (string, error) {
-	key, err := r.NodeKey(ctx)
+	r.tipMu.Lock()
+	key, at := r.key, r.keyAt
+	r.tipMu.Unlock()
+	if key != "" && r.now().Sub(at) <= routeTipAge {
+		return key, nil
+	}
+
+	got, err := r.NodeKey(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	return checkedKey(key)
+	return checkedKey(got)
+}
+
+// noteKey keeps an identity key a GetInfo gave, if it is one.
+func (r *Remote) noteKey(key string) {
+	key, err := checkedKey(key)
+	if err != nil {
+		return
+	}
+	r.tipMu.Lock()
+	r.key, r.keyAt = key, r.now()
+	r.tipMu.Unlock()
 }
 
 // Pay sends a payment and waits for it to resolve.
@@ -713,6 +743,7 @@ func (r *Remote) BestBlock(ctx context.Context) (BlockInfo, error) {
 	}
 	// A node that has fallen behind leaves no tip for routeHeight, which
 	// then asks the height and is refused, as before.
+	r.noteKey(info.GetIdentityPubkey())
 	r.tipMu.Lock()
 	if out.SyncedToChain {
 		r.tip, r.tipAt = out.Height, r.now()

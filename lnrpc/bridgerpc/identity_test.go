@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/stretchr/testify/require"
@@ -27,14 +28,37 @@ func TestIdentityKeyIsWhatASwapRecords(t *testing.T) {
 	_, err = NewLocal(&Deps{}).IdentityKey(ctx)
 	require.Error(t, err)
 
-	r := &Remote{main: &fakeMain{info: &lnrpc.GetInfoResponse{
-		IdentityPubkey: key,
-	}}}
+	now := time.Unix(1_800_000_000, 0)
+	main := &fakeMain{info: &lnrpc.GetInfoResponse{IdentityPubkey: key}}
+	r := &Remote{main: main, now: func() time.Time { return now }}
 	got, err = r.IdentityKey(ctx)
 	require.NoError(t, err)
 	require.Equal(t, key, got)
 
-	r = &Remote{main: &fakeMain{info: &lnrpc.GetInfoResponse{}}}
+	// A recent answer serves the next quote without asking again; one
+	// older than the bridge's polls is asked for afresh.
+	other := "03" + strings.Repeat("cd", 32)
+	main.info = &lnrpc.GetInfoResponse{IdentityPubkey: other}
+	got, err = r.IdentityKey(ctx)
+	require.NoError(t, err)
+	require.Equal(t, key, got)
+	now = now.Add(routeTipAge + time.Second)
+	got, err = r.IdentityKey(ctx)
+	require.NoError(t, err)
+	require.Equal(t, other, got)
+
+	// The bridge's tip polls keep it fresh.
+	main.info = &lnrpc.GetInfoResponse{IdentityPubkey: key, BlockHeight: 7}
+	now = now.Add(routeTipAge + time.Second)
+	_, err = r.BestBlock(ctx)
+	require.NoError(t, err)
+	main.info = &lnrpc.GetInfoResponse{}
+	got, err = r.IdentityKey(ctx)
+	require.NoError(t, err)
+	require.Equal(t, key, got)
+
+	r = &Remote{main: &fakeMain{info: &lnrpc.GetInfoResponse{}},
+		now: time.Now}
 	_, err = r.IdentityKey(ctx)
 	require.Error(t, err)
 }
