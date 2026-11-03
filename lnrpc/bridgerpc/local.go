@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -229,6 +230,24 @@ func (l *Local) NodeKey() string {
 	}
 
 	return l.deps.NodeKey
+}
+
+// IdentityKey is this node's identity key, as a swap records the node that
+// issued its hold invoice.
+func (l *Local) IdentityKey(context.Context) (string, error) {
+	return checkedKey(l.NodeKey())
+}
+
+// checkedKey is a node's identity key in the form a swap records it: a
+// compressed public key in lower-case hex.
+func checkedKey(key string) (string, error) {
+	key = strings.ToLower(key)
+	if k, err := hex.DecodeString(key); err != nil || len(k) != 33 {
+		return "", fmt.Errorf("the node gives %q as its identity key, "+
+			"which is not a compressed public key", key)
+	}
+
+	return key, nil
 }
 
 // BlockHeight is the tip this node sees.

@@ -367,6 +367,17 @@ func (r *Remote) NodeKey(ctx context.Context) (string, error) {
 	return info.GetIdentityPubkey(), nil
 }
 
+// IdentityKey is the SHA256 node's identity key, as a swap records the node
+// that issued its hold invoice.
+func (r *Remote) IdentityKey(ctx context.Context) (string, error) {
+	key, err := r.NodeKey(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	return checkedKey(key)
+}
+
 // Pay sends a payment and waits for it to resolve.
 //
 // It returns an in-flight payment, not an error, when the attempt runs out of
