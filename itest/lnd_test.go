@@ -111,6 +111,16 @@ func TestLightningNetworkDaemon(t *testing.T) {
 
 	// Get the binary path and setup the harness test.
 	binary := getLndBinary(t)
+
+	// A BLAKE2b regtest is a Bitcoin Knots one, and only the bitcoind miner
+	// can be told where BLAKE2b activates.
+	if node.Blake2bHeight() != 0 && *minerBackendFlag != "bitcoind" {
+		t.Fatalf("blake2bheight needs minerbackend=bitcoind, got %q",
+			*minerBackendFlag)
+	}
+
+	checkBlake2bSkippedCases(t)
+
 	var minerCfg *miner.MinerConfig
 	if minerBackendFlag != nil && *minerBackendFlag != "" {
 		minerCfg = &miner.MinerConfig{
@@ -122,6 +132,13 @@ func TestLightningNetworkDaemon(t *testing.T) {
 		t, binary, *dbBackendFlag, *nativeSQLFlag, feeService, minerCfg,
 	)
 	defer harnessTest.Stop()
+
+	if node.Blake2bHeight() != 0 &&
+		harnessTest.ChainBackendName() != "bitcoind" {
+
+		t.Fatalf("blake2bheight needs backend=bitcoind, got %v",
+			harnessTest.ChainBackendName())
+	}
 
 	// Get the current block height.
 	height := harnessTest.CurrentHeight()
@@ -135,6 +152,8 @@ func TestLightningNetworkDaemon(t *testing.T) {
 			testCase.Name)
 
 		success := t.Run(name, func(t1 *testing.T) {
+			skipOnBlake2b(t1, testCase.Name)
+
 			// Create a separate harness test for the testcase to
 			// avoid overwriting the external harness test that is
 			// tied to the parent test.

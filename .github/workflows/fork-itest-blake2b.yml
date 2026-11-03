@@ -1,0 +1,79 @@
+name: Fork integration tests (BLAKE2b regtest)
+
+# The integration tests on a regtest where BLAKE2b activates at height 10, with
+# Bitcoin Knots as chain backend and miner at its default policy. The other
+# integration runs use a stock SHA256d regtest, so this is the only one that
+# takes the nodes through BLAKE2b headers. The cases Knots' default policy
+# cannot pass are skipped by the harness (itest/lnd_blake2b_test.go).
+on:
+  push:
+    branches: ['blake2b', 'blake2b-next', 'blake2b-next-*']
+  # Pull requests run it only when they change something the job builds or
+  # runs, so documentation and packaging changes do not start it.
+  pull_request:
+    paths:
+      - '**.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - 'Makefile'
+      - 'make/**'
+      - '.github/actions/**'
+      - '.github/workflows/fork-itest-blake2b.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOWORK: 'off'
+  GO_VERSION: '1.27.3'
+  TRANCHES: 16
+  BLAKE2B_HEIGHT: 10
+  KNOTS_VERSION: '29.4.3.knots20260508'
+  # SHA256 of bitcoin-${KNOTS_VERSION}-x86_64-linux-gnu.tar.gz, as listed in
+  # the release's SHA256SUMS.
+  KNOTS_SHA256: '4c67f1139b668fc3b98e339dd16112c636b2c0f42c2294b98fb92d1d27943e24'
+
+jobs:
+  itest:
+    name: itest bitcoind blake2b
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          key-prefix: fork-integration-test-blake2b
+
+      - name: Install Bitcoin Knots
+        run: |
+          tarball="bitcoin-${KNOTS_VERSION}-x86_64-linux-gnu.tar.gz"
+          curl -sSfL -o "$tarball" \
+            "https://bitcoinknots.org/files/29.x/${KNOTS_VERSION}/${tarball}"
+          echo "${KNOTS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball"
+          sudo install -m 0755 "bitcoin-${KNOTS_VERSION}/bin/bitcoind" /usr/local/bin/bitcoind
+          bitcoind -version | sed -n 1p
+
+      - name: Integration tests
+        run: make itest-parallel backend=bitcoind minerbackend=bitcoind blake2b=${{ env.BLAKE2B_HEIGHT }} tranches=${{ env.TRANCHES }} shuffleseed=${{ github.run_id }} verbose=1
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-itest-bitcoind-blake2b
+          path: |
+            itest/**/*.log
+          include-hidden-files: true
+          retention-days: 7

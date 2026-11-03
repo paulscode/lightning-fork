@@ -173,6 +173,16 @@ func (b *BitcoindMinerBackend) Start(setupChain bool,
 	}
 
 	cmdArgs = append(cmdArgs, b.extraArgs...)
+	cmdArgs = append(cmdArgs, node.Blake2bBitcoindArgs()...)
+
+	// Bitcoin Knots, which the BLAKE2b regtest needs, listens for Tor by
+	// default: it takes the first -bind for its onion service and treats
+	// every connection to it as Tor, without the whitelist above.
+	// Transactions then reach the chain backend only at the random
+	// inventory interval, sometimes too late for a test.
+	if node.Blake2bHeight() > 0 {
+		cmdArgs = append(cmdArgs, "-listenonion=0")
+	}
 
 	// Start bitcoind process.
 	b.cmd = exec.Command("bitcoind", cmdArgs...)
