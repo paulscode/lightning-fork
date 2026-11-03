@@ -96,7 +96,8 @@ on this node's network, the bridge stays down and tries again every minute
 while this node runs as usual. `needs_operator`
 lists swaps that need you: one that ended lost (paid out, and the payment
 coming in could not be claimed), one the bridge stopped driving because it
-must not decide it alone, or one it raised while still driving it (a paying
+must not decide it alone or could not go on with its record, or one it raised
+while still driving it (a paying
 node that contradicted itself ten times in a row), which stays listed until
 its driving ends. Watch that list. It is filled while the bridge is
 on, and while it is off but still finishing swaps. A swap stopped while paying
@@ -105,10 +106,15 @@ almost always means it never left. Once you have ruled out the two cases where
 it did (that node's database restored from a backup, or payments deleted by
 hand), `lncli bridge resolve <payment_hash>` asks the node again: no record or
 failed refunds the payer, succeeded settles their payment, and still in
-flight is refused. It is only for a swap listed as stopped (one still being
-driven is refused), and the bridge must still point at the SHA256 node it
-used for that swap: another one has no record of the payment, which reads as
-never sent. It needs the admin macaroon. `unfinished` counts the
+flight is refused. A swap stopped while paid means the payout was made and
+the node that took the payer's payment has no record of the hold invoice that
+claims it; once you have ruled out the bridge reading another node and a
+restored database, the same command asks that node again: still no record
+and the swap is recorded as lost, there after all and the bridge settles it.
+It is only for a swap listed as stopped (one still being driven is refused),
+and the bridge must still point at the SHA256 node it used for that swap:
+another one has no record of the payment, which reads as never sent. It needs
+the admin macaroon. `unfinished` counts the
 swaps the journal has not finished (a lost one is final and not counted),
 whatever the bridge's state: wait for it to be 0 before turning the bridge
 off or moving it to another SHA256 node.

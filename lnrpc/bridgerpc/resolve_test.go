@@ -5,6 +5,7 @@ package bridgerpc
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -64,13 +65,13 @@ type resolveFixture struct {
 func newResolveFixture(t *testing.T, pmt node.Payment) *resolveFixture {
 	t.Helper()
 
-	return newStoppedFixture(t, pmt, swap.Paying, true)
+	return newStoppedFixture(t, pmt, swap.Paying, true, nil)
 }
 
 // newStoppedFixture is a swap the runner stopped in state, whose hold invoice
 // the incoming node has (invoiceKnown) or has deleted.
 func newStoppedFixture(t *testing.T, pmt node.Payment, state swap.State,
-	invoiceKnown bool) *resolveFixture {
+	invoiceKnown bool, lookupErr error) *resolveFixture {
 
 	t.Helper()
 
@@ -89,7 +90,7 @@ func newStoppedFixture(t *testing.T, pmt node.Payment, state swap.State,
 		return InvoiceStatus{
 			State: InvoiceAccepted, AmountMsat: 1000,
 			ExpiryHeight: 500,
-		}, invoiceKnown, nil
+		}, invoiceKnown, lookupErr
 	}
 	deps.SettleInvoice = func(_ context.Context, pre [32]byte) error {
 		select {
@@ -369,7 +370,7 @@ func TestDrivesRacingStop(t *testing.T) {
 func TestResolveAPaidSwapWhoseInvoiceIsGoneIsLost(t *testing.T) {
 	t.Parallel()
 
-	fx := newStoppedFixture(t, node.Payment{}, swap.Paid, false)
+	fx := newStoppedFixture(t, node.Payment{}, swap.Paid, false, nil)
 
 	got, err := fx.resolve(t)
 	require.NoError(t, err)
@@ -383,6 +384,28 @@ func TestResolveAPaidSwapWhoseInvoiceIsGoneIsLost(t *testing.T) {
 	ops := fx.svc.needsOperator(context.Background())
 	require.Len(t, ops, 1)
 	require.Contains(t, ops[0], "lost")
+
+	// Decided once: a second ask is refused, and the swap stays lost.
+	_, err = fx.resolve(t)
+	require.Error(t, err)
+	require.Equal(t, swap.Lost, fx.state(t))
+}
+
+// TestResolveAPaidSwapLeavesItStoppedWhenTheNodeDoesNotAnswer: no answer is
+// not "no record", so nothing is decided.
+func TestResolveAPaidSwapLeavesItStoppedWhenTheNodeDoesNotAnswer(t *testing.T) {
+	t.Parallel()
+
+	fx := newStoppedFixture(t, node.Payment{}, swap.Paid, true,
+		errors.New("connection refused"))
+
+	_, err := fx.resolve(t)
+	require.Error(t, err)
+	require.Equal(t, swap.Paid, fx.state(t))
+
+	ops := fx.svc.needsOperator(context.Background())
+	require.Len(t, ops, 1)
+	require.Contains(t, ops[0], "stopped")
 }
 
 // TestResolveAPaidSwapWhoseInvoiceIsBackSettles: the node has the invoice
@@ -390,7 +413,7 @@ func TestResolveAPaidSwapWhoseInvoiceIsGoneIsLost(t *testing.T) {
 func TestResolveAPaidSwapWhoseInvoiceIsBackSettles(t *testing.T) {
 	t.Parallel()
 
-	fx := newStoppedFixture(t, node.Payment{}, swap.Paid, true)
+	fx := newStoppedFixture(t, node.Payment{}, swap.Paid, true, nil)
 
 	got, err := fx.resolve(t)
 	require.NoError(t, err)

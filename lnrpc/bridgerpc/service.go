@@ -452,7 +452,7 @@ func (s *service) build(name string, in node.Incoming, out node.Outgoing,
 	sd.runner = &runner.Runner{
 		Driver: &driver.Driver{
 			In: sd.in, Out: sd.out, Store: s.journal,
-			Policy: s.res.margin,
+			Policy: s.res.margin, Log: bridgeLogger(name),
 		},
 		Store:        s.journal,
 		Rates:        runner.Rates(s.spacing(invert)),

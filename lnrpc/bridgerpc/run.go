@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/paulscode/lightning-fork-bridge/chainrate"
-	"github.com/paulscode/lightning-fork-bridge/driver"
 	"github.com/paulscode/lightning-fork-bridge/node"
 	"github.com/paulscode/lightning-fork-bridge/quote"
 	"github.com/paulscode/lightning-fork-bridge/runner"
@@ -536,11 +535,13 @@ func (s *service) drive(sd *side, hash node.Hash) {
 				hex.EncodeToString(hash[:]))
 
 		default:
+			// The runner gives up only on what retrying cannot
+			// change: a decision it must not take alone, or a record
+			// or journal it cannot go on with. Either way the swap is
+			// unattended until someone looks, so it is listed.
 			log.Errorf("Bridge failed driving %s swap %s: %v",
 				sd.name, hex.EncodeToString(hash[:]), err)
-			if errors.Is(err, driver.ErrNeedsOperator) {
-				s.markStopped(hash, err.Error())
-			}
+			s.markStopped(hash, err.Error())
 		}
 	}()
 }

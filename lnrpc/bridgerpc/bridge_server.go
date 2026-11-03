@@ -1173,9 +1173,10 @@ func swapMessage(rec store.Record) *Swap {
 	return out
 }
 
-// ResolveSwap decides a swap the bridge stopped in paying for the operator, by
-// asking the paying node again what became of the payment (see
-// service.resolve).
+// ResolveSwap decides a swap the bridge stopped in paying or paid for the
+// operator, by asking the paying node again what became of the payment, or
+// for one stopped in paid the incoming node what became of its hold invoice
+// (see service.resolve and service.resolvePaid).
 func (s *Server) ResolveSwap(ctx context.Context, req *ResolveSwapRequest) (
 	*Swap, error) {
 
@@ -1205,7 +1206,7 @@ func (s *Server) ResolveSwap(ctx context.Context, req *ResolveSwapRequest) (
 	case errors.Is(err, errNotStopped):
 		return nil, coded(codes.FailedPrecondition, "not_stopped",
 			err.Error()+"; resolve is for a swap needs_operator "+
-				"lists as stopped while paying")
+				"lists as stopped while paying or paid")
 
 	case errors.Is(err, errStillInFlight):
 		return nil, coded(codes.FailedPrecondition, "in_flight",
