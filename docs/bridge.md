@@ -85,7 +85,8 @@ quote reads those as well as the bridge's journal, so that a payment hash a
 payer already paid into is not quoted again if the journal has lost its
 record. The bridge runs with them on, and this node logs a warning at startup
 when either is on here. A swap whose hold invoice is deleted this way still
-ends, as given back, unless it had already paid out; that one is listed in
+ends without paying out (an unpaid one as lapsed, one paid into as given
+back), unless it had already paid out; that one is listed in
 `needs_operator`, since the deleted invoice was its only claim.
 
 `lncli bridge status` says whether the bridge can serve swaps right now and,

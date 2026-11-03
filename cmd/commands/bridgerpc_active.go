@@ -238,7 +238,7 @@ var bridgeResolveCommand = cli.Command{
 	Stopped while paid: the payout was made, and the node that took the
 	payer's payment has no record of the hold invoice that claims it. lnd
 	deletes only a cancelled invoice, so the claim is almost certainly
-	gone. Rule out first that the bridge points at another node than the
+	gone. First rule out that the bridge points at a node other than the
 	one that issued it, and that the node's database was restored from an
 	older backup. Then this asks that node again. No record: the swap is
 	recorded as lost. There after all: the bridge settles it if it still
