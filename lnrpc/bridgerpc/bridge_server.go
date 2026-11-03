@@ -1207,6 +1207,11 @@ func (s *Server) ResolveSwap(ctx context.Context, req *ResolveSwapRequest) (
 		return nil, coded(codes.FailedPrecondition, "not_stopped",
 			err.Error())
 
+	case errors.Is(err, errWrongNode):
+		return nil, coded(codes.FailedPrecondition, "wrong_node",
+			err.Error()+"; point the bridge back at that node and try "+
+				"again")
+
 	case errors.Is(err, errStillInFlight):
 		return nil, coded(codes.FailedPrecondition, "in_flight",
 			"the paying node says the payment is still in flight; "+

@@ -23,6 +23,12 @@ var (
 	// errStillInFlight is returned when the paying node says the payment
 	// of a stopped swap is still going.
 	errStillInFlight = errors.New("the payment is still in flight")
+
+	// errWrongNode is returned when the operator asks to resolve a paid
+	// swap while the bridge reads an incoming node other than the one that
+	// issued its hold invoice, which has no record of it either way.
+	errWrongNode = errors.New("the bridge is not connected to the node " +
+		"that issued the hold invoice")
 )
 
 // resolve decides a swap the runner stopped in paying, for the operator, by
@@ -149,7 +155,9 @@ func (s *service) resolve(ctx context.Context, hash node.Hash) (store.Record,
 // it:
 //
 //   - Still no record: the swap is lost, as it is when the invoice is there
-//     but can no longer be claimed, and stays listed as lost.
+//     but can no longer be claimed, and stays listed as lost. Refused if the
+//     swap recorded which node issued the invoice and the bridge is reading
+//     another: that one has no record of it whatever became of it.
 //   - The invoice is there after all: the runner takes the swap back, and
 //     settles it or files it lost by what the invoice is doing.
 func (s *service) resolvePaid(ctx context.Context, sd *side,
@@ -159,6 +167,19 @@ func (s *service) resolvePaid(ctx context.Context, sd *side,
 	_, err := sd.in.LookupInvoice(ctx, rec.Hash)
 	switch {
 	case errors.Is(err, node.ErrUnknownHash):
+		if rec.IncomingNode != "" {
+			key, err := sd.in.IdentityKey(ctx)
+			if err != nil {
+				return rec, fmt.Errorf("asking the incoming node "+
+					"who it is: %w", err)
+			}
+			if key != rec.IncomingNode {
+				return rec, fmt.Errorf("%w: it was issued by %s, "+
+					"and the bridge reads %s", errWrongNode,
+					rec.IncomingNode, key)
+			}
+		}
+
 		said = "has no record of the hold invoice"
 		_, err = sd.runner.Driver.Apply(ctx, &rec, swap.IncomingUnsettleable)
 		if err != nil {

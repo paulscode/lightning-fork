@@ -86,11 +86,15 @@ payer already paid into is not quoted again if the journal has lost its
 record. The bridge runs with them on, and this node logs a warning at startup
 when either is on here. A swap whose hold invoice is deleted this way still
 ends without paying out (an unpaid one as lapsed, one paid into as given
-back). One the bridge had not cancelled itself is logged as a warning, since
-a node other than the one that issued the invoice gives the same answer, and
-that node keeps the payer's payment until it expires. A swap that had already
-paid out does not end; it is listed in `needs_operator`, since the deleted
-invoice was its only claim.
+back). Each swap records the identity key of the node that issued its hold
+invoice, and ends this way only when the node the bridge reads is that one:
+another node gives the same answer while the issuer may still hold the
+payer's payment. Read from another node, the swap stops and is listed in
+`needs_operator` with both keys; point the bridge back at its issuer, and lnd
+drives it again when it restarts. A swap quoted before this release records no
+key, so it ends without the check and a warning is logged. A swap that had
+already paid out does not end; it is listed in `needs_operator`, since the
+deleted invoice was its only claim.
 
 `lncli bridge status` says whether the bridge can serve swaps right now and,
 if not, why, and how far the SHA256 node has got (`sha256_node`). If the SHA256
@@ -112,9 +116,12 @@ hand), `lncli bridge resolve <payment_hash>` asks the node again: no record or
 failed refunds the payer, succeeded settles their payment, and still in
 flight is refused. A swap stopped while paid means the payout was made and
 the node that took the payer's payment has no record of the hold invoice that
-claims it; once you have ruled out the bridge reading another node and a
-restored database, the same command asks that node again: still no record
-and the swap is recorded as lost, there after all and the bridge settles it.
+claims it; once you have ruled out a restored database, the same command
+asks that node again: still no record and the swap is recorded as lost,
+there after all and the bridge settles it. It refuses (`wrong_node`) while
+the bridge reads a node other than the one the swap records as the issuer;
+for a swap quoted before this release, which records none, rule that out
+yourself as well.
 It is only for a swap listed as stopped while paying or paid (one still being
 driven is refused, and one stopped in another state on its record is driven
 again when lnd restarts, once the cause given is fixed),

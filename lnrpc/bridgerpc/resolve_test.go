@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -412,6 +413,49 @@ func TestResolveAPaidSwapWhoseInvoiceIsGoneIsLost(t *testing.T) {
 	_, err = fx.resolve(t)
 	require.Error(t, err)
 	require.Equal(t, swap.Lost, fx.state(t))
+}
+
+// TestResolveAPaidSwapChecksItsIssuer: "no record" decides a paid swap only
+// from the node that issued its hold invoice. Read from another, the swap is
+// left stopped and the operator told which node to point back at.
+func TestResolveAPaidSwapChecksItsIssuer(t *testing.T) {
+	t.Parallel()
+
+	issued := func(fx *resolveFixture, key string) {
+		rec, err := fx.svc.journal.Get(context.Background(), fx.hash)
+		require.NoError(t, err)
+		rec.IncomingNode = key
+		require.NoError(t, fx.svc.journal.Put(context.Background(), rec))
+	}
+
+	t.Run("its issuer", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newStoppedFixture(t, node.Payment{}, swap.Paid, false, nil)
+		issued(fx, "02"+strings.Repeat("11", 32))
+
+		_, err := fx.resolve(t)
+		require.NoError(t, err)
+		require.Equal(t, swap.Lost, fx.state(t))
+	})
+
+	t.Run("another node", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newStoppedFixture(t, node.Payment{}, swap.Paid, false, nil)
+		other := "03" + strings.Repeat("cd", 32)
+		issued(fx, other)
+
+		_, err := fx.resolve(t)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		require.Contains(t, err.Error(), "wrong_node")
+		require.Contains(t, err.Error(), other)
+		require.Equal(t, swap.Paid, fx.state(t))
+
+		ops := fx.svc.needsOperator(context.Background())
+		require.Len(t, ops, 1)
+		require.Contains(t, ops[0], "stopped")
+	})
 }
 
 // TestResolveAPaidSwapLeavesItStoppedWhenTheNodeDoesNotAnswer: no answer is

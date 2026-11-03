@@ -67,10 +67,11 @@ type BridgeClient interface {
 	//is cancelled, which refunds them. Succeeded: the payer's payment is
 	//settled with the preimage and the swap is paid. Still in flight: refused,
 	//since the payment may yet go either way. Stopped in paid, it asks the
-	//incoming node again for the hold invoice. No record: the swap is lost.
-	//There after all: the bridge settles it if it still can. Only for an admin
-	//macaroon, and only for a swap needs_operator lists as stopped in paying
-	//or paid, not one raised while it is still being driven.
+	//incoming node again for the hold invoice. No record: the swap is lost,
+	//unless the swap records another node as the one that issued it, which is
+	//refused. There after all: the bridge settles it if it still can. Only for an
+	//admin macaroon, and only for a swap needs_operator lists as stopped in
+	//paying or paid, not one raised while it is still being driven.
 	ResolveSwap(ctx context.Context, in *ResolveSwapRequest, opts ...grpc.CallOption) (*Swap, error)
 }
 
@@ -198,10 +199,11 @@ type BridgeServer interface {
 	//is cancelled, which refunds them. Succeeded: the payer's payment is
 	//settled with the preimage and the swap is paid. Still in flight: refused,
 	//since the payment may yet go either way. Stopped in paid, it asks the
-	//incoming node again for the hold invoice. No record: the swap is lost.
-	//There after all: the bridge settles it if it still can. Only for an admin
-	//macaroon, and only for a swap needs_operator lists as stopped in paying
-	//or paid, not one raised while it is still being driven.
+	//incoming node again for the hold invoice. No record: the swap is lost,
+	//unless the swap records another node as the one that issued it, which is
+	//refused. There after all: the bridge settles it if it still can. Only for an
+	//admin macaroon, and only for a swap needs_operator lists as stopped in
+	//paying or paid, not one raised while it is still being driven.
 	ResolveSwap(context.Context, *ResolveSwapRequest) (*Swap, error)
 	mustEmbedUnimplementedBridgeServer()
 }
