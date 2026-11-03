@@ -91,7 +91,12 @@ invoice, and ends this way only when the node the bridge reads is that one:
 another node gives the same answer while the issuer may still hold the
 payer's payment. Read from another node, the swap stops and is listed in
 `needs_operator` with both keys; point the bridge back at its issuer, and lnd
-drives it again when it restarts. A swap quoted before this release records no
+drives it again when it restarts. If that node is gone for good (its data
+lost, or replaced by a node with another seed), `lncli bridge resolve
+--issuer_gone <payment_hash>` checks that the bridge reads another node and
+that it has no record of the invoice, then ends the swap without its issuer:
+given back if it never paid out (any HTLC the payer still has at the old node
+returns to them at its expiry), lost if it did. A swap quoted before this release records no
 key, so it ends without the check and a warning is logged. A swap that had
 already paid out does not end; it is listed in `needs_operator`, since the
 deleted invoice was its only claim.

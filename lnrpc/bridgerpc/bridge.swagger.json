@@ -403,6 +403,10 @@
           "type": "string",
           "format": "byte",
           "description": "The payment hash of the swap to decide."
+        },
+        "issuer_gone": {
+          "type": "boolean",
+          "description": "The operator says the node that issued the swap's hold invoice is gone\nfor good (its data lost, or replaced by a node with another seed). For a\nswap stopped because the bridge reads a node other than the one it\nrecords as the issuer, and only when that node has no record of the\ninvoice: the swap forgets which node issued it, and the bridge ends it as\nit ends a swap whose invoice was deleted (a paid one as lost). Refused\nwhile the bridge reads the issuer itself."
         }
       }
     },

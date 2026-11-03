@@ -494,3 +494,106 @@ func TestResolveAPaidSwapWhoseInvoiceIsBackSettles(t *testing.T) {
 	}
 	require.Empty(t, fx.svc.needsOperator(context.Background()))
 }
+
+// TestResolveIssuerGone: the operator says the node that issued a stopped
+// swap's hold invoice is gone for good. Checked first, then the swap is
+// decided without it: given back if it never paid out, lost if it did.
+func TestResolveIssuerGone(t *testing.T) {
+	t.Parallel()
+
+	here := "02" + strings.Repeat("11", 32)
+	gone := "03" + strings.Repeat("cd", 32)
+	issued := func(t *testing.T, fx *resolveFixture, key string) {
+		rec, err := fx.svc.journal.Get(context.Background(), fx.hash)
+		require.NoError(t, err)
+		rec.IncomingNode = key
+		require.NoError(t, fx.svc.journal.Put(context.Background(), rec))
+	}
+	resolveGone := func(fx *resolveFixture) (*Swap, error) {
+		return fx.srv.ResolveSwap(context.Background(),
+			&ResolveSwapRequest{Hash: fx.hash[:], IssuerGone: true})
+	}
+
+	t.Run("offered, issuer gone", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newStoppedFixture(t, node.Payment{}, swap.Offered, false,
+			nil)
+		issued(t, fx, gone)
+
+		// Without the flag, resolve says how to decide it.
+		_, err := fx.resolve(t)
+		require.Contains(t, err.Error(), "issuer_gone")
+
+		_, err = resolveGone(fx)
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return fx.state(t) == swap.Expired
+		}, 10*time.Second, 50*time.Millisecond)
+		rec, err := fx.svc.journal.Get(context.Background(), fx.hash)
+		require.NoError(t, err)
+		require.Empty(t, rec.IncomingNode)
+		require.Contains(t, rec.Note, gone)
+		require.Empty(t, fx.svc.needsOperator(context.Background()))
+	})
+
+	t.Run("paid, issuer gone", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newStoppedFixture(t, node.Payment{}, swap.Paid, false, nil)
+		issued(t, fx, gone)
+
+		got, err := resolveGone(fx)
+		require.NoError(t, err)
+		require.Equal(t, swap.Lost.String(), got.State)
+		require.Equal(t, swap.Lost, fx.state(t))
+	})
+
+	t.Run("the bridge reads the issuer", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newStoppedFixture(t, node.Payment{}, swap.Offered, false,
+			nil)
+		issued(t, fx, here)
+
+		_, err := resolveGone(fx)
+		require.Contains(t, err.Error(), "issuer_here")
+		require.Equal(t, swap.Offered, fx.state(t))
+	})
+
+	t.Run("the node read has the invoice", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newStoppedFixture(t, node.Payment{}, swap.Funded, true, nil)
+		issued(t, fx, gone)
+
+		_, err := resolveGone(fx)
+		require.Contains(t, err.Error(), "issuer_here")
+		require.Equal(t, swap.Funded, fx.state(t))
+	})
+
+	t.Run("still being driven", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newStoppedFixture(t, node.Payment{}, swap.Offered, false,
+			nil)
+		issued(t, fx, gone)
+		fx.svc.stoppedMu.Lock()
+		delete(fx.svc.stopped, fx.hash)
+		fx.svc.stoppedMu.Unlock()
+
+		_, err := resolveGone(fx)
+		require.Contains(t, err.Error(), "not_stopped")
+		require.Equal(t, swap.Offered, fx.state(t))
+	})
+
+	t.Run("no issuer recorded", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newStoppedFixture(t, node.Payment{}, swap.Paid, false, nil)
+
+		_, err := resolveGone(fx)
+		require.Contains(t, err.Error(), "not_stopped")
+		require.Equal(t, swap.Paid, fx.state(t))
+	})
+}

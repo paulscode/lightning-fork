@@ -1194,7 +1194,7 @@ func (s *Server) ResolveSwap(ctx context.Context, req *ResolveSwapRequest) (
 	var hash node.Hash
 	copy(hash[:], req.GetHash())
 
-	rec, err := svc.resolve(ctx, hash)
+	rec, err := svc.resolve(ctx, hash, req.GetIssuerGone())
 	switch {
 	case err == nil:
 		return swapMessage(rec), nil
@@ -1210,7 +1210,12 @@ func (s *Server) ResolveSwap(ctx context.Context, req *ResolveSwapRequest) (
 	case errors.Is(err, errWrongNode):
 		return nil, coded(codes.FailedPrecondition, "wrong_node",
 			err.Error()+"; point the bridge back at that node and try "+
-				"again")
+				"again, or, if that node is gone for good, resolve "+
+				"with issuer_gone")
+
+	case errors.Is(err, errIssuerHere):
+		return nil, coded(codes.FailedPrecondition, "issuer_here",
+			err.Error())
 
 	case errors.Is(err, errStillInFlight):
 		return nil, coded(codes.FailedPrecondition, "in_flight",

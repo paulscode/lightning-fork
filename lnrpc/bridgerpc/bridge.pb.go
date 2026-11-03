@@ -248,7 +248,16 @@ func (x *LookupSwapRequest) GetHash() []byte {
 type ResolveSwapRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The payment hash of the swap to decide.
-	Hash          []byte `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Hash []byte `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	//
+	//The operator says the node that issued the swap's hold invoice is gone
+	//for good (its data lost, or replaced by a node with another seed). For a
+	//swap stopped because the bridge reads a node other than the one it
+	//records as the issuer, and only when that node has no record of the
+	//invoice: the swap forgets which node issued it, and the bridge ends it as
+	//it ends a swap whose invoice was deleted (a paid one as lost). Refused
+	//while the bridge reads the issuer itself.
+	IssuerGone    bool `protobuf:"varint,2,opt,name=issuer_gone,json=issuerGone,proto3" json:"issuer_gone,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -288,6 +297,13 @@ func (x *ResolveSwapRequest) GetHash() []byte {
 		return x.Hash
 	}
 	return nil
+}
+
+func (x *ResolveSwapRequest) GetIssuerGone() bool {
+	if x != nil {
+		return x.IssuerGone
+	}
+	return false
 }
 
 type Swap struct {
@@ -1268,9 +1284,11 @@ const file_bridgerpc_bridge_proto_rawDesc = "" +
 	"\n" +
 	"expires_at\x18\t \x01(\x03R\texpiresAt\"'\n" +
 	"\x11LookupSwapRequest\x12\x12\n" +
-	"\x04hash\x18\x01 \x01(\fR\x04hash\"(\n" +
+	"\x04hash\x18\x01 \x01(\fR\x04hash\"I\n" +
 	"\x12ResolveSwapRequest\x12\x12\n" +
-	"\x04hash\x18\x01 \x01(\fR\x04hash\"\x96\x01\n" +
+	"\x04hash\x18\x01 \x01(\fR\x04hash\x12\x1f\n" +
+	"\vissuer_gone\x18\x02 \x01(\bR\n" +
+	"issuerGone\"\x96\x01\n" +
 	"\x04Swap\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\fR\x04hash\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12#\n" +

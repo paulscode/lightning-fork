@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/paulscode/lightning-fork-bridge/node"
 	"github.com/paulscode/lightning-fork-bridge/store"
@@ -29,6 +30,11 @@ var (
 	// issued its hold invoice, which has no record of it either way.
 	errWrongNode = errors.New("the bridge is not connected to the node " +
 		"that issued the hold invoice")
+
+	// errIssuerHere is returned when the operator says a swap's issuing
+	// node is gone while the bridge reads that very node, or the node it
+	// reads still has the invoice.
+	errIssuerHere = errors.New("the issuing node is not gone")
 )
 
 // resolve decides a swap the runner stopped in paying, for the operator, by
@@ -50,8 +56,8 @@ var (
 // Only a swap the runner stopped is decided here. One it is still driving
 // learns a failure or a success by itself, and recording one for it from here
 // as well would have two writers on one record.
-func (s *service) resolve(ctx context.Context, hash node.Hash) (store.Record,
-	error) {
+func (s *service) resolve(ctx context.Context, hash node.Hash,
+	issuerGone bool) (store.Record, error) {
 
 	s.resolveMu.Lock()
 	defer s.resolveMu.Unlock()
@@ -64,15 +70,28 @@ func (s *service) resolve(ctx context.Context, hash node.Hash) (store.Record,
 	_, stopped := s.stopped[hash]
 	s.stoppedMu.Unlock()
 
+	if issuerGone {
+		return s.resolveIssuerGone(ctx, rec, stopped)
+	}
+
 	if rec.State != swap.Paying && rec.State != swap.Paid {
 		if stopped {
 			// Stopped on its record rather than on a decision: there
-			// is nothing here for the operator to decide.
+			// is nothing here for the operator to decide, unless the
+			// node that issued its invoice is gone for good.
+			hint := ""
+			if rec.IncomingNode != "" {
+				hint = ". If it stopped because the bridge reads " +
+					"a node other than the one that issued its " +
+					"hold invoice, and that node is gone for " +
+					"good, resolve it with issuer_gone"
+			}
+
 			return rec, fmt.Errorf("%w: it stopped in %v, on "+
 				"something resolve cannot decide; fix what "+
 				"needs_operator gives as the cause, and lnd "+
-				"drives it again when it restarts",
-				errNotStopped, rec.State)
+				"drives it again when it restarts%s",
+				errNotStopped, rec.State, hint)
 		}
 
 		return rec, fmt.Errorf("%w: it is %v", errNotStopped, rec.State)
@@ -196,6 +215,94 @@ func (s *service) resolvePaid(ctx context.Context, sd *side,
 
 	log.Infof("Bridge swap %x resolved by the operator: paid out, and the "+
 		"incoming node %s, so the swap is %v", rec.Hash, said, rec.State)
+
+	s.drive(sd, rec.Hash)
+
+	return rec, nil
+}
+
+// resolveIssuerGone decides a swap stopped because the bridge reads a node
+// other than the one that issued its hold invoice, once the operator says
+// that node is gone for good: its data lost, or replaced by a node with
+// another seed. The swap's claim, or the payer's HTLC, went with it.
+//
+// Checked here rather than taken on trust: the bridge must still read a node
+// other than the recorded issuer, and that node must have no record of the
+// invoice. The swap then forgets which node issued it, and is decided as a
+// swap from before issuers were recorded: one that has not paid out ends as
+// given back (its payment checked first where one may have left), and a paid
+// one is lost.
+func (s *service) resolveIssuerGone(ctx context.Context, rec store.Record,
+	stopped bool) (store.Record, error) {
+
+	switch rec.State {
+	case swap.Offered, swap.Funded, swap.Failing, swap.Aborting,
+		swap.Expiring, swap.Paid:
+
+	default:
+		return rec, fmt.Errorf("%w: it is %v, and issuer_gone is for a "+
+			"swap whose hold invoice is held", errNotStopped,
+			rec.State)
+	}
+	if !stopped {
+		return rec, fmt.Errorf("%w: the bridge is still driving it",
+			errNotStopped)
+	}
+	if rec.IncomingNode == "" {
+		return rec, fmt.Errorf("%w: the swap does not record which node "+
+			"issued its hold invoice, so there is nothing to forget",
+			errNotStopped)
+	}
+
+	sd, _, err := s.route(ctx, rec.Invoice)
+	if err != nil {
+		return rec, fmt.Errorf("finding the direction that pays it: %w",
+			err)
+	}
+	key, err := sd.in.IdentityKey(ctx)
+	if err != nil {
+		return rec, fmt.Errorf("asking the incoming node who it is: %w",
+			err)
+	}
+	if key == rec.IncomingNode {
+		return rec, fmt.Errorf("%w: the bridge reads %s, the node that "+
+			"issued the hold invoice", errIssuerHere, key)
+	}
+	_, err = sd.in.LookupInvoice(ctx, rec.Hash)
+	switch {
+	case errors.Is(err, node.ErrUnknownHash):
+
+	case err != nil:
+		return rec, fmt.Errorf("asking the incoming node: %w", err)
+
+	default:
+		return rec, fmt.Errorf("%w: %s, which the bridge reads, has the "+
+			"hold invoice", errIssuerHere, key)
+	}
+
+	issuer := rec.IncomingNode
+	rec.IncomingNode = ""
+	rec.Note = fmt.Sprintf("the operator said %s, the node that issued "+
+		"the hold invoice, is gone", issuer)
+	rec.Updated = time.Now()
+	if err := s.journal.Put(ctx, rec); err != nil {
+		return rec, fmt.Errorf("recording the outcome: %w", err)
+	}
+	if rec.State == swap.Paid {
+		_, err := sd.runner.Driver.Apply(ctx, &rec,
+			swap.IncomingUnsettleable)
+		if err != nil {
+			return rec, fmt.Errorf("recording the outcome: %w", err)
+		}
+	}
+
+	s.stoppedMu.Lock()
+	delete(s.stopped, rec.Hash)
+	s.stoppedMu.Unlock()
+
+	log.Infof("Bridge swap %x resolved by the operator: %s, the node that "+
+		"issued its hold invoice, is gone; the swap in %v is decided "+
+		"without it", rec.Hash, issuer, rec.State)
 
 	s.drive(sd, rec.Hash)
 

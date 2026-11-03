@@ -165,6 +165,17 @@ message LookupSwapRequest {
 message ResolveSwapRequest {
     // The payment hash of the swap to decide.
     bytes hash = 1;
+
+    /*
+    The operator says the node that issued the swap's hold invoice is gone
+    for good (its data lost, or replaced by a node with another seed). For a
+    swap stopped because the bridge reads a node other than the one it
+    records as the issuer, and only when that node has no record of the
+    invoice: the swap forgets which node issued it, and the bridge ends it as
+    it ends a swap whose invoice was deleted (a paid one as lost). Refused
+    while the bridge reads the issuer itself.
+    */
+    bool issuer_gone = 2;
 }
 
 message Swap {

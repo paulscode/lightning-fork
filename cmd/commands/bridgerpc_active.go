@@ -215,6 +215,13 @@ var bridgeResolveCommand = cli.Command{
 	Name:      "resolve",
 	Usage:     "Decide a swap the bridge stopped while paying or paid.",
 	ArgsUsage: "payment_hash",
+	Flags: []cli.Flag{
+		cli.BoolFlag{
+			Name: "issuer_gone",
+			Usage: "the node that issued the swap's hold invoice " +
+				"is gone for good; see the description",
+		},
+	},
 	Description: `
 	For a swap 'lncli bridge status' lists in needs_operator as stopped.
 
@@ -245,6 +252,15 @@ var bridgeResolveCommand = cli.Command{
 	the swap records as having issued the invoice; a swap quoted before
 	the bridge recorded that names none, so rule that out yourself too.
 
+	--issuer_gone: for a swap stopped because the bridge reads a node other
+	than the one it records as having issued the hold invoice, when that
+	node is gone for good (its data lost, or replaced by a node with
+	another seed). Checked first: the bridge must read another node, and
+	that node must have no record of the invoice. The swap then forgets
+	its issuer and ends as given back, its payment checked first where
+	one may have left; a paid one is recorded as lost. Any HTLC the payer
+	still has at the old node returns to them only at its expiry.
+
 	A swap raised in needs_operator while the bridge is still driving it
 	is refused, and so is one stopped in another state because the bridge
 	could not go on with its record: fix the cause needs_operator gives,
@@ -262,7 +278,10 @@ var bridgeResolveCommand = cli.Command{
 		defer cleanUp()
 
 		resp, err := client.ResolveSwap(getContext(),
-			&bridgerpc.ResolveSwapRequest{Hash: hash})
+			&bridgerpc.ResolveSwapRequest{
+				Hash:       hash,
+				IssuerGone: ctx.Bool("issuer_gone"),
+			})
 		if err != nil {
 			return err
 		}
