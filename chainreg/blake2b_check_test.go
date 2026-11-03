@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +27,9 @@ const activationHeaderHex = "000000a0657e02138733654183a2c7320d85ca9d743fe139c4b
 const lastSHA256HeaderHex = "10000a205fca17a6566978303e989d163e1aa9dc6715eef5542e0000000000000000000080fe52c98f1c1f8484213dff5a88315f7c334d0705f7d79579b289781868c0dff5c1916a3d350217510c87ed"
 
 // scriptedRPC answers the three RPCs the check uses from fixed values.
+// headers may change while a check runs, through setHeaders.
 type scriptedRPC struct {
+	mu         sync.Mutex
 	chain      string
 	headers    int32
 	infoErr    error
@@ -39,6 +42,9 @@ type scriptedRPC struct {
 }
 
 func (s *scriptedRPC) GetBlockChainInfo() (*btcjson.GetBlockChainInfoResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.infoCalls++
 	if s.infoErr != nil {
 		return nil, s.infoErr
@@ -50,6 +56,14 @@ func (s *scriptedRPC) GetBlockChainInfo() (*btcjson.GetBlockChainInfoResult, err
 	return &btcjson.GetBlockChainInfoResult{
 		Chain: chain, Headers: s.headers, Blocks: s.headers,
 	}, nil
+}
+
+// setHeaders moves the node's header height while a check may be querying it.
+func (s *scriptedRPC) setHeaders(headers int32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.headers = headers
 }
 
 func (s *scriptedRPC) GetBlockHash(h int64) (*chainhash.Hash, error) {
@@ -228,7 +242,7 @@ func TestChainIdentityWaitsForHeight(t *testing.T) {
 		return err == nil && st.State == ChainIdentityWaiting &&
 			st.NodeHeaders == 900000
 	}, time.Second, time.Millisecond)
-	rpc.headers = 971774
+	rpc.setHeaders(971774)
 
 	require.NoError(t, <-done)
 	require.Equal(t, ChainIdentityConfirmed, readStatus(t, path).State)
