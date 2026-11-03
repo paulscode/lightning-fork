@@ -15,8 +15,10 @@ import (
 
 var (
 	// errNotStopped is returned when the operator asks to resolve a swap
-	// the bridge has not stopped for them in paying or paid.
-	errNotStopped = errors.New("the swap is not stopped in paying or paid")
+	// the bridge has not stopped for them in paying or paid: one it is still
+	// driving, or one it stopped elsewhere on its record.
+	errNotStopped = errors.New("resolve decides only a swap the bridge " +
+		"stopped in paying or paid")
 
 	// errStillInFlight is returned when the paying node says the payment
 	// of a stopped swap is still going.
@@ -52,13 +54,24 @@ func (s *service) resolve(ctx context.Context, hash node.Hash) (store.Record,
 	if err != nil {
 		return store.Record{}, err
 	}
-	if rec.State != swap.Paying && rec.State != swap.Paid {
-		return rec, fmt.Errorf("%w: it is %v", errNotStopped, rec.State)
-	}
-
 	s.stoppedMu.Lock()
 	_, stopped := s.stopped[hash]
 	s.stoppedMu.Unlock()
+
+	if rec.State != swap.Paying && rec.State != swap.Paid {
+		if stopped {
+			// Stopped on its record rather than on a decision: there
+			// is nothing here for the operator to decide.
+			return rec, fmt.Errorf("%w: it stopped in %v, on "+
+				"something resolve cannot decide; fix what "+
+				"needs_operator gives as the cause, and lnd "+
+				"drives it again when it restarts",
+				errNotStopped, rec.State)
+		}
+
+		return rec, fmt.Errorf("%w: it is %v", errNotStopped, rec.State)
+	}
+
 	if !stopped {
 		return rec, fmt.Errorf("%w: the bridge is still driving it, "+
 			"and stops a swap for the operator only when it must "+

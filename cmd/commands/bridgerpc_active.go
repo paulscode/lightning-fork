@@ -245,7 +245,9 @@ var bridgeResolveCommand = cli.Command{
 	can.
 
 	A swap raised in needs_operator while the bridge is still driving it
-	is refused.`,
+	is refused, and so is one stopped in another state because the bridge
+	could not go on with its record: fix the cause needs_operator gives,
+	and lnd drives it again when it restarts.`,
 	Action: actionDecorator(func(ctx *cli.Context) error {
 		if ctx.NArg() != 1 {
 			return cli.ShowCommandHelp(ctx, "resolve")

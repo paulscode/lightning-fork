@@ -86,8 +86,11 @@ payer already paid into is not quoted again if the journal has lost its
 record. The bridge runs with them on, and this node logs a warning at startup
 when either is on here. A swap whose hold invoice is deleted this way still
 ends without paying out (an unpaid one as lapsed, one paid into as given
-back), unless it had already paid out; that one is listed in
-`needs_operator`, since the deleted invoice was its only claim.
+back). One the bridge had not cancelled itself is logged as a warning, since
+a node other than the one that issued the invoice gives the same answer, and
+that node keeps the payer's payment until it expires. A swap that had already
+paid out does not end; it is listed in `needs_operator`, since the deleted
+invoice was its only claim.
 
 `lncli bridge status` says whether the bridge can serve swaps right now and,
 if not, why, and how far the SHA256 node has got (`sha256_node`). If the SHA256
@@ -112,7 +115,9 @@ the node that took the payer's payment has no record of the hold invoice that
 claims it; once you have ruled out the bridge reading another node and a
 restored database, the same command asks that node again: still no record
 and the swap is recorded as lost, there after all and the bridge settles it.
-It is only for a swap listed as stopped (one still being driven is refused),
+It is only for a swap listed as stopped while paying or paid (one still being
+driven is refused, and one stopped in another state on its record is driven
+again when lnd restarts, once the cause given is fixed),
 and the bridge must still point at the SHA256 node it used for that swap:
 another one has no record of the payment, which reads as never sent. It needs
 the admin macaroon. `unfinished` counts the

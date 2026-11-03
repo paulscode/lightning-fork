@@ -1205,8 +1205,7 @@ func (s *Server) ResolveSwap(ctx context.Context, req *ResolveSwapRequest) (
 
 	case errors.Is(err, errNotStopped):
 		return nil, coded(codes.FailedPrecondition, "not_stopped",
-			err.Error()+"; resolve is for a swap needs_operator "+
-				"lists as stopped while paying or paid")
+			err.Error())
 
 	case errors.Is(err, errStillInFlight):
 		return nil, coded(codes.FailedPrecondition, "in_flight",

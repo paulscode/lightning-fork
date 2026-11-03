@@ -69,8 +69,8 @@ type BridgeClient interface {
 	//since the payment may yet go either way. Stopped in paid, it asks the
 	//incoming node again for the hold invoice. No record: the swap is lost.
 	//There after all: the bridge settles it if it still can. Only for an admin
-	//macaroon, and only for a swap needs_operator lists as stopped, not one
-	//raised while it is still being driven.
+	//macaroon, and only for a swap needs_operator lists as stopped in paying
+	//or paid, not one raised while it is still being driven.
 	ResolveSwap(ctx context.Context, in *ResolveSwapRequest, opts ...grpc.CallOption) (*Swap, error)
 }
 
@@ -200,8 +200,8 @@ type BridgeServer interface {
 	//since the payment may yet go either way. Stopped in paid, it asks the
 	//incoming node again for the hold invoice. No record: the swap is lost.
 	//There after all: the bridge settles it if it still can. Only for an admin
-	//macaroon, and only for a swap needs_operator lists as stopped, not one
-	//raised while it is still being driven.
+	//macaroon, and only for a swap needs_operator lists as stopped in paying
+	//or paid, not one raised while it is still being driven.
 	ResolveSwap(context.Context, *ResolveSwapRequest) (*Swap, error)
 	mustEmbedUnimplementedBridgeServer()
 }

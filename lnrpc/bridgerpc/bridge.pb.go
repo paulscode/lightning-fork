@@ -438,10 +438,11 @@ type StatusResponse struct {
 	//
 	//Swaps that need the operator: ones that ended lost (paid out and the
 	//claim on the money coming in could not be settled), that the bridge
-	//stopped driving because it must not decide them alone, or that it raised
-	//while still driving them (a paying node contradicting itself again and
-	//again), until their driving ends. Each is the payment hash, the state
-	//and why. The bridge keeps quoting; these are for a person to look at.
+	//stopped driving because it must not decide them alone or could not go on
+	//with their record, or that it raised while still driving them (a paying
+	//node contradicting itself again and again), until their driving ends.
+	//Each is the payment hash and what became of it. The bridge keeps
+	//quoting; these are for a person to look at.
 	NeedsOperator []string `protobuf:"bytes,8,rep,name=needs_operator,json=needsOperator,proto3" json:"needs_operator,omitempty"`
 	//
 	//The Lightning node on the SHA256 chain: how far it has got and what it

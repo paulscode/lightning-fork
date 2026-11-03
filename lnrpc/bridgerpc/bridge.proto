@@ -94,8 +94,8 @@ service Bridge {
     since the payment may yet go either way. Stopped in paid, it asks the
     incoming node again for the hold invoice. No record: the swap is lost.
     There after all: the bridge settles it if it still can. Only for an admin
-    macaroon, and only for a swap needs_operator lists as stopped, not one
-    raised while it is still being driven.
+    macaroon, and only for a swap needs_operator lists as stopped in paying
+    or paid, not one raised while it is still being driven.
     */
     rpc ResolveSwap (ResolveSwapRequest) returns (Swap);
 }
@@ -227,10 +227,11 @@ message StatusResponse {
     /*
     Swaps that need the operator: ones that ended lost (paid out and the
     claim on the money coming in could not be settled), that the bridge
-    stopped driving because it must not decide them alone, or that it raised
-    while still driving them (a paying node contradicting itself again and
-    again), until their driving ends. Each is the payment hash, the state
-    and why. The bridge keeps quoting; these are for a person to look at.
+    stopped driving because it must not decide them alone or could not go on
+    with their record, or that it raised while still driving them (a paying
+    node contradicting itself again and again), until their driving ends.
+    Each is the payment hash and what became of it. The bridge keeps
+    quoting; these are for a person to look at.
     */
     repeated string needs_operator = 8;
 

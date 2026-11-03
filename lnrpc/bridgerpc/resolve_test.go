@@ -269,7 +269,9 @@ func TestResolveRefusesASwapNotStoppedInPaying(t *testing.T) {
 		require.Zero(t, asked)
 	})
 
-	t.Run("not paying", func(t *testing.T) {
+	// Stopped on its record in another state: refused, saying a restart
+	// drives it again rather than that it is not stopped.
+	t.Run("stopped, not paying", func(t *testing.T) {
 		t.Parallel()
 
 		fx := newResolveFixture(t, node.Payment{State: node.PaymentNone})
@@ -280,6 +282,27 @@ func TestResolveRefusesASwapNotStoppedInPaying(t *testing.T) {
 
 		_, err = fx.resolve(t)
 		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		require.Contains(t, err.Error(), "stopped in funded")
+		require.Contains(t, err.Error(), "when it restarts")
+		require.Equal(t, swap.Funded, fx.state(t))
+		require.NotEmpty(t, fx.svc.needsOperator(context.Background()))
+	})
+
+	t.Run("not stopped, not paying", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newResolveFixture(t, node.Payment{State: node.PaymentNone})
+		fx.svc.stoppedMu.Lock()
+		delete(fx.svc.stopped, fx.hash)
+		fx.svc.stoppedMu.Unlock()
+		rec, err := fx.svc.journal.Get(context.Background(), fx.hash)
+		require.NoError(t, err)
+		rec.State = swap.Funded
+		require.NoError(t, fx.svc.journal.Put(context.Background(), rec))
+
+		_, err = fx.resolve(t)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		require.Contains(t, err.Error(), "it is funded")
 		require.Equal(t, swap.Funded, fx.state(t))
 	})
 
