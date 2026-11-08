@@ -201,6 +201,16 @@ func (c *OpenChannel) SetReserves(reserve btcutil.Amount) {
 	c.RemoteChanCfg.ChanReserve = reserve
 }
 
+// SetChanReserves sets our channel reserve and the peer's, in memory: a
+// channel never spliced, its opening ones as recorded.
+func (c *OpenChannel) SetChanReserves(local, remote btcutil.Amount) {
+	c.Lock()
+	defer c.Unlock()
+
+	c.LocalChanCfg.ChanReserve = local
+	c.RemoteChanCfg.ChanReserve = remote
+}
+
 // applySpliceLock sets a splice lock's fields on a channel.
 func applySpliceLock(c *OpenChannel, l SpliceLock) {
 	c.spliceFunding = fn.Some(l.Funding)

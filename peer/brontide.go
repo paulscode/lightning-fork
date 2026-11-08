@@ -6392,6 +6392,10 @@ func (p *Brontide) addActiveChannel(c *lnpeer.NewChannel) error {
 		return fmt.Errorf("unable to create LightningChannel: %w", err)
 	}
 
+	// Recorded as at a connection, so a splice that locks before the next
+	// one has its change of reserves seen there.
+	lnChan.ApplySpliceReserves()
+
 	// Install the channel via the helper so the active-channel counter
 	// stays in lockstep: new inserts and pending-to-active promotions
 	// both bump the counter by exactly one, while the rare
