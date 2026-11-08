@@ -84,9 +84,10 @@ func TestChainWatcherRestoredMovedNotCommitment(t *testing.T) {
 	alice := h.aliceChannel.State()
 	require.NoError(t, alice.ApplyChanStatus(channeldb.ChanStatusRestored))
 
-	h.sendSpend(h.createUnnegotiatedSpendTx(95_000))
+	// Before the spend: from it on, the watcher refreshes alice.
 	script, _, err := restoredToRemoteScript(alice)
 	require.NoError(t, err)
+	h.sendSpend(h.createUnnegotiatedSpendTx(95_000))
 	event := waitForScriptConf(t, h, script)
 
 	payment := wire.NewMsgTx(2)
@@ -242,9 +243,10 @@ func TestChainWatcherRestoredMovedKeepsWatching(t *testing.T) {
 	alice := h.aliceChannel.State()
 	require.NoError(t, alice.ApplyChanStatus(channeldb.ChanStatusRestored))
 
-	h.sendSpend(h.createUnnegotiatedSpendTx(95_000))
+	// Before the spend: from it on, the watcher refreshes alice.
 	script, _, err := restoredToRemoteScript(alice)
 	require.NoError(t, err)
+	h.sendSpend(h.createUnnegotiatedSpendTx(95_000))
 	event := waitForScriptConf(t, h, script)
 
 	payment := wire.NewMsgTx(2)
