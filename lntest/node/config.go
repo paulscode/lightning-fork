@@ -47,6 +47,15 @@ var (
 		"btcdexec", "", "full path to btcd binary",
 	)
 
+	// blake2bHeightFlag is the regtest height from which the chain backend,
+	// the miner and every node follow the Bitcoin BLAKE2b rules. Zero, the
+	// default, keeps the stock SHA256d regtest.
+	blake2bHeightFlag = flag.Uint(
+		"blake2bheight", 0, "regtest height at which BLAKE2b "+
+			"activates (needs a Bitcoin Knots bitcoind backend "+
+			"and miner); 0 keeps the SHA256d regtest",
+	)
+
 	// CfgStaticRemoteKey specifies the config used to create a node that
 	// uses the static remote key feature.
 	CfgStaticRemoteKey = []string{}
@@ -276,6 +285,11 @@ func (cfg *BaseNodeConfig) GenArgs() []string {
 		args = append(args, "--bitcoin.simnet")
 	case &chaincfg.RegressionNetParams:
 		args = append(args, "--bitcoin.regtest")
+		if h := Blake2bHeight(); h != 0 {
+			args = append(args, fmt.Sprintf(
+				"--bitcoin.blake2b-activation-height=%d", h,
+			))
+		}
 	}
 
 	backendArgs := cfg.BackendCfg.GenArgs()
@@ -457,4 +471,22 @@ func init() {
 	// port as well to avoid any port collisions.
 	rpctest.ListenAddressGenerator =
 		port.GenerateSystemUniqueListenerAddresses
+}
+
+// Blake2bHeight returns the regtest height at which BLAKE2b activates, or
+// zero for a SHA256d regtest.
+func Blake2bHeight() uint {
+	return *blake2bHeightFlag
+}
+
+// Blake2bBitcoindArgs returns the arguments that start a Bitcoin Knots
+// bitcoind on the BLAKE2b regtest the blake2bheight flag selects, or none for
+// a SHA256d regtest.
+func Blake2bBitcoindArgs() []string {
+	h := Blake2bHeight()
+	if h == 0 {
+		return nil
+	}
+
+	return []string{fmt.Sprintf("-testactivationheight=blake2b@%d", h)}
 }

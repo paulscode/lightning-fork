@@ -74,6 +74,12 @@ ifneq ($(minerbackend),)
 ITEST_FLAGS += -minerbackend=$(minerbackend)
 endif
 
+# Run itests on a BLAKE2b regtest: BLAKE2b activates at this height. Needs
+# backend=bitcoind minerbackend=bitcoind and a Bitcoin Knots bitcoind on PATH.
+ifneq ($(blake2b),)
+ITEST_FLAGS += -blake2bheight=$(blake2b)
+endif
+
 ifeq ($(dbbackend),etcd)
 DEV_TAGS += kvdb_etcd
 endif
