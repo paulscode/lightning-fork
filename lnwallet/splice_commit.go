@@ -1071,7 +1071,7 @@ var ErrSpliceReserve = fmt.Errorf("%w on a pending splice",
 func (lc *LightningChannel) checkPendingFundingBalances(ours,
 	theirs, ourInitial, theirInitial lnwire.MilliSatoshi,
 	commitWeight lntypes.WeightUnit, feePerKw chainfee.SatPerKWeight,
-	buffer BufferType) error {
+	buffer BufferType, lenience reserveLenience) error {
 
 	ourReserve := lnwire.NewMSatFromSatoshis(
 		lc.channelState.LocalChanCfg.ChanReserve,
@@ -1107,6 +1107,17 @@ func (lc *LightningChannel) checkPendingFundingBalances(ours,
 		if err != nil {
 			return fmt.Errorf("%w: splice %v: %w", ErrSpliceReserve,
 				p.txid(), err)
+		}
+
+		// The splice reserves owed leniency apply here as on the
+		// current funding.
+		ourOK, theirOK := reservesAllow(ob, oi, tb, ti,
+			lc.channelState.LocalChanCfg.ChanReserve,
+			lc.channelState.RemoteChanCfg.ChanReserve)
+		if (!ourOK || !theirOK) &&
+			lc.spliceLenientAllows(lenience, ob, oi, tb, ti) {
+
+			continue
 		}
 
 		switch {
@@ -1583,14 +1594,226 @@ func (lc *LightningChannel) spliceAnchorResolutions(local, remote,
 // the next channel_reestablish (bolts#15), and a switch here at a tx_abort
 // would leave the two holding each other to different reserves after an
 // aborted RBF. A channel never spliced keeps those of its opening.
+//
+// When the reserves differ from those applied at the channel's last
+// connection, those stay acceptable for what the peer sends until the
+// leniency BOLT 2 asks for is over (see spliceLenient): updates the peer
+// sends again on reconnecting were added under them. Recorded, so a restart
+// keeps it.
 func (lc *LightningChannel) ApplySpliceReserves() {
-	reserve, ok := lc.channelState.SpliceReserve()
-	if !ok {
-		return
-	}
-
 	lc.Lock()
 	defer lc.Unlock()
 
-	lc.channelState.SetReserves(reserve)
+	rec, found, err := lc.channelState.FetchSpliceReserves()
+	if err != nil {
+		lc.log.Errorf("unable to read splice reserves: %v", err)
+	}
+
+	// A channel never spliced keeps those of its opening, each side's,
+	// as recorded the first time; they are recorded all the same, so the
+	// first splice's change is seen at the connection after it locks.
+	if !found {
+		rec.OpeningLocal, rec.OpeningRemote = lc.channelState.Reserves()
+	}
+	local, remote := rec.OpeningLocal, rec.OpeningRemote
+	if reserve, ok := lc.channelState.SpliceReserve(); ok {
+		local, remote = reserve, reserve
+	}
+	lc.channelState.SetChanReserves(local, remote)
+	if err != nil {
+		return
+	}
+
+	lc.recordReservesLocked(rec, found, local, remote)
+}
+
+// recordReservesLocked records the reserves just applied, and, when they
+// differ from those applied before, keeps the earlier ones acceptable for
+// what the peer sends (spliceLenient). Called with the channel's lock held.
+func (lc *LightningChannel) recordReservesLocked(rec channeldb.SpliceReserves,
+	found bool, local, remote btcutil.Amount) {
+
+	changed := !found || rec.InForceLocal != local ||
+		rec.InForceRemote != remote
+
+	// Not recorded yet (a channel last connected before this release):
+	// what it applied then isn't known, so nothing to be lenient about.
+	if found && changed {
+		rec.Lenient = append(rec.Lenient, channeldb.ReservePair{
+			Local: rec.InForceLocal, Remote: rec.InForceRemote,
+		})
+		rec.PeerCommitSeen = false
+		lc.log.Infof("splice reserves now %v/%v (were %v/%v): what "+
+			"the earlier ones allowed is accepted from the peer "+
+			"until its next commitment", local, remote,
+			rec.InForceLocal, rec.InForceRemote)
+	}
+	if changed {
+		rec.InForceLocal, rec.InForceRemote = local, remote
+		if err := lc.channelState.PutSpliceReserves(rec); err != nil {
+			lc.log.Errorf("unable to record splice reserves: %v",
+				err)
+		}
+	}
+
+	if n := len(rec.Lenient); n > channeldb.MaxLenientReserves {
+		rec.Lenient = rec.Lenient[n-channeldb.MaxLenientReserves:]
+	}
+	lc.spliceLenient = rec.Lenient
+	lc.spliceLenientCS = rec.PeerCommitSeen
+	lc.spliceLenientCSSaved = rec.PeerCommitSeen
+}
+
+// saveSplicePeerCommit records that the peer's first commitment_signed since
+// the reserves changed is in, so a reconnection doesn't give its later
+// updates the earlier reserves again. Called with the channel's lock held.
+func (lc *LightningChannel) saveSplicePeerCommit() {
+	if len(lc.spliceLenient) == 0 || !lc.spliceLenientCS ||
+		lc.spliceLenientCSSaved {
+
+		return
+	}
+
+	rec, found, err := lc.channelState.FetchSpliceReserves()
+	if err != nil || !found {
+		lc.log.Errorf("unable to read splice reserves: found=%v, %v",
+			found, err)
+
+		return
+	}
+	rec.PeerCommitSeen = true
+	if err := lc.channelState.PutSpliceReserves(rec); err != nil {
+		lc.log.Errorf("unable to record splice reserves: %v", err)
+
+		return
+	}
+	lc.spliceLenientCSSaved = true
+}
+
+// endSpliceLenience ends the leniency for earlier reserves once we have
+// signed a commitment after the peer's first commitment_signed since the
+// change. Called with the channel's lock held.
+func (lc *LightningChannel) endSpliceLenience() {
+	if len(lc.spliceLenient) == 0 || !lc.spliceLenientCS {
+		return
+	}
+
+	rec, found, err := lc.channelState.FetchSpliceReserves()
+	if err != nil || !found {
+		lc.log.Errorf("unable to read splice reserves: found=%v, %v",
+			found, err)
+
+		return
+	}
+	rec.Lenient = nil
+	rec.PeerCommitSeen = false
+	if err := lc.channelState.PutSpliceReserves(rec); err != nil {
+		lc.log.Errorf("unable to record splice reserves: %v", err)
+
+		return
+	}
+
+	lc.spliceLenient = nil
+	lc.spliceLenientCS = false
+	lc.spliceLenientCSSaved = false
+	lc.log.Debugf("splice reserves: leniency for earlier reserves over")
+}
+
+// reserveLenience says how far validateCommitmentSanity may fall back on
+// the splice reserves still owed leniency (spliceLenient).
+type reserveLenience uint8
+
+const (
+	// lenientNone holds both sides to the current reserves.
+	lenientNone reserveLenience = iota
+
+	// lenientFull accepts a commitment an earlier set of reserves allows,
+	// for what the peer sent.
+	lenientFull
+
+	// lenientTheirs holds our balance to the current reserve and the
+	// peer's to an earlier one: for our own add, which can't lower the
+	// peer's balance, on a view holding updates of the peer's taken under
+	// the earlier reserves.
+	lenientTheirs
+)
+
+// reservesAllow reports whether the balances keep the reserves given, by the
+// rule validateCommitmentSanity applies: a balance that went down may not end
+// below its side's reserve. Each side is reported apart.
+func reservesAllow(ourBalance, ourInitial, theirBalance,
+	theirInitial lnwire.MilliSatoshi, ourReserve,
+	theirReserve btcutil.Amount) (bool, bool) {
+
+	our := lnwire.NewMSatFromSatoshis(ourReserve)
+	their := lnwire.NewMSatFromSatoshis(theirReserve)
+
+	return !(ourBalance < ourInitial && ourBalance < our),
+		!(theirBalance < theirInitial && theirBalance < their)
+}
+
+// spliceLenientAllows reports whether, failing the current reserves, the
+// balances keep the reserves as mode allows: a whole set still owed
+// leniency (lenientFull), or our side the current reserve and the peer's one
+// still owed leniency (lenientTheirs).
+func (lc *LightningChannel) spliceLenientAllows(mode reserveLenience,
+	ourBalance, ourInitial, theirBalance,
+	theirInitial lnwire.MilliSatoshi) bool {
+
+	if mode == lenientNone {
+		return false
+	}
+	ourOK, _ := reservesAllow(ourBalance, ourInitial, theirBalance,
+		theirInitial, lc.channelState.LocalChanCfg.ChanReserve,
+		lc.channelState.RemoteChanCfg.ChanReserve)
+	for _, p := range lc.spliceLenient {
+		o, t := reservesAllow(ourBalance, ourInitial, theirBalance,
+			theirInitial, p.Local, p.Remote)
+		// The peer's balance held to the earlier set, ours to it or
+		// to the current one: our own updates met the current one.
+		if t && (ourOK || (mode == lenientFull && o)) {
+
+			lc.log.Infof("commitment accepted under the splice "+
+				"reserves before the last change (%v/%v)",
+				p.Local, p.Remote)
+
+			return true
+		}
+	}
+
+	return false
+}
+
+// receiveLenience is the leniency for what the peer sends: full until its
+// first commitment_signed after the reserves changed, none after.
+func (lc *LightningChannel) receiveLenience() reserveLenience {
+	if len(lc.spliceLenient) == 0 || lc.spliceLenientCS {
+		return lenientNone
+	}
+
+	return lenientFull
+}
+
+// signLenience is the leniency for the commitment we sign while the
+// leniency lasts: it holds the peer's updates only as far as we have taken
+// them in a commitment of ours, and those after its first commitment_signed
+// since the change were held to the current reserves when that commitment
+// came in, so the earlier reserves still cover the ones before.
+func (lc *LightningChannel) signLenience() reserveLenience {
+	if len(lc.spliceLenient) == 0 {
+		return lenientNone
+	}
+
+	return lenientFull
+}
+
+// addLenience is the leniency for an add of ours: our balance meets the
+// current reserve, the peer's may still be held to an earlier one, its
+// updates from before its commitment_signed being in the view.
+func (lc *LightningChannel) addLenience() reserveLenience {
+	if len(lc.spliceLenient) == 0 {
+		return lenientNone
+	}
+
+	return lenientTheirs
 }

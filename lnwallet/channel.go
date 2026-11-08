@@ -848,6 +848,21 @@ type LightningChannel struct {
 	// of the lock.
 	obsoleteFundings map[chainhash.Hash]bool
 
+	// spliceLenient holds the reserves in force before a change of a
+	// spliced channel's reserves at a connection, while the leniency BOLT 2
+	// owes for them lasts (channeldb.SpliceReserves); nil otherwise.
+	spliceLenient []channeldb.ReservePair
+
+	// spliceLenientCS is set once the peer's first commitment_signed after
+	// the change is in: from then on its updates are held to the current
+	// reserves, and the leniency ends once we have signed a commitment
+	// after it, which covers the updates that came before.
+	spliceLenientCS bool
+
+	// spliceLenientCSSaved is set once spliceLenientCS is recorded
+	// (channeldb.SpliceReserves.PeerCommitSeen).
+	spliceLenientCSSaved bool
+
 	// spliceRestoreErr is set when the pending splices couldn't be
 	// restored. Updating the channel without them could leave a splice
 	// that confirms without a commitment we can publish, so every update
@@ -4069,6 +4084,7 @@ func (lc *LightningChannel) applyCommitFee(
 func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 	ourLogCounter uint64, whoseCommitChain lntypes.ChannelParty,
 	buffer BufferType, predictOurAdd, predictTheirAdd *paymentDescriptor,
+	lenience reserveLenience,
 ) error {
 
 	// First fetch the initial balance before applying any updates.
@@ -4172,6 +4188,19 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 		lc.channelState.RemoteChanCfg.ChanReserve,
 	)
 
+	// A spliced channel's reserves changed at this connection: what the
+	// peer sent may still be held to the earlier ones (spliceLenient).
+	ourOK, theirOK := reservesAllow(ourBalance, ourInitialBalance,
+		theirBalance, theirInitialBalance,
+		lc.channelState.LocalChanCfg.ChanReserve,
+		lc.channelState.RemoteChanCfg.ChanReserve)
+	if (!ourOK || !theirOK) && lc.spliceLenientAllows(lenience,
+		ourBalance, ourInitialBalance, theirBalance,
+		theirInitialBalance) {
+
+		ourReserve, theirReserve = 0, 0
+	}
+
 	switch {
 	// TODO(ziggie): Allow the peer dip us below the channel reserve when
 	// our local balance would increase during this commitment dance or
@@ -4200,7 +4229,7 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 
 	err = lc.checkPendingFundingBalances(
 		ourPreFee, theirPreFee, ourInitialBalance, theirInitialBalance,
-		commitWeight, feePerKw, buffer,
+		commitWeight, feePerKw, buffer, lenience,
 	)
 	if err != nil {
 		return err
@@ -4378,7 +4407,7 @@ func (lc *LightningChannel) SignNextCommitment(
 	// minimum requirement.
 	err = lc.validateCommitmentSanity(
 		remoteACKedIndex, lc.updateLogs.Local.logIndex, lntypes.Remote,
-		NoBuffer, nil, nil,
+		NoBuffer, nil, nil, lc.signLenience(),
 	)
 	if err != nil {
 		return nil, err
@@ -4588,6 +4617,11 @@ func (lc *LightningChannel) SignNextCommitment(
 		return nil, fmt.Errorf("unable to serialize aux sig blob: %w",
 			err)
 	}
+
+	// Signed after the peer's first commitment_signed since the splice
+	// reserves changed: what it sent before is covered, and the leniency
+	// for the earlier reserves is over.
+	lc.endSpliceLenience()
 
 	return &NewCommitState{
 		CommitSigs: &CommitSigs{
@@ -5704,7 +5738,7 @@ func (lc *LightningChannel) ReceiveNewCommitmentBatch(commitSigs *CommitSigs,
 	// commit-sig).
 	err := lc.validateCommitmentSanity(
 		lc.updateLogs.Remote.logIndex, localACKedIndex, lntypes.Local,
-		NoBuffer, nil, nil,
+		NoBuffer, nil, nil, lc.receiveLenience(),
 	)
 	if err != nil {
 		return err
@@ -5971,6 +6005,12 @@ func (lc *LightningChannel) ReceiveNewCommitmentBatch(commitSigs *CommitSigs,
 		p.local[localCommitmentView.height] = spliceCommits[i]
 	}
 
+	// The peer's first commitment_signed since the splice reserves
+	// changed: its updates from now on meet the current ones.
+	if len(lc.spliceLenient) > 0 {
+		lc.spliceLenientCS = true
+	}
+
 	return nil
 }
 
@@ -6173,6 +6213,19 @@ func (lc *LightningChannel) RevokeCurrentCommitment() (*lnwire.RevokeAndAck,
 	revocationMsg.ChanID = lnwire.NewChanIDFromOutPoint(
 		lc.channelState.FundingOutpoint,
 	)
+
+	// Revoked after the peer's first commitment_signed since the splice
+	// reserves changed, owing it no commitment: nothing left for us to
+	// sign covers updates of the peer's taken under the earlier reserves,
+	// so the leniency is over without waiting for a signature of ours.
+	// Owing one, the peer's commitment_signed is recorded instead, so a
+	// reconnection before we sign doesn't give its later updates the
+	// earlier reserves again.
+	if !lc.oweCommitment(lntypes.Local) {
+		lc.endSpliceLenience()
+	} else {
+		lc.saveSplicePeerCommit()
+	}
 
 	return revocationMsg, newCommitment.Htlcs, finalHtlcs, nil
 }
@@ -6799,7 +6852,7 @@ func (lc *LightningChannel) validateAddHtlc(pd *paymentDescriptor,
 	// commitment transaction without violation any of the constraints.
 	err := lc.validateCommitmentSanity(
 		remoteACKedIndex, lc.updateLogs.Local.logIndex, lntypes.Remote,
-		buffer, pd, nil,
+		buffer, pd, nil, lc.addLenience(),
 	)
 	if err != nil {
 		return err
@@ -6812,7 +6865,7 @@ func (lc *LightningChannel) validateAddHtlc(pd *paymentDescriptor,
 	// possible for us to add the HTLC.
 	err = lc.validateCommitmentSanity(
 		lc.updateLogs.Remote.logIndex, lc.updateLogs.Local.logIndex,
-		lntypes.Local, buffer, pd, nil,
+		lntypes.Local, buffer, pd, nil, lc.addLenience(),
 	)
 	if err != nil {
 		return err
@@ -6864,7 +6917,7 @@ func (lc *LightningChannel) ReceiveHTLC(htlc *lnwire.UpdateAddHTLC) (uint64,
 	// reject ADDs already sent by the peer.
 	err := lc.validateCommitmentSanity(
 		lc.updateLogs.Remote.logIndex, localACKedIndex, lntypes.Local,
-		NoBuffer, nil, pd,
+		NoBuffer, nil, pd, lc.receiveLenience(),
 	)
 	if err != nil {
 		return 0, err
