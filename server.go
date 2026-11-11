@@ -5466,11 +5466,6 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress,
 	// persistent connection to the peer.
 	srvrLog.Debugf("Connecting to %v", addr)
 	if perm {
-		connReq := &connmgr.ConnReq{
-			Addr:      addr,
-			Permanent: true,
-		}
-
 		// Since the user requested a permanent connection, we'll set
 		// the entry to true which will tell the server to continue
 		// reconnecting even if the number of channels with this peer is
@@ -5478,6 +5473,25 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress,
 		s.persistentPeers[targetPub] = true
 		if _, ok := s.persistentPeersBackoff[targetPub]; !ok {
 			s.persistentPeersBackoff[targetPub] = s.cfg.MinBackoff
+		}
+
+		// A permanent request for this very address is already being
+		// retried by the connection manager: another one would only
+		// add a duplicate that is never removed while the peer stays
+		// offline. Tools that reconnect inactive channel peers every
+		// few minutes (for example LNDg) otherwise pile up hundreds of
+		// them, each with its own dial attempts.
+		if hasPersistentConnReq(s.persistentConnReqs[targetPub], addr) {
+			srvrLog.Debugf("Already retrying a persistent "+
+				"connection to %v, not adding another", addr)
+			s.mu.Unlock()
+
+			return nil
+		}
+
+		connReq := &connmgr.ConnReq{
+			Addr:      addr,
+			Permanent: true,
 		}
 		s.persistentConnReqs[targetPub] = append(
 			s.persistentConnReqs[targetPub], connReq,
@@ -6483,4 +6497,22 @@ func (s *server) setSelfNode(ctx context.Context, nodePub route.Vertex,
 	s.currentNodeAnn = nodeAnn
 
 	return nil
+}
+
+// hasPersistentConnReq reports whether reqs already holds a connection request
+// for addr (same public key and network address).
+func hasPersistentConnReq(reqs []*connmgr.ConnReq,
+	addr *lnwire.NetAddress) bool {
+
+	for _, req := range reqs {
+		existing, ok := req.Addr.(*lnwire.NetAddress)
+		if !ok {
+			continue
+		}
+		if existing.String() == addr.String() {
+			return true
+		}
+	}
+
+	return false
 }
