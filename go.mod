@@ -11,7 +11,7 @@ require (
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/btcsuite/btclog v1.0.0
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b
-	github.com/btcsuite/btcwallet v0.16.20-0.20261020152346-4423f4716968
+	github.com/btcsuite/btcwallet v0.16.20-0.20261108131155-245ce39ba343
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.3.5
 	github.com/btcsuite/btcwallet/wallet/txrules v1.2.2
 	github.com/btcsuite/btcwallet/walletdb v1.5.1
@@ -229,8 +229,9 @@ replace github.com/btcsuite/btcd => github.com/paulscode/btcd-blake2b v0.25.1-bl
 // btcwallet asking the chain parameters for each coinbase's maturity, since
 // the Bitcoin BLAKE2b chain's depends on where the coinbase was mined
 // (lnwallet/btcwallet/coinbase_maturity.go). Based on the btcwallet commit
-// required above; move them together.
-replace github.com/btcsuite/btcwallet => github.com/paulscode/btcwallet-blake2b v0.16.20-blake2b.3
+// required above (245ce39ba343, upstream's ver-0-16.19 branch, which lnd
+// v0.21.8 pins for its rejection classification); move them together.
+replace github.com/btcsuite/btcwallet => github.com/paulscode/btcwallet-blake2b v0.16.20-blake2b.4
 
 // txauthor with configurable hash types, so the wallet's own on-chain sends
 // can opt into the unified signature hash.
