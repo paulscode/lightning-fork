@@ -4997,22 +4997,24 @@ func newRPCShutdownInit(req *htlcswitch.ChanClose) shutdownInit {
 
 // waitUntilRbfCoastClear waits for the shutdown handshake and any local
 // offer in progress to finish before attempting another fee bump.
+// It returns the local state the close was in when the coast was clear.
 func waitUntilRbfCoastClear(ctx context.Context,
-	rbfCloser *chancloser.RbfChanCloser) error {
+	rbfCloser *chancloser.RbfChanCloser) (chancloser.AsymmetricPeerState,
+	error) {
 
 	coopCloseStates := rbfCloser.RegisterStateEvents()
 	defer rbfCloser.RemoveStateSub(coopCloseStates)
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 
 		// Subscribe before querying, and query again after each event:
 		// a queued notification can already describe an older state.
 		state, err := rbfCloser.CurrentState()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		switch state := state.(type) {
 		case *chancloser.ShutdownPending, *chancloser.ChannelFlushing:
@@ -5024,28 +5026,29 @@ func waitUntilRbfCoastClear(ctx context.Context,
 			case *chancloser.LocalCloseStart,
 				*chancloser.ClosePending, *chancloser.CloseErr:
 
-				return nil
+				return local, nil
 			case *chancloser.LocalOfferSent:
 				// Wait for the peer's signature for this offer.
 			default:
-				return fmt.Errorf("cannot bump cooperative "+
-					"close in %T", local)
+				return nil, fmt.Errorf("cannot bump "+
+					"cooperative close in %T", local)
 			}
 
 		case *chancloser.CloseFin:
-			return fmt.Errorf("cooperative close already confirmed")
+			return nil, fmt.Errorf("cooperative close already " +
+				"confirmed")
 
 		default:
-			return fmt.Errorf("cannot bump cooperative close in "+
-				"%T", state)
+			return nil, fmt.Errorf("cannot bump cooperative "+
+				"close in %T", state)
 		}
 
 		select {
 		case <-coopCloseStates.NewItemCreated.ChanOut():
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		case <-rbfCloser.Done():
-			return protofsm.ErrStateMachineShutdown
+			return nil, protofsm.ErrStateMachineShutdown
 		}
 	}
 }
@@ -5122,7 +5125,7 @@ func (p *Brontide) startRbfChanCloser(shutdown shutdownInit,
 			ctx, cancel := p.cg.Create(closeReqCtx(rpcReq))
 			defer cancel()
 
-			startErr = p.sendRbfCloseEvent(
+			_, startErr = p.sendRbfCloseEvent(
 				ctx, rbfCloser, chanID, rpcReq, false,
 				&chancloser.SendShutdown{
 					IdealFeeRate: feeRate,
@@ -5219,6 +5222,10 @@ func (p *Brontide) bumpRbfCloseWhenClear(rbfCloser *chancloser.RbfChanCloser,
 // waiting on the same close are released by the same state, and the second
 // offer would then reach a close that is waiting for the peer's signature of
 // the first, which stops the closer.
+//
+// A bump keeps its turn until the close has taken its offer. Sending only
+// queues the offer, so the next bump could otherwise still read the state
+// from before it.
 func (p *Brontide) sendRbfFeeBump(ctx context.Context,
 	rbfCloser *chancloser.RbfChanCloser, chanID lnwire.ChannelID,
 	req *htlcswitch.ChanClose, feeRate chainfee.SatPerVByte) error {
@@ -5229,45 +5236,92 @@ func (p *Brontide) sendRbfFeeBump(ctx context.Context,
 	}
 	defer release()
 
-	if err := waitUntilRbfCoastClear(ctx, rbfCloser); err != nil {
+	local, err := waitUntilRbfCoastClear(ctx, rbfCloser)
+	if err != nil {
 		return err
 	}
 
-	return p.sendRbfCloseEvent(
+	// Subscribe before sending, so that the transition the offer causes
+	// is not missed.
+	states := rbfCloser.RegisterStateEvents()
+	defer rbfCloser.RemoveStateSub(states)
+
+	sent, err := p.sendRbfCloseEvent(
 		ctx, rbfCloser, chanID, req, true,
 		&chancloser.SendOfferEvent{TargetFeeRate: feeRate},
 	)
+	if err != nil || !sent {
+		return err
+	}
+
+	waitRbfOfferTaken(ctx, rbfCloser, states, local)
+
+	return nil
+}
+
+// waitRbfOfferTaken waits until the close has taken an offer that was sent
+// while its local state was before. Only a local offer replaces the local
+// state: an event for the remote party keeps it, and the fee bumps of a
+// channel take turns, so a different local state means this offer was taken.
+// The wait also ends when the caller or the peer goes away, when the closer
+// stops, or when the close leaves negotiation.
+func waitRbfOfferTaken(ctx context.Context,
+	rbfCloser *chancloser.RbfChanCloser, states chancloser.RbfStateSub,
+	before chancloser.AsymmetricPeerState) {
+
+	for {
+		select {
+		case state := <-states.NewItemCreated.ChanOut():
+			closing, ok := state.(*chancloser.ClosingNegotiation)
+			if !ok {
+				return
+			}
+
+			local := closing.PeerState.GetForParty(lntypes.Local)
+			if local != before {
+				return
+			}
+
+		case <-ctx.Done():
+			return
+
+		case <-rbfCloser.Done():
+			return
+		}
+	}
 }
 
 // sendRbfCloseEvent sends an event that starts or bumps a cooperative close.
 // For a caller, it first starts the observer that reports how the close ends;
-// recorded says whether the caller is already in activeCloseReqs. An error
-// means the event was not sent and the caller has not been answered.
+// recorded says whether the caller is already in activeCloseReqs. It reports
+// whether the event was sent. An error means the event was not sent and the
+// caller has not been answered.
 func (p *Brontide) sendRbfCloseEvent(ctx context.Context,
 	rbfCloser *chancloser.RbfChanCloser, chanID lnwire.ChannelID,
 	req *htlcswitch.ChanClose, recorded bool,
-	event chancloser.ProtocolEvent) error {
+	event chancloser.ProtocolEvent) (bool, error) {
 
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 
 	coopCloseStates := rbfCloser.RegisterStateEvents()
 	current, err := rbfCloser.CurrentState()
 	if err != nil {
 		rbfCloser.RemoveStateSub(coopCloseStates)
-		return err
+		return false, err
 	}
 	if _, confirmed := current.(*chancloser.CloseFin); confirmed {
 		rbfCloser.RemoveStateSub(coopCloseStates)
-		return fmt.Errorf("cooperative close already confirmed")
+		return false, fmt.Errorf("cooperative close already " +
+			"confirmed")
 	}
 
 	if req == nil {
 		defer rbfCloser.RemoveStateSub(coopCloseStates)
 		rbfCloser.SendEvent(ctx, event)
 
-		return nil
+		return true, nil
 	}
 
 	// Record the caller against the channel so that retiring the closer
@@ -5287,7 +5341,7 @@ func (p *Brontide) sendRbfCloseEvent(ctx context.Context,
 		rbfCloser.RemoveStateSub(coopCloseStates)
 		p.claimAndAnswerRetiredCaller(chanID, req)
 
-		return nil
+		return false, nil
 	}
 
 	// Before we send the event, we'll launch a goroutine to watch for the
@@ -5301,7 +5355,7 @@ func (p *Brontide) sendRbfCloseEvent(ctx context.Context,
 
 	rbfCloser.SendEvent(ctx, event)
 
-	return nil
+	return true, nil
 }
 
 // handleLocalCloseReq kicks-off the workflow to execute a cooperative or
