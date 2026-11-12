@@ -237,6 +237,13 @@ func (lc *LightningChannel) AddPendingFunding(f PendingFunding) error {
 		}
 	}
 
+	// Quiescent, so every update either side sent is in both
+	// commitments: nothing taken under earlier splice reserves is left to
+	// be sent again, and the leniency for them is over. Ending it here
+	// keeps a peer that never sends commitment_signed from stacking the
+	// reserves of several splices and draining to the lowest of them.
+	lc.clearSpliceLenienceLocked()
+
 	p, err := lc.newPendingFunding(f)
 	if err != nil {
 		return err
@@ -1616,7 +1623,8 @@ func (lc *LightningChannel) ApplySpliceReserves() {
 		rec.OpeningLocal, rec.OpeningRemote = lc.channelState.Reserves()
 	}
 	local, remote := rec.OpeningLocal, rec.OpeningRemote
-	if reserve, ok := lc.channelState.SpliceReserve(); ok {
+	reserve, spliced := lc.channelState.SpliceReserve()
+	if spliced {
 		local, remote = reserve, reserve
 	}
 	lc.channelState.SetChanReserves(local, remote)
@@ -1624,7 +1632,58 @@ func (lc *LightningChannel) ApplySpliceReserves() {
 		return
 	}
 
+	// A spliced channel with no record last connected before they were
+	// kept, when its reserves were those of its current funding, or of
+	// the one before it if the last splice locked during that
+	// connection. Not knowing which, the one before it is taken as the
+	// reserves applied then: at worst one entry of leniency that wasn't
+	// needed, over at the peer's first commitment_signed, rather than
+	// refusing an update it sends again under them.
+	if !found && spliced {
+		if prev, ok := lc.previousFundingReserve(); ok {
+			rec.InForceLocal, rec.InForceRemote = prev, prev
+			found = true
+		}
+	}
+
 	lc.recordReservesLocked(rec, found, local, remote)
+}
+
+// previousFundingReserve is the reserve of the funding the channel's last
+// splice replaced, as SpliceReserve would have given it: 1% of its capacity,
+// or the opener's dust limit if more.
+func (lc *LightningChannel) previousFundingReserve() (btcutil.Amount, bool) {
+	prevs, err := lc.channelState.PreviousFundings()
+	if err != nil {
+		lc.log.Errorf("unable to read previous fundings: %v", err)
+
+		return 0, false
+	}
+	current := lc.channelState.CurrentFundingOutpoint()
+	for _, p := range prevs {
+		if p.LockedTo != current {
+			continue
+		}
+		dust := lc.channelState.RemoteChanCfg.DustLimit
+		if lc.channelState.IsInitiator {
+			dust = lc.channelState.LocalChanCfg.DustLimit
+		}
+
+		return max(p.Capacity/100, dust), true
+	}
+
+	return 0, false
+}
+
+// clearSpliceLenienceLocked ends the leniency for earlier splice reserves at
+// once, whether or not the peer's commitment_signed came in. Called with the
+// channel's lock held.
+func (lc *LightningChannel) clearSpliceLenienceLocked() {
+	if len(lc.spliceLenient) == 0 {
+		return
+	}
+	lc.spliceLenientCS = true
+	lc.endSpliceLenience()
 }
 
 // recordReservesLocked records the reserves just applied, and, when they
@@ -1773,7 +1832,7 @@ func (lc *LightningChannel) spliceLenientAllows(mode reserveLenience,
 		// to the current one: our own updates met the current one.
 		if t && (ourOK || (mode == lenientFull && o)) {
 
-			lc.log.Infof("commitment accepted under the splice "+
+			lc.log.Debugf("commitment accepted under the splice "+
 				"reserves before the last change (%v/%v)",
 				p.Local, p.Remote)
 

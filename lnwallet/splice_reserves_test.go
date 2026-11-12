@@ -61,13 +61,14 @@ func TestSpliceReserveLenience(t *testing.T) {
 			alice.channelState.RemoteChanCfg.ChanReserve)
 		require.Greater(t, newReserve, opening)
 
+		// Without a record (a channel last connected before they were
+		// kept), the reserve of the funding before the last splice
+		// stands in for the earlier ones, so the dance passes too.
 		err := ForceStateTransition(bob, alice)
+		require.NoError(t, err)
 		if !record {
-			require.ErrorIs(t, err, ErrBelowChanReserve)
-
 			continue
 		}
-		require.NoError(t, err)
 		require.Empty(t, alice.spliceLenient, "leniency not over")
 
 		rec, found, err := alice.channelState.FetchSpliceReserves()
@@ -294,4 +295,49 @@ func TestSpliceReserveLenienceCrossing(t *testing.T) {
 
 	_, err = alice.SignNextCommitment(ctxb)
 	require.NoError(t, err)
+}
+
+// TestSpliceReserveLenienceUpgrade checks a spliced channel with no record
+// (last connected before they were kept): the reserve of the funding its
+// last splice replaced is taken as the one applied before, one entry, over
+// once the leniency ends as usual.
+func TestSpliceReserveLenienceUpgrade(t *testing.T) {
+	t.Parallel()
+
+	alice, _ := lockedSplice(t, false)
+	opening := alice.channelState.LocalChanCfg.ChanReserve
+	alice.ApplySpliceReserves()
+	require.Equal(t, []channeldb.ReservePair{
+		{Local: opening, Remote: opening},
+	}, alice.spliceLenient)
+
+	rec, found, err := alice.channelState.FetchSpliceReserves()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rec.Lenient, 1)
+	require.Equal(t, alice.channelState.Capacity/100, rec.InForceRemote)
+}
+
+// TestSpliceReserveLenienceEndsAtSplice checks that a new splice ends the
+// leniency: it needs the channel quiescent, so nothing taken under earlier
+// reserves is left to be sent again, and a peer that never sends
+// commitment_signed can't stack the reserves of several splices.
+func TestSpliceReserveLenienceEndsAtSplice(t *testing.T) {
+	t.Parallel()
+
+	alice, bob := lockedSplice(t, true)
+	alice.ApplySpliceReserves()
+	bob.ApplySpliceReserves()
+	require.NotEmpty(t, alice.spliceLenient)
+
+	keys := newSpliceKeys(t, alice, bob)
+	addSplice(t, alice, bob, keys, chainhash.Hash{0x7e},
+		btcutil.SatoshiPerBitcoin, 0)
+	require.Empty(t, alice.spliceLenient)
+
+	rec, found, err := alice.channelState.FetchSpliceReserves()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Empty(t, rec.Lenient)
+	require.False(t, rec.PeerCommitSeen)
 }
