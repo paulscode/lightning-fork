@@ -605,6 +605,19 @@ to this wallet), that output can pay for a child with a higher fee:
 `lncli wallet bumpfee --sat_per_vbyte=N <splice txid>:<output index>`.
 The channel keeps working at its old size meanwhile.
 
+**Channel reserves after a splice.** After a splice, each side's reserve
+is 1% of the new capacity (or the opener's dust limit, if larger), as the
+splicing text in the specification has it. It takes effect at the next
+connection, not at the lock. Updates the peer sends again on that
+connection were added under the old reserves. Until the peer's first
+`commitment_signed` there, they are accepted when the old reserves allow
+them, so a resent HTLC doesn't close the connection on every
+reconnection. Updates of this node's own always meet the new reserves.
+The node keeps a small record per channel for this (the reserves applied
+at each connection), from the first connection with this release on. A
+channel spliced before that takes the reserve of the funding its last
+splice replaced as the earlier one. The next splice ends the leniency.
+
 **Backups and towers.** A channel backup made after a splice carries the
 channel's funding outputs in a trailer older versions skip, so a restore
 on this version finds the channel on its current output; restored from a
