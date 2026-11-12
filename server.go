@@ -5482,7 +5482,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress,
 		// few minutes (for example LNDg) otherwise pile up hundreds of
 		// them, each with its own dial attempts.
 		if hasPersistentConnReq(s.persistentConnReqs[targetPub], addr) {
-			srvrLog.Debugf("Already retrying a persistent "+
+			srvrLog.Infof("Already retrying a persistent "+
 				"connection to %v, not adding another", addr)
 			s.mu.Unlock()
 
