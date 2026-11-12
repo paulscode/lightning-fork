@@ -229,8 +229,9 @@ replace github.com/btcsuite/btcd => github.com/paulscode/btcd-blake2b v0.25.1-bl
 // btcwallet asking the chain parameters for each coinbase's maturity, since
 // the Bitcoin BLAKE2b chain's depends on where the coinbase was mined
 // (lnwallet/btcwallet/coinbase_maturity.go). Based on the btcwallet commit
-// required above; move them together.
-replace github.com/btcsuite/btcwallet => github.com/paulscode/btcwallet-blake2b v0.16.20-blake2b.3
+// required above (245ce39ba343, upstream's ver-0-16.19 branch, which lnd
+// v0.21.8 pins for its rejection classification); move them together.
+replace github.com/btcsuite/btcwallet => github.com/paulscode/btcwallet-blake2b v0.16.20-blake2b.4
 
 // txauthor with configurable hash types, so the wallet's own on-chain sends
 // can opt into the unified signature hash.

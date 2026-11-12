@@ -3607,15 +3607,6 @@ func TestChannelArbitratorStartForceCloseFail(t *testing.T) {
 			expectedStartup: true,
 		},
 		{
-			// A splice in the mempool spends the same funding
-			// output, paying more: the replacement is refused.
-			name: "Commitment is rejected as a replacement of a " +
-				"splice paying more",
-			broadcastErr:    chain.ErrInsufficientFee,
-			expectedState:   StateCommitmentBroadcasted,
-			expectedStartup: true,
-		},
-		{
 			name: "Commitment is rejected as a replacement of " +
 				"too many transactions",
 			broadcastErr:    chain.ErrTooManyReplacements,
