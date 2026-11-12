@@ -5458,7 +5458,10 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress,
 	// If there's already a pending connection request for this pubkey,
 	// then we ignore this request to ensure we don't create a redundant
 	// connection.
-	if reqs, ok := s.persistentConnReqs[targetPub]; ok {
+	// A permanent request for an address already pending is skipped
+	// below, so it is not "connecting anyway".
+	reqs, ok := s.persistentConnReqs[targetPub]
+	if ok && !(perm && hasPersistentConnReq(reqs, addr)) {
 		srvrLog.Warnf("Already have %d persistent connection "+
 			"requests for %v, connecting anyway.", len(reqs), addr)
 	}
@@ -5484,7 +5487,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress,
 		// few minutes (for example LNDg) otherwise pile up hundreds of
 		// them, each with its own dial attempts.
 		if hasPersistentConnReq(s.persistentConnReqs[targetPub], addr) {
-			srvrLog.Debugf("Already retrying a persistent "+
+			srvrLog.Infof("Already retrying a persistent "+
 				"connection to %v, not adding another", addr)
 			s.mu.Unlock()
 
