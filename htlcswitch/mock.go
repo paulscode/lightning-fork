@@ -971,11 +971,15 @@ func (f *mockChannelLink) IsFlushing(linkDirection LinkDirection) bool {
 	// TODO(proofofkeags): Implement
 	return false
 }
-func (f *mockChannelLink) OnFlushedOnce(func()) {
-	// TODO(proofofkeags): Implement
+func (f *mockChannelLink) OnFlushedOnce(context.Context, func()) error {
+	// TODO(proofofkeags): Implement.
+	return nil
 }
-func (f *mockChannelLink) OnCommitOnce(LinkDirection, func()) {
-	// TODO(proofofkeags): Implement
+func (f *mockChannelLink) OnCommitOnce(
+	context.Context, LinkDirection, func(),
+) error {
+	// TODO(proofofkeags): Implement.
+	return nil
 }
 func (f *mockChannelLink) ResumeQuiescence() <-chan error {
 	c := make(chan error, 1)
