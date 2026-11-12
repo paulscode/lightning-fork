@@ -1954,6 +1954,11 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 	if err := lnwire.SetCustomOverrides(customMsg); err != nil {
 		return nil, mkErr("custom-message: %v", err)
 	}
+	for _, t := range lnwire.HandledOverrides(customMsg) {
+		ltndLog.Warnf("custom-message=%d: lnd still handles incoming "+
+			"%v messages itself; the override only lets the "+
+			"custom message RPCs send them", uint16(t), t)
+	}
 
 	// Map old pprof flags to new pprof group flags.
 	//

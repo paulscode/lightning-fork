@@ -33,26 +33,6 @@ var (
 // this set of message types. Note that this function will completely overwrite
 // the set of overrides, so should be called with the full set of types.
 func SetCustomOverrides(overrideTypes []uint16) error {
-	// A type lnd decodes itself is never delivered as a custom message,
-	// so an override for it would silently do nothing (this now covers
-	// the interactive transaction and splicing messages, 66 to 81 and
-	// 127). Refuse it instead. This runs before taking the lock, since
-	// makeEmptyMessage reads the overrides.
-	for _, t := range overrideTypes {
-		msgType := MessageType(t)
-		if msgType >= CustomTypeStart {
-			continue
-		}
-		msg, err := makeEmptyMessage(msgType)
-		if err == nil {
-			if _, custom := msg.(*Custom); !custom {
-				return fmt.Errorf("can't override type %v: lnd "+
-					"handles %v messages itself", t,
-					msgType)
-			}
-		}
-	}
-
 	customTypeOverrideMtx.Lock()
 	defer customTypeOverrideMtx.Unlock()
 
@@ -70,6 +50,29 @@ func SetCustomOverrides(overrideTypes []uint16) error {
 	}
 
 	return nil
+}
+
+// HandledOverrides returns the override types lnd decodes itself. Such an
+// override only lets the custom message RPCs send that type (NewCustom); an
+// incoming message of it is still handled by lnd and never delivered as a
+// custom message, so it is worth a warning.
+func HandledOverrides(overrideTypes []uint16) []MessageType {
+	var handled []MessageType
+	for _, t := range overrideTypes {
+		msgType := MessageType(t)
+		if msgType >= CustomTypeStart {
+			continue
+		}
+		msg, err := makeEmptyMessage(msgType)
+		if err != nil {
+			continue
+		}
+		if _, custom := msg.(*Custom); !custom {
+			handled = append(handled, msgType)
+		}
+	}
+
+	return handled
 }
 
 // IsCustomOverride returns a bool indicating whether the message type is one
