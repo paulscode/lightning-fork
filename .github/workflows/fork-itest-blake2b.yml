@@ -77,3 +77,46 @@ jobs:
             itest/**/*.log
           include-hidden-files: true
           retention-days: 7
+
+  # The cases about the height hints a historical scan starts from, on bitcoind
+  # without txindex: with an index, a lookup by txid ignores those heights, so
+  # the job above cannot catch a hint left past a confirmation. Pruned nodes,
+  # common behind Lightning Fork, run without one.
+  itest-notxindex:
+    name: itest bitcoind blake2b notxindex (height hints)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          key-prefix: fork-integration-test-blake2b-notxindex
+
+      - name: Install Bitcoin Knots
+        run: |
+          tarball="bitcoin-${KNOTS_VERSION}-x86_64-linux-gnu.tar.gz"
+          curl -sSfL -o "$tarball" \
+            "https://bitcoinknots.org/files/29.x/${KNOTS_VERSION}/${tarball}"
+          echo "${KNOTS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball"
+          sudo install -m 0755 "bitcoin-${KNOTS_VERSION}/bin/bitcoind" /usr/local/bin/bitcoind
+          bitcoind -version | sed -n 1p
+
+      - name: Integration tests (height hint cases)
+        run: make itest backend="bitcoind notxindex" minerbackend=bitcoind blake2b=${{ env.BLAKE2B_HEIGHT }} icase='(pending_open_after_restart|breach_conf_hint_isolated_by_script)' verbose=1
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-itest-bitcoind-blake2b-notxindex
+          path: |
+            itest/**/*.log
+          include-hidden-files: true
+          retention-days: 7
