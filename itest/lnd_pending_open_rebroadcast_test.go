@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntest"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/stretchr/testify/require"
@@ -20,8 +21,12 @@ import (
 // manager watches from the broadcast height. Whichever registers first, the
 // channel must open.
 //
-// Run with bitcoind without txindex: with a transaction index the lookup by
-// txid ignores the height the watch starts at.
+// It only exercises the bug with bitcoind without txindex: with a transaction
+// index the lookup by txid ignores the height the watch starts at. On the old
+// code the channel stayed pending whenever the rebroadcaster registered first
+// after the confirmation, which it does in practice since the funding manager
+// republishes before it registers its own watch; the restarts give it more
+// than one chance.
 func testPendingOpenAfterRestart(ht *lntest.HarnessTest) {
 	alice := ht.NewNode("Alice", nil)
 	bob := ht.NewNode("Bob", nil)
@@ -62,4 +67,13 @@ func testPendingOpenAfterRestart(ht *lntest.HarnessTest) {
 	}, 30*time.Second)
 	require.NoError(ht, err, "channel still pending after its funding "+
 		"transaction confirmed")
+
+	chanPoint := &lnrpc.ChannelPoint{
+		FundingTxid: &lnrpc.ChannelPoint_FundingTxidBytes{
+			FundingTxidBytes: pending.Txid,
+		},
+		OutputIndex: pending.OutputIndex,
+	}
+	ht.AssertChannelActive(alice, chanPoint)
+	ht.AssertChannelActive(bob, chanPoint)
 }
