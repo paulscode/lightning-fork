@@ -43,6 +43,10 @@ var allTestCases = []*lntest.TestCase{
 		TestFunc: testBreachConfHintPoisonedByFakeFunding,
 	},
 	{
+		Name:     "pending open after restart",
+		TestFunc: testPendingOpenAfterRestart,
+	},
+	{
 		Name:     "send all coins",
 		TestFunc: testSendAllCoins,
 	},
