@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/stretchr/testify/require"
@@ -360,4 +361,110 @@ func TestTxNotifierIgnoresLegacyConfirmHint(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, spend.HistoricalDispatch)
 	require.Equal(t, legacyHint, spend.HistoricalDispatch.StartHeight)
+}
+
+// TestTxNotifierPrefixScanUsesCachedHint asserts that when the first
+// subscriber's hint is too late to use the cached hint, a later subscriber's
+// prefix scan still skips the blocks the cached hint proves clean, that a
+// prefix the cached hint covers completely dispatches nothing, and that a
+// disconnected block stops the cached hint from being used.
+func TestTxNotifierPrefixScanUsesCachedHint(t *testing.T) {
+	const (
+		tipHeight    = uint32(1010)
+		cachedOrigin = uint32(900)
+		cachedHeight = uint32(1000)
+	)
+
+	newNotifier := func(t *testing.T, tag string) (*chainntnfs.TxNotifier,
+		chainhash.Hash, []byte) {
+
+		script, tx := staleHintTx(tag)
+		txid := tx.TxHash()
+		request, err := chainntnfs.NewConfRequest(&txid, script)
+		require.NoError(t, err)
+
+		cache := newMockHintCache()
+		require.NoError(t, cache.CommitConfirmHints(
+			chainntnfs.ConfirmHints{request: {
+				Height: cachedHeight, Origin: cachedOrigin,
+			}},
+		))
+		n := chainntnfs.NewTxNotifier(
+			tipHeight, chainntnfs.ReorgSafetyLimit, cache, cache,
+		)
+		t.Cleanup(n.TearDown)
+
+		return n, txid, script
+	}
+
+	t.Run("partial", func(t *testing.T) {
+		n, txid, script := newNotifier(t, "prefix-cached-partial")
+
+		// The rebroadcaster registers at the tip, too late for the
+		// cached hint, so it scans only the tip.
+		late, err := n.RegisterConf(&txid, script, 6, tipHeight)
+		require.NoError(t, err)
+		require.NotNil(t, late.HistoricalDispatch)
+		require.Equal(
+			t, tipHeight, late.HistoricalDispatch.StartHeight,
+		)
+
+		// The funding manager's earlier hint gets a prefix scan of
+		// only the blocks the cached hint does not cover.
+		early, err := n.RegisterConf(&txid, script, 3, cachedOrigin)
+		require.NoError(t, err)
+		require.NotNil(t, early.HistoricalDispatch)
+		require.True(t, early.HistoricalDispatch.Supplemental)
+		require.Equal(
+			t, cachedHeight, early.HistoricalDispatch.StartHeight,
+		)
+		require.Equal(
+			t, tipHeight-1, early.HistoricalDispatch.EndHeight,
+		)
+
+		// A hint below the cached origin still scans what the cached
+		// hint does not cover.
+		earlier, err := n.RegisterConf(&txid, script, 3, cachedOrigin-50)
+		require.NoError(t, err)
+		require.NotNil(t, earlier.HistoricalDispatch)
+		require.Equal(
+			t, cachedOrigin-50, earlier.HistoricalDispatch.StartHeight,
+		)
+		require.Equal(
+			t, cachedOrigin-1, earlier.HistoricalDispatch.EndHeight,
+		)
+	})
+
+	t.Run("covered", func(t *testing.T) {
+		n, txid, script := newNotifier(t, "prefix-cached-covered")
+
+		// A first subscriber just above the cached hint's height
+		// leaves only blocks the cached hint covers below it.
+		_, err := n.RegisterConf(&txid, script, 6, cachedHeight)
+		require.NoError(t, err)
+		covered, err := n.RegisterConf(&txid, script, 3, cachedOrigin)
+		require.NoError(t, err)
+		require.Nil(t, covered.HistoricalDispatch)
+	})
+
+	t.Run("disconnect", func(t *testing.T) {
+		n, txid, script := newNotifier(t, "prefix-cached-disconnect")
+
+		late, err := n.RegisterConf(&txid, script, 6, tipHeight)
+		require.NoError(t, err)
+		require.NoError(t, n.UpdateConfDetails(
+			late.HistoricalDispatch.ConfRequest, nil,
+		))
+
+		// After a block is disconnected, the cached hint may vouch for
+		// replaced blocks, so the prefix scans from the subscriber's
+		// own hint.
+		require.NoError(t, n.DisconnectTip(tipHeight))
+		early, err := n.RegisterConf(&txid, script, 3, cachedOrigin)
+		require.NoError(t, err)
+		require.NotNil(t, early.HistoricalDispatch)
+		require.Equal(
+			t, cachedOrigin, early.HistoricalDispatch.StartHeight,
+		)
+	})
 }

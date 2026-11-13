@@ -42,6 +42,12 @@ type mockHintCache struct {
 	mu         sync.Mutex
 	confHints  chainntnfs.ConfirmHints
 	spendHints chainntnfs.SpendHints
+
+	// zeroOrigins counts hints committed without an origin. The notifier
+	// must never write one: RegisterConf ignores a confirm hint without an
+	// origin, so a request whose hint lost its origin would be rescanned
+	// from its subscriber's hint on every restart.
+	zeroOrigins int
 }
 
 var _ chainntnfs.SpendHintCache = (*mockHintCache)(nil)
@@ -54,6 +60,9 @@ func (c *mockHintCache) CommitSpendHints(
 	defer c.mu.Unlock()
 
 	for spendRequest, hint := range hints {
+		if hint.Origin == 0 {
+			c.zeroOrigins++
+		}
 		c.spendHints[spendRequest] = hint
 	}
 
@@ -92,6 +101,9 @@ func (c *mockHintCache) CommitConfirmHints(
 	defer c.mu.Unlock()
 
 	for confRequest, hint := range hints {
+		if hint.Origin == 0 {
+			c.zeroOrigins++
+		}
 		c.confHints[confRequest] = hint
 	}
 
@@ -2712,7 +2724,11 @@ func restartStart(heightHint uint32, cached chainntnfs.HeightHint,
 func (c *mockHintCache) confRestartStart(confRequest chainntnfs.ConfRequest,
 	heightHint uint32) uint32 {
 
+	// RegisterConf ignores a confirm hint without an origin.
 	hint, err := c.QueryConfirmHint(confRequest)
+	if err == nil && hint.Origin == 0 {
+		return heightHint
+	}
 
 	return restartStart(heightHint, hint, err)
 }

@@ -534,6 +534,11 @@ func (m *asyncModel) Restart(t *rapid.T) {
 // Check drains every active subscriber's notifications and asserts the
 // model's invariants.
 func (m *asyncModel) Check(t *rapid.T) {
+	m.cache.mu.Lock()
+	zeroOrigins := m.cache.zeroOrigins
+	m.cache.mu.Unlock()
+	require.Zero(t, zeroOrigins, "hints committed without an origin")
+
 	for _, kind := range []asyncKind{asyncConf, asyncSpend} {
 		for _, ref := range m.slots(kind, true) {
 			if kind == asyncConf {

@@ -123,6 +123,13 @@ type confNtfnSet struct {
 	// set persists.
 	coverageStart uint32
 
+	// cachedHint is the hint found in the cache when the set was created,
+	// if it has an origin. It proves the blocks from its origin up to its
+	// height clean even when the first subscriber's hint was too late to
+	// use it, so a later subscriber's prefix scan can skip them. It is
+	// dropped when a block is disconnected.
+	cachedHint HeightHint
+
 	// pendingRescans is the number of historical scans whose results have
 	// not yet been reported. The set cannot safely advance its height hint
 	// until all of them complete without finding the transaction.
@@ -171,6 +178,10 @@ type spendNtfnSet struct {
 	// this set, and tip notifications. It is the origin of every hint this
 	// set persists.
 	coverageStart uint32
+
+	// cachedHint is the hint found in the cache when the set was created,
+	// if it has an origin. See confNtfnSet.cachedHint.
+	cachedHint HeightHint
 
 	// pendingRescans is the number of historical scans whose results have
 	// not yet been reported. The set cannot safely advance its height hint
@@ -674,8 +685,9 @@ func (n *TxNotifier) newConfNtfn(txid *chainhash.Hash,
 // request must begin, along with the earliest height that the scan and the
 // cached hint cover together. A cached hint only applies if the subscriber's
 // own hint is not below the hint's origin, since the cache says nothing about
-// blocks below it. A legacy hint without an origin is trusted only for the
-// first subscriber, as before origins were persisted.
+// blocks below it. A legacy spend hint without an origin is trusted only for
+// the first subscriber, as before origins were persisted; RegisterConf ignores
+// legacy confirm hints before calling this.
 func cachedScanStart(heightHint uint32, cached HeightHint,
 	found bool) (uint32, uint32) {
 
@@ -692,6 +704,21 @@ func cachedScanStart(heightHint uint32, cached HeightHint,
 	}
 
 	return cached.Height, origin
+}
+
+// prefixScanStart returns the height from which a later subscriber whose hint
+// is below a set's coverage must scan. The cached hint found when the set was
+// created proves the blocks from its origin up to its height clean, even if
+// the first subscriber's hint was too late to use it, so where it covers this
+// subscriber's hint the scan starts above it.
+func prefixScanStart(heightHint uint32, cached HeightHint) uint32 {
+	if cached.Origin != 0 && cached.Origin <= heightHint &&
+		cached.Height > heightHint {
+
+		return cached.Height
+	}
+
+	return heightHint
 }
 
 // RegisterConf handles a new confirmation notification request. The client will
@@ -757,8 +784,14 @@ func (n *TxNotifier) RegisterConf(txid *chainhash.Hash, pkScript []byte,
 		// earlier hint covers the confirmation, scan once from the
 		// subscriber's own hint; the hint stored after that carries an
 		// origin. Spend hints keep the legacy rule: every channel's
-		// funding output has one, and rescanning them all from their
-		// open heights is expensive on a pruned node.
+		// funding output has one, and with Neutrino each would be
+		// rescanned from its channel's open height. (The bitcoind and
+		// btcd backends check an outpoint with gettxout first, so
+		// there only spent outputs would be scanned.) Apart from the
+		// fee bumper on its own wallet inputs, no subscriber in lnd is
+		// known to register a spend at the tip ahead of one watching
+		// from the output's creation, which is what left confirm hints
+		// past their confirmation.
 		found := err == nil
 		if found && hint.Origin == 0 {
 			Log.Debugf("Ignoring confirm hint %d without an origin "+
@@ -769,6 +802,9 @@ func (n *TxNotifier) RegisterConf(txid *chainhash.Hash, pkScript []byte,
 		startHeight, confSet.coverageStart = cachedScanStart(
 			ntfn.HeightHint, hint, found,
 		)
+		if found && hint.Origin != 0 {
+			confSet.cachedHint = hint
+		}
 		if startHeight != ntfn.HeightHint {
 			Log.Debugf("Using height hint %d retrieved from cache "+
 				"for %v instead of %d for conf subscription",
@@ -862,9 +898,24 @@ func (n *TxNotifier) RegisterConf(txid *chainhash.Hash, pkScript []byte,
 		// persisted hint needs no change: its origin is above this
 		// subscriber's hint, so a restart before the prefix completes
 		// scans from that hint again.
-		startHeight = ntfn.HeightHint
+		startHeight = prefixScanStart(
+			ntfn.HeightHint, confSet.cachedHint,
+		)
 		endHeight = min(confSet.coverageStart-1, n.currentHeight)
-		confSet.coverageStart = startHeight
+		confSet.coverageStart = ntfn.HeightHint
+
+		// The cached hint already covers the whole prefix.
+		if startHeight > endHeight {
+			Log.Debugf("Cached hint covers the prefix down to %d "+
+				"for %v, no rescan", ntfn.HeightHint,
+				ntfn.ConfRequest)
+
+			return &ConfRegistration{
+				Event:              ntfn.Event,
+				HistoricalDispatch: nil,
+				Height:             n.currentHeight,
+			}, nil
+		}
 
 		Log.Debugf("Extending historical confirmation rescan for %v "+
 			"to include range %d-%d", ntfn.ConfRequest,
@@ -1274,6 +1325,9 @@ func (n *TxNotifier) RegisterSpend(outpoint *wire.OutPoint, pkScript []byte,
 		startHeight, spendSet.coverageStart = cachedScanStart(
 			ntfn.HeightHint, hint, err == nil,
 		)
+		if err == nil && hint.Origin != 0 {
+			spendSet.cachedHint = hint
+		}
 		if startHeight != ntfn.HeightHint {
 			Log.Debugf("Using height hint %d retrieved from cache "+
 				"for %v instead of %d for spend subscription",
@@ -1351,9 +1405,24 @@ func (n *TxNotifier) RegisterSpend(outpoint *wire.OutPoint, pkScript []byte,
 		// persisted hint needs no change: its origin is above this
 		// subscriber's hint, so a restart before the prefix completes
 		// scans from that hint again.
-		startHeight = ntfn.HeightHint
+		startHeight = prefixScanStart(
+			ntfn.HeightHint, spendSet.cachedHint,
+		)
 		endHeight = min(spendSet.coverageStart-1, n.currentHeight)
-		spendSet.coverageStart = startHeight
+		spendSet.coverageStart = ntfn.HeightHint
+
+		// The cached hint already covers the whole prefix.
+		if startHeight > endHeight {
+			Log.Debugf("Cached hint covers the prefix down to %d "+
+				"for %v, no rescan", ntfn.HeightHint,
+				ntfn.SpendRequest)
+
+			return &SpendRegistration{
+				Event:              ntfn.Event,
+				HistoricalDispatch: nil,
+				Height:             n.currentHeight,
+			}, nil
+		}
 
 		Log.Debugf("Extending historical spend rescan for %v to "+
 			"include range %d-%d", ntfn.SpendRequest, startHeight,
@@ -2096,6 +2165,16 @@ func (n *TxNotifier) DisconnectTip(blockHeight uint32) error {
 	}
 	n.currentHeight--
 	n.reorgDepth++
+
+	// A cached hint read when a set was created may vouch for blocks that
+	// were just replaced, unlike the persisted hints, which updateHints
+	// lowers below. Stop using them for prefix scans.
+	for _, confSet := range n.confNotifications {
+		confSet.cachedHint = HeightHint{}
+	}
+	for _, spendSet := range n.spendNotifications {
+		spendSet.cachedHint = HeightHint{}
+	}
 
 	// With the block disconnected, we'll update the confirm and spend hints
 	// for our notification requests to reflect the new height, except for
