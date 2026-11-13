@@ -749,8 +749,25 @@ func (n *TxNotifier) RegisterConf(txid *chainhash.Hash, pkScript []byte,
 				ntfn.ConfRequest, err)
 		}
 
+		// A confirm hint stored without an origin may have been left by
+		// a subscriber whose hint was later than the confirmation, and
+		// releases before origins were recorded stored one at the tip
+		// whenever a late subscriber's scan came up empty. Rather than
+		// trust it for the first subscriber, which may be the one whose
+		// earlier hint covers the confirmation, scan once from the
+		// subscriber's own hint; the hint stored after that carries an
+		// origin. Spend hints keep the legacy rule: every channel's
+		// funding output has one, and rescanning them all from their
+		// open heights is expensive on a pruned node.
+		found := err == nil
+		if found && hint.Origin == 0 {
+			Log.Debugf("Ignoring confirm hint %d without an origin "+
+				"for %v", hint.Height, ntfn.ConfRequest)
+			found = false
+		}
+
 		startHeight, confSet.coverageStart = cachedScanStart(
-			ntfn.HeightHint, hint, err == nil,
+			ntfn.HeightHint, hint, found,
 		)
 		if startHeight != ntfn.HeightHint {
 			Log.Debugf("Using height hint %d retrieved from cache "+

@@ -172,9 +172,9 @@ func TestTxNotifierHintOriginPrefixScans(t *testing.T) {
 	require.Equal(t, origin-10, prefix.StartHeight)
 	require.Equal(t, origin-1, prefix.EndHeight)
 
-	// A legacy hint without an origin is trusted by the first subscriber,
-	// and only as far down as that subscriber's own hint, so an earlier
-	// subscriber still scans the prefix below it.
+	// A legacy confirm hint without an origin is ignored, so the first
+	// subscriber scans from its own hint, and an earlier subscriber still
+	// scans the prefix below it.
 	legacyScript, legacyTx := staleHintTx("hint-origin-legacy")
 	legacyTxid := legacyTx.TxHash()
 	legacyRequest, err := chainntnfs.NewConfRequest(
@@ -185,7 +185,7 @@ func TestTxNotifierHintOriginPrefixScans(t *testing.T) {
 	legacy, err := n.RegisterConf(&legacyTxid, legacyScript, 1, origin)
 	require.NoError(t, err)
 	require.NotNil(t, legacy.HistoricalDispatch)
-	require.Equal(t, cached, legacy.HistoricalDispatch.StartHeight)
+	require.Equal(t, origin, legacy.HistoricalDispatch.StartHeight)
 	legacyEarly, err := n.RegisterConf(
 		&legacyTxid, legacyScript, 1, origin-10,
 	)
@@ -316,4 +316,48 @@ func advanceEmptyChain(t *testing.T, n *chainntnfs.TxNotifier, start,
 		))
 		require.NoError(t, n.NotifyHeight(height))
 	}
+}
+
+// TestTxNotifierIgnoresLegacyConfirmHint asserts that a confirm hint stored
+// without an origin, as releases before origins wrote at the tip after a late
+// subscriber's empty scan, does not move the first subscriber's scan past its
+// own hint. A legacy spend hint still applies to the first subscriber.
+func TestTxNotifierIgnoresLegacyConfirmHint(t *testing.T) {
+	const (
+		tipHeight  = uint32(1010)
+		legacyHint = uint32(1005)
+		ownHint    = uint32(900)
+	)
+
+	script, tx := staleHintTx("legacy-conf-hint")
+	txid := tx.TxHash()
+	confRequest, err := chainntnfs.NewConfRequest(&txid, script)
+	require.NoError(t, err)
+
+	outpoint, spendScript, _ := staleHintSpend("legacy-spend-hint")
+	spendRequest, err := chainntnfs.NewSpendRequest(&outpoint, spendScript)
+	require.NoError(t, err)
+
+	cache := newMockHintCache()
+	require.NoError(t, cache.CommitConfirmHints(chainntnfs.ConfirmHints{
+		confRequest: {Height: legacyHint},
+	}))
+	require.NoError(t, cache.CommitSpendHints(chainntnfs.SpendHints{
+		spendRequest: {Height: legacyHint},
+	}))
+
+	n := chainntnfs.NewTxNotifier(
+		tipHeight, chainntnfs.ReorgSafetyLimit, cache, cache,
+	)
+	t.Cleanup(n.TearDown)
+
+	conf, err := n.RegisterConf(&txid, script, 1, ownHint)
+	require.NoError(t, err)
+	require.NotNil(t, conf.HistoricalDispatch)
+	require.Equal(t, ownHint, conf.HistoricalDispatch.StartHeight)
+
+	spend, err := n.RegisterSpend(&outpoint, spendScript, ownHint)
+	require.NoError(t, err)
+	require.NotNil(t, spend.HistoricalDispatch)
+	require.Equal(t, legacyHint, spend.HistoricalDispatch.StartHeight)
 }
