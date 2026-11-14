@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
@@ -63,6 +66,16 @@ const (
 	// repeated while the daemon runs.
 	DefaultChainIdentityRecheckInterval = 5 * time.Minute
 
+	// chainIdentityRetryInterval is how often the periodic re-check
+	// asks again while the node cannot answer (restarting, warming up).
+	chainIdentityRetryInterval = 15 * time.Second
+
+	// chainIdentityUnreachableGrace is how long the periodic re-check
+	// keeps asking a node that cannot answer before it treats the
+	// silence as a mismatch. A node restart takes seconds; a node that
+	// stays away this long is a problem either way.
+	chainIdentityUnreachableGrace = 5 * time.Minute
+
 	// chainIdentityPollInterval is how often the node is asked for its
 	// header count while waiting for it to reach the activation height.
 	chainIdentityPollInterval = 5 * time.Second
@@ -102,6 +115,10 @@ type ReducedDataStatus struct {
 // BLAKE2b chain, or cannot be told apart from a node that is not.
 type ErrWrongChain struct {
 	Reason string
+
+	// Unreachable is set when the node could not answer at all (it is
+	// restarting or warming up), which says nothing about its chain.
+	Unreachable bool
 }
 
 // Error implements the error interface.
@@ -129,6 +146,12 @@ type chainIdentityChecker struct {
 	pollInterval time.Duration
 	logInterval  time.Duration
 
+	// retryInterval and unreachableGrace bound how long the periodic
+	// re-check waits for a node that cannot answer. Fields so tests can
+	// shorten them.
+	retryInterval    time.Duration
+	unreachableGrace time.Duration
+
 	// now is a field so tests can pin timestamps.
 	now func() time.Time
 
@@ -148,6 +171,9 @@ func newChainIdentityChecker(rpc blake2bChainRPC, params BitcoinNetParams,
 		pollInterval: chainIdentityPollInterval,
 		logInterval:  chainIdentityWaitLogInterval,
 		now:          time.Now,
+
+		retryInterval:    chainIdentityRetryInterval,
+		unreachableGrace: chainIdentityUnreachableGrace,
 	}
 }
 
@@ -284,7 +310,8 @@ func (c *chainIdentityChecker) verifyOnce(height uint32) (chainhash.Hash,
 	nodeHash, err := c.rpc.GetBlockHash(int64(height))
 	if err != nil {
 		return chainhash.Hash{}, &ErrWrongChain{Reason: fmt.Sprintf(
-			"the node cannot serve block %d: %v", height, err)}
+			"the node cannot serve block %d: %v", height, err),
+			Unreachable: nodeUnreachable(err)}
 	}
 
 	hashParam, err := json.Marshal(nodeHash.String())
@@ -301,7 +328,7 @@ func (c *chainIdentityChecker) verifyOnce(height uint32) (chainhash.Hash,
 	if err != nil {
 		return chainhash.Hash{}, &ErrWrongChain{Reason: fmt.Sprintf(
 			"the node cannot serve the header of block %d: %v",
-			height, err)}
+			height, err), Unreachable: nodeUnreachable(err)}
 	}
 
 	var headerHex string
@@ -479,7 +506,10 @@ func (c *chainIdentityChecker) watch(height uint32, interval time.Duration,
 			return
 		}
 
-		hash, err := c.verifyOnce(height)
+		hash, err := c.verifyWaiting(height, quit)
+		if errors.Is(err, errQuit) {
+			return
+		}
 		if err != nil {
 			c.writeStatus(ChainIdentityStatus{
 				State:            ChainIdentityRefused,
@@ -502,6 +532,55 @@ func (c *chainIdentityChecker) watch(height uint32, interval time.Duration,
 		c.logReducedData(c.reduced, rd)
 		c.reduced = rd
 	}
+}
+
+// errQuit reports that the daemon is shutting down.
+var errQuit = errors.New("chain identity check stopped")
+
+// verifyWaiting is verifyOnce for the periodic re-check: while the node
+// cannot answer at all (a restart, the RPC warm-up) it asks again every
+// retryInterval, and only gives up after unreachableGrace. A node that
+// answers with another chain is reported at once.
+func (c *chainIdentityChecker) verifyWaiting(height uint32,
+	quit <-chan struct{}) (chainhash.Hash, error) {
+
+	deadline := c.now().Add(c.unreachableGrace)
+	logged := false
+	for {
+		hash, err := c.verifyOnce(height)
+		var wrong *ErrWrongChain
+		if err == nil || !errors.As(err, &wrong) ||
+			!wrong.Unreachable || !c.now().Before(deadline) {
+
+			return hash, err
+		}
+		if !logged {
+			c.log.Warnf("The Bitcoin node cannot answer the "+
+				"chain check (%v); asking again for up to %v",
+				err, c.unreachableGrace)
+			logged = true
+		}
+
+		select {
+		case <-time.After(c.retryInterval):
+		case <-quit:
+			return chainhash.Hash{}, errQuit
+		}
+	}
+}
+
+// nodeUnreachable tells a node that could not answer (connection refused or
+// dropped, RPC warm-up) from one that answered something wrong.
+func nodeUnreachable(err error) bool {
+	var rpcErr *btcjson.RPCError
+	if errors.As(err, &rpcErr) {
+		return rpcErr.Code == btcjson.ErrRPCInWarmup
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // writeStatus records the outcome for the wrappers. Failing to write is
