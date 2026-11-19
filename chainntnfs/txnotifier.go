@@ -931,10 +931,11 @@ func (n *TxNotifier) RegisterConf(txid *chainhash.Hash, pkScript []byte,
 			"dispatching historical confirmation rescan for %v",
 			ntfn.ConfRequest)
 
-		// Set the rescan status to complete, which will allow the
-		// notifier to start delivering messages for this set
-		// immediately.
-		confSet.rescanStatus = rescanComplete
+		// If no other scan is pending, mark the set complete so the
+		// notifier can start delivering messages for it immediately.
+		if confSet.pendingRescans == 0 {
+			confSet.rescanStatus = rescanComplete
+		}
 		return &ConfRegistration{
 			Event:              ntfn.Event,
 			HistoricalDispatch: nil,
@@ -1437,10 +1438,11 @@ func (n *TxNotifier) RegisterSpend(outpoint *wire.OutPoint, pkScript []byte,
 		Log.Debugf("Spend hint of %d for %v is above current height %d",
 			startHeight, ntfn.SpendRequest, n.currentHeight)
 
-		// We'll also set the rescan status as complete to ensure that
-		// spend hints for this request get updated upon
-		// connected/disconnected blocks.
-		spendSet.rescanStatus = rescanComplete
+		// If no other scan is pending, mark the set complete so spend
+		// hints for it are updated upon connected/disconnected blocks.
+		if spendSet.pendingRescans == 0 {
+			spendSet.rescanStatus = rescanComplete
+		}
 		return &SpendRegistration{
 			Event:              ntfn.Event,
 			HistoricalDispatch: nil,
