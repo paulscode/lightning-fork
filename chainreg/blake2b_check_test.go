@@ -5,9 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -67,6 +70,8 @@ func (s *scriptedRPC) setHeaders(headers int32) {
 }
 
 func (s *scriptedRPC) GetBlockHash(h int64) (*chainhash.Hash, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.hashErr != nil {
 		return nil, s.hashErr
 	}
@@ -373,6 +378,63 @@ func TestChainIdentityWatchStopsOnMismatch(t *testing.T) {
 	}
 	close(quit)
 	require.Equal(t, ChainIdentityRefused, readStatus(t, path).State)
+}
+
+// TestChainIdentityWatchWaitsForRestartingNode: a node that cannot answer
+// for a moment (restarting, RPC warm-up) is asked again rather than taken
+// for a chain switch; one that stays away past the grace is reported.
+func TestChainIdentityWatchWaitsForRestartingNode(t *testing.T) {
+	rpc := mainnetRPC(t)
+	c := newTestChecker(t, rpc, BitcoinMainNetParams, "")
+	_, err := c.run(make(chan struct{}))
+	require.NoError(t, err)
+	c.retryInterval = time.Millisecond
+	c.unreachableGrace = time.Hour
+
+	// The node is warming up: the re-check asks again and, once the node
+	// answers, carries on without reporting anything.
+	warmup := &btcjson.RPCError{
+		Code:    btcjson.ErrRPCInWarmup,
+		Message: "Loading P2P addresses…",
+	}
+	rpc.hashErr = warmup
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		rpc.mu.Lock()
+		rpc.hashErr = nil
+		rpc.mu.Unlock()
+	}()
+	_, err = c.verifyWaiting(Blake2bMainnetActivationHeight,
+		make(chan struct{}))
+	require.NoError(t, err)
+
+	// Past the grace, silence is reported like a mismatch.
+	rpc.hashErr = warmup
+	c.unreachableGrace = 5 * time.Millisecond
+	_, err = c.verifyWaiting(Blake2bMainnetActivationHeight,
+		make(chan struct{}))
+	require.ErrorContains(t, err, "Loading P2P addresses")
+
+	// An answer that names another chain is never waited for.
+	rpc.hashErr = &btcjson.RPCError{
+		Code:    btcjson.ErrRPCOutOfRange,
+		Message: "Block height out of range",
+	}
+	c.unreachableGrace = time.Hour
+	_, err = c.verifyWaiting(Blake2bMainnetActivationHeight,
+		make(chan struct{}))
+	require.ErrorContains(t, err, "out of range")
+}
+
+// TestNodeUnreachable: only a node that could not answer is waited for.
+func TestNodeUnreachable(t *testing.T) {
+	require.True(t, nodeUnreachable(&btcjson.RPCError{
+		Code: btcjson.ErrRPCInWarmup}))
+	require.True(t, nodeUnreachable(syscall.ECONNREFUSED))
+	require.True(t, nodeUnreachable(fmt.Errorf("post: %w", io.EOF)))
+	require.False(t, nodeUnreachable(&btcjson.RPCError{
+		Code: btcjson.ErrRPCOutOfRange}))
+	require.False(t, nodeUnreachable(errors.New("no such block")))
 }
 
 // TestChainIdentityStatusFileAtomic: the file is written whole and the
