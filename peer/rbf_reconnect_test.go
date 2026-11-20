@@ -488,4 +488,9 @@ func TestRbfFeeBumpSlots(t *testing.T) {
 	err, recvErr := fn.RecvOrTimeout(got, timeout)
 	require.NoError(t, recvErr)
 	require.NoError(t, err)
+
+	// A channel's slot is dropped once no bump uses it.
+	slots.mu.Lock()
+	defer slots.mu.Unlock()
+	require.Empty(t, slots.slots)
 }

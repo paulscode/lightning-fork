@@ -12,10 +12,20 @@ import (
 //
 // A slot is a channel with room for one token: holding the token is holding
 // the slot. A bump that waits for the slot can still be cancelled, which a
-// mutex would not allow.
+// mutex would not allow. A channel's slot is kept only while a bump holds it
+// or waits for it.
 type rbfFeeBumpSlots struct {
 	mu    sync.Mutex
-	slots map[lnwire.ChannelID]chan struct{}
+	slots map[lnwire.ChannelID]*rbfFeeBumpSlot
+}
+
+// rbfFeeBumpSlot is the slot of one channel.
+type rbfFeeBumpSlot struct {
+	// token holds one value while a bump holds the slot.
+	token chan struct{}
+
+	// users counts the bumps that hold the slot or wait for it.
+	users int
 }
 
 // acquire waits until the channel's slot is free and takes it, or returns the
@@ -26,20 +36,37 @@ func (s *rbfFeeBumpSlots) acquire(ctx context.Context,
 
 	s.mu.Lock()
 	if s.slots == nil {
-		s.slots = make(map[lnwire.ChannelID]chan struct{})
+		s.slots = make(map[lnwire.ChannelID]*rbfFeeBumpSlot)
 	}
 	slot, ok := s.slots[chanID]
 	if !ok {
-		slot = make(chan struct{}, 1)
+		slot = &rbfFeeBumpSlot{token: make(chan struct{}, 1)}
 		s.slots[chanID] = slot
 	}
+	slot.users++
 	s.mu.Unlock()
 
+	// leave drops the channel's slot once no bump uses it.
+	leave := func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		slot.users--
+		if slot.users == 0 {
+			delete(s.slots, chanID)
+		}
+	}
+
 	select {
-	case slot <- struct{}{}:
-		return func() { <-slot }, nil
+	case slot.token <- struct{}{}:
+		return func() {
+			<-slot.token
+			leave()
+		}, nil
 
 	case <-ctx.Done():
+		leave()
+
 		return nil, ctx.Err()
 	}
 }
