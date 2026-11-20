@@ -35,6 +35,7 @@ type scriptedRPC struct {
 	mu         sync.Mutex
 	chain      string
 	headers    int32
+	blocks     int32 // the active chain's height; headers when zero
 	infoErr    error
 	blockHash  map[int64]*chainhash.Hash
 	hashErr    error
@@ -56,9 +57,28 @@ func (s *scriptedRPC) GetBlockChainInfo() (*btcjson.GetBlockChainInfoResult, err
 	if chain == "" {
 		chain = "main"
 	}
+	blocks := s.blocks
+	if blocks == 0 {
+		blocks = s.headers
+	}
 	return &btcjson.GetBlockChainInfoResult{
-		Chain: chain, Headers: s.headers, Blocks: s.headers,
+		Chain: chain, Headers: s.headers, Blocks: blocks,
 	}, nil
+}
+
+// setBlocks moves the node's active chain height while a check may be
+// querying it, and serves the activation block only once the chain reaches
+// it, as a node rebuilding its chain does.
+func (s *scriptedRPC) setBlocks(blocks int32, activation *chainhash.Hash) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.blocks = blocks
+	if blocks >= int32(Blake2bMainnetActivationHeight) {
+		s.blockHash[int64(Blake2bMainnetActivationHeight)] = activation
+	} else {
+		delete(s.blockHash, int64(Blake2bMainnetActivationHeight))
+	}
 }
 
 // setHeaders moves the node's header height while a check may be querying it.
@@ -252,6 +272,112 @@ func TestChainIdentityWaitsForHeight(t *testing.T) {
 	require.NoError(t, <-done)
 	require.Equal(t, ChainIdentityConfirmed, readStatus(t, path).State)
 	require.Greater(t, rpc.infoCalls, 1)
+}
+
+// TestChainIdentityWaitsForBlocks: a node with every header but an active
+// chain below the activation height (syncing blocks, or rebuilding its chain
+// state) is waited for at startup, not refused.
+func TestChainIdentityWaitsForBlocks(t *testing.T) {
+	dir := t.TempDir()
+	path := ChainIdentityStatusPath(dir, "mainnet")
+	rpc := mainnetRPC(t)
+	act := rpc.blockHash[int64(Blake2bMainnetActivationHeight)]
+	rpc.setBlocks(900000, act)
+	c := newTestChecker(t, rpc, BitcoinMainNetParams, path)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.run(make(chan struct{}))
+		done <- err
+	}()
+
+	require.Eventually(t, func() bool {
+		st, err := ReadChainIdentityStatus(path)
+		return err == nil && st.State == ChainIdentityWaiting &&
+			st.NodeHeaders == 900000
+	}, time.Second, time.Millisecond)
+	rpc.setBlocks(971774, act)
+
+	require.NoError(t, <-done)
+	require.Equal(t, ChainIdentityConfirmed, readStatus(t, path).State)
+}
+
+// TestChainIdentityWatchWaitsForReindex: a node that rebuilds its chain
+// under a running daemon (a reindex) is waited for past the unreachable
+// grace while its chain is below the activation height, and confirmed once
+// it passes it. A node on another network, or one past the height that
+// still lacks the block, is reported at once.
+func TestChainIdentityWatchWaitsForReindex(t *testing.T) {
+	dir := t.TempDir()
+	path := ChainIdentityStatusPath(dir, "mainnet")
+	rpc := mainnetRPC(t)
+	act := rpc.blockHash[int64(Blake2bMainnetActivationHeight)]
+	c := newTestChecker(t, rpc, BitcoinMainNetParams, path)
+	_, err := c.run(make(chan struct{}))
+	require.NoError(t, err)
+	c.retryInterval = time.Millisecond
+	c.unreachableGrace = 5 * time.Millisecond
+
+	rpc.setBlocks(1000, act)
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.verifyWaiting(Blake2bMainnetActivationHeight,
+			make(chan struct{}))
+		done <- err
+	}()
+
+	// Well past the grace, it is still waiting, and says so.
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("a reindexing node was reported: %v", err)
+	default:
+	}
+	st := readStatus(t, path)
+	require.Equal(t, ChainIdentityWaiting, st.State)
+	require.EqualValues(t, 1000, st.NodeHeaders)
+
+	rpc.setBlocks(971774, act)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the check did not resume once the node had the block")
+	}
+
+	// The same answer from a node on another network is not waited for.
+	rpc.setBlocks(1000, act)
+	rpc.mu.Lock()
+	rpc.chain = "test"
+	rpc.mu.Unlock()
+	_, err = c.verifyWaiting(Blake2bMainnetActivationHeight,
+		make(chan struct{}))
+	require.ErrorContains(t, err, "out of range")
+
+	// Nor is a node whose chain is past the height but lacks the block.
+	rpc.mu.Lock()
+	rpc.chain = ""
+	rpc.blocks = 971774
+	rpc.mu.Unlock()
+	_, err = c.verifyWaiting(Blake2bMainnetActivationHeight,
+		make(chan struct{}))
+	require.ErrorContains(t, err, "out of range")
+
+	// Shutting down while waiting returns promptly.
+	rpc.setBlocks(1000, act)
+	quit := make(chan struct{})
+	go func() {
+		_, err := c.verifyWaiting(Blake2bMainnetActivationHeight, quit)
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(quit)
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, errQuit)
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting on a reindexing node ignored quit")
+	}
 }
 
 // TestChainIdentityWaitQuits: shutting down while waiting returns promptly.

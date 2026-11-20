@@ -93,7 +93,11 @@ type ChainIdentityStatus struct {
 	ChainHash        string             `json:"chain_hash"`
 	ActivationHeight uint32             `json:"activation_height"`
 	ActivationHash   string             `json:"activation_hash,omitempty"`
-	NodeHeaders      int32              `json:"node_headers,omitempty"`
+
+	// NodeHeaders is, while waiting, how far the node's active chain
+	// reaches: the block it would serve for the activation height. The
+	// name is kept for the wrappers that read it.
+	NodeHeaders int32 `json:"node_headers,omitempty"`
 
 	// ReducedData is the state of the chain's temporary block-size
 	// reduction (RDTS), read from the node's getdeploymentinfo once the
@@ -120,6 +124,12 @@ type ErrWrongChain struct {
 	// Unreachable is set when the node could not answer at all (it is
 	// restarting or warming up), which says nothing about its chain.
 	Unreachable bool
+
+	// Missing is set when the node answered but did not have the
+	// activation block or its header. On a node whose active chain is
+	// below the activation height (a reindex rebuilding it from genesis)
+	// that says nothing about its chain either; see verifyWaiting.
+	Missing bool
 }
 
 // Error implements the error interface.
@@ -312,7 +322,7 @@ func (c *chainIdentityChecker) verifyOnce(height uint32) (chainhash.Hash,
 	if err != nil {
 		return chainhash.Hash{}, &ErrWrongChain{Reason: fmt.Sprintf(
 			"the node cannot serve block %d: %v", height, err),
-			Unreachable: nodeUnreachable(err)}
+			Unreachable: nodeUnreachable(err), Missing: true}
 	}
 
 	hashParam, err := json.Marshal(nodeHash.String())
@@ -329,7 +339,8 @@ func (c *chainIdentityChecker) verifyOnce(height uint32) (chainhash.Hash,
 	if err != nil {
 		return chainhash.Hash{}, &ErrWrongChain{Reason: fmt.Sprintf(
 			"the node cannot serve the header of block %d: %v",
-			height, err), Unreachable: nodeUnreachable(err)}
+			height, err), Unreachable: nodeUnreachable(err),
+			Missing: true}
 	}
 
 	var headerHex string
@@ -387,9 +398,11 @@ func (c *chainIdentityChecker) verifyOnce(height uint32) (chainhash.Hash,
 	return *nodeHash, nil
 }
 
-// waitForHeight blocks until the node's header chain reaches the activation
+// waitForHeight blocks until the node's active chain reaches the activation
 // height, writing the waiting status and logging while it does. It returns
-// early when quit is closed.
+// early when quit is closed. It waits on blocks, not headers: the check reads
+// the activation block from the active chain, which a syncing node, or one
+// rebuilding its chain state, has headers for long before it has the block.
 func (c *chainIdentityChecker) waitForHeight(height uint32,
 	quit <-chan struct{}) error {
 
@@ -411,22 +424,23 @@ func (c *chainIdentityChecker) waitForHeight(height uint32,
 				"never reach block %d", info.Chain, want, height)}
 		}
 
-		if info.Headers >= int32(height) {
+		if info.Blocks >= int32(height) {
 			return nil
 		}
 
 		c.writeStatus(ChainIdentityStatus{
 			State: ChainIdentityWaiting,
 			Reason: fmt.Sprintf("waiting for the node to reach block "+
-				"%d (it has %d headers)", height, info.Headers),
+				"%d (it has %d blocks, %d headers)", height,
+				info.Blocks, info.Headers),
 			ActivationHeight: height,
-			NodeHeaders:      info.Headers,
+			NodeHeaders:      info.Blocks,
 		})
 		if c.now().Sub(lastLog) >= c.logInterval {
 			c.log.Infof("Waiting for the Bitcoin node to reach the "+
 				"BLAKE2b activation height %d before the chain can "+
-				"be identified (node has %d headers)", height,
-				info.Headers)
+				"be identified (node has %d blocks, %d headers)",
+				height, info.Blocks, info.Headers)
 			lastLog = c.now()
 		}
 
@@ -542,14 +556,52 @@ var errQuit = errors.New("chain identity check stopped")
 // cannot answer at all (a restart, the RPC warm-up) it asks again every
 // retryInterval, and only gives up after unreachableGrace. A node that
 // answers with another chain is reported at once.
+//
+// A node that lacks the activation block while its own active chain is
+// below that height, on the expected network, is waited for as long as it
+// stays there: a reindex rebuilds the chain from genesis and can take hours.
+// Such a node serves only blocks from before the activation, which both
+// chains share, and is checked again once it has the block. A node on
+// another chain with the same network name is far past that height and is
+// still reported at once.
 func (c *chainIdentityChecker) verifyWaiting(height uint32,
 	quit <-chan struct{}) (chainhash.Hash, error) {
 
 	deadline := c.now().Add(c.unreachableGrace)
-	logged := false
+	logged, loggedBehind := false, false
 	for {
 		hash, err := c.verifyOnce(height)
 		var wrong *ErrWrongChain
+		if err != nil && errors.As(err, &wrong) && wrong.Missing &&
+			!wrong.Unreachable {
+
+			if blocks, behind := c.nodeBehind(height); behind {
+				if !loggedBehind {
+					c.log.Warnf("The Bitcoin node's chain is at "+
+						"block %d, below the BLAKE2b activation "+
+						"block %d, as during a reindex; waiting "+
+						"for it to pass that block", blocks,
+						height)
+					loggedBehind = true
+				}
+				c.writeStatus(ChainIdentityStatus{
+					State: ChainIdentityWaiting,
+					Reason: fmt.Sprintf("the node's chain is at "+
+						"block %d, below block %d", blocks,
+						height),
+					ActivationHeight: height,
+					NodeHeaders:      blocks,
+				})
+				deadline = c.now().Add(c.unreachableGrace)
+
+				select {
+				case <-time.After(c.retryInterval):
+				case <-quit:
+					return chainhash.Hash{}, errQuit
+				}
+				continue
+			}
+		}
 		if err == nil || !errors.As(err, &wrong) ||
 			!wrong.Unreachable || !c.now().Before(deadline) {
 
@@ -568,6 +620,22 @@ func (c *chainIdentityChecker) verifyWaiting(height uint32,
 			return chainhash.Hash{}, errQuit
 		}
 	}
+}
+
+// nodeBehind reports whether the node, on the expected network, says its
+// active chain has not reached height, and how far it does reach.
+func (c *chainIdentityChecker) nodeBehind(height uint32) (int32, bool) {
+	info, err := c.rpc.GetBlockChainInfo()
+	if err != nil {
+		return 0, false
+	}
+	if want := bitcoindChainName(c.params.Params); want != "" &&
+		info.Chain != want {
+
+		return 0, false
+	}
+
+	return info.Blocks, info.Blocks < int32(height)
 }
 
 // nodeUnreachable tells a node that could not answer (connection refused or
