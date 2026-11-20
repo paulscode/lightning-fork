@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -570,17 +571,32 @@ func (c *chainIdentityChecker) verifyWaiting(height uint32,
 }
 
 // nodeUnreachable tells a node that could not answer (connection refused or
-// dropped, RPC warm-up) from one that answered something wrong.
+// dropped, RPC warm-up, shutting down, overloaded) from one that answered
+// something wrong.
 func nodeUnreachable(err error) bool {
 	var rpcErr *btcjson.RPCError
 	if errors.As(err, &rpcErr) {
 		return rpcErr.Code == btcjson.ErrRPCInWarmup
 	}
 	var netErr net.Error
-	return errors.As(err, &netErr) ||
+	if errors.As(err, &netErr) ||
 		errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+
+		return true
+	}
+
+	// rpcclient flattens two more of these into text. A node that is
+	// shutting down, or whose RPC work queue is full, answers with an HTTP
+	// 5xx and a plain-text body, which rpcclient reports as "status code:
+	// 503, response: ...". A reply cut off mid-read comes back as "error
+	// reading json reply: ..." with the cause formatted away. Neither says
+	// anything about the node's chain. A 4xx (a refused password) is left
+	// as it is: the node answered, and lnd cannot use it.
+	msg := err.Error()
+	return strings.HasPrefix(msg, "status code: 5") ||
+		strings.HasPrefix(msg, "error reading json reply: ")
 }
 
 // writeStatus records the outcome for the wrappers. Failing to write is

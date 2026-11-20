@@ -421,9 +421,18 @@ func TestChainIdentityWatchWaitsForRestartingNode(t *testing.T) {
 		Message: "Block height out of range",
 	}
 	c.unreachableGrace = time.Hour
-	_, err = c.verifyWaiting(Blake2bMainnetActivationHeight,
-		make(chan struct{}))
-	require.ErrorContains(t, err, "out of range")
+	answered := make(chan error, 1)
+	go func() {
+		_, err := c.verifyWaiting(Blake2bMainnetActivationHeight,
+			make(chan struct{}))
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		require.ErrorContains(t, err, "out of range")
+	case <-time.After(5 * time.Second):
+		t.Fatal("an answer from another chain was waited on")
+	}
 }
 
 // TestNodeUnreachable: only a node that could not answer is waited for.
@@ -435,6 +444,17 @@ func TestNodeUnreachable(t *testing.T) {
 	require.False(t, nodeUnreachable(&btcjson.RPCError{
 		Code: btcjson.ErrRPCOutOfRange}))
 	require.False(t, nodeUnreachable(errors.New("no such block")))
+
+	// What rpcclient makes of a node that is shutting down or overloaded,
+	// and of a reply cut off mid-read.
+	require.True(t, nodeUnreachable(fmt.Errorf("status code: %d, "+
+		"response: %q", 503, "Request rejected during server shutdown")))
+	require.True(t, nodeUnreachable(fmt.Errorf("status code: %d, "+
+		"response: %q", 503, "Work queue depth exceeded")))
+	require.True(t, nodeUnreachable(fmt.Errorf("error reading json "+
+		"reply: %v", io.ErrUnexpectedEOF)))
+	require.False(t, nodeUnreachable(fmt.Errorf("status code: %d, "+
+		"response: %q", 401, "")))
 }
 
 // TestChainIdentityStatusFileAtomic: the file is written whole and the
