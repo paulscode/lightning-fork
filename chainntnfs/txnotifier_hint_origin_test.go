@@ -468,3 +468,81 @@ func TestTxNotifierPrefixScanUsesCachedHint(t *testing.T) {
 		)
 	})
 }
+
+// TestTxNotifierPendingScanAfterDeepReorg asserts that a prefix which lies
+// entirely above a reorged tip does not mark a set complete while its original
+// historical scan remains outstanding. A pending set must not advance its
+// cached hint when the next block connects.
+func TestTxNotifierPendingScanAfterDeepReorg(t *testing.T) {
+	const (
+		startHeight = uint32(100)
+		reorgTip    = uint32(50)
+		earlierHint = uint32(80)
+	)
+
+	disconnect := func(t *testing.T, n *chainntnfs.TxNotifier) {
+		t.Helper()
+		for height := startHeight; height > reorgTip; height-- {
+			require.NoError(t, n.DisconnectTip(height))
+		}
+	}
+
+	t.Run("confirmation", func(t *testing.T) {
+		cache := newMockHintCache()
+		n := chainntnfs.NewTxNotifier(
+			startHeight, chainntnfs.ReorgSafetyLimit, cache, cache,
+		)
+		t.Cleanup(n.TearDown)
+
+		script, tx := staleHintTx("pending-deep-reorg-conf")
+		txid := tx.TxHash()
+		initial, err := n.RegisterConf(
+			&txid, script, 1, startHeight,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, initial.HistoricalDispatch)
+		request := initial.HistoricalDispatch.ConfRequest
+
+		disconnect(t, n)
+		earlier, err := n.RegisterConf(&txid, script, 1, earlierHint)
+		require.NoError(t, err)
+		require.Nil(t, earlier.HistoricalDispatch)
+
+		block := btcutil.NewBlock(&wire.MsgBlock{})
+		require.NoError(t, n.ConnectTip(block, reorgTip+1))
+		require.NoError(t, n.NotifyHeight(reorgTip+1))
+		_, err = cache.QueryConfirmHint(request)
+		require.ErrorIs(t, err, chainntnfs.ErrConfirmHintNotFound)
+	})
+
+	t.Run("spend", func(t *testing.T) {
+		cache := newMockHintCache()
+		n := chainntnfs.NewTxNotifier(
+			startHeight, chainntnfs.ReorgSafetyLimit, cache, cache,
+		)
+		t.Cleanup(n.TearDown)
+
+		outpoint, script, _ := staleHintSpend(
+			"pending-deep-reorg-spend",
+		)
+		initial, err := n.RegisterSpend(
+			&outpoint, script, startHeight,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, initial.HistoricalDispatch)
+		request := initial.HistoricalDispatch.SpendRequest
+
+		disconnect(t, n)
+		earlier, err := n.RegisterSpend(
+			&outpoint, script, earlierHint,
+		)
+		require.NoError(t, err)
+		require.Nil(t, earlier.HistoricalDispatch)
+
+		block := btcutil.NewBlock(&wire.MsgBlock{})
+		require.NoError(t, n.ConnectTip(block, reorgTip+1))
+		require.NoError(t, n.NotifyHeight(reorgTip+1))
+		_, err = cache.QuerySpendHint(request)
+		require.ErrorIs(t, err, chainntnfs.ErrSpendHintNotFound)
+	})
+}
