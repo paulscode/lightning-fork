@@ -1448,7 +1448,7 @@ func TestSpliceFeeUnaffordableOnCandidateOnly(t *testing.T) {
 		theirs)
 	err = bob.checkPendingFundingBalances(
 		ours, theirs, ours, theirs, weight, fee, NoBuffer,
-		lenientNone,
+		lenientNone, false,
 	)
 	require.ErrorIs(t, err, ErrSpliceReserve)
 	require.ErrorIs(t, err, ErrBelowChanReserve)

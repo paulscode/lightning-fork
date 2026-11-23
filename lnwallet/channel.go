@@ -864,6 +864,26 @@ type LightningChannel struct {
 	// (channeldb.SpliceReserves.PeerCommitSeen).
 	spliceLenientCSSaved bool
 
+	// spliceSwitchConn is set on the connection at which a spliced
+	// channel's reserves changed. A peer that applies reserves as the
+	// channel loads and completed the lock from our channel_reestablish
+	// switches one connection later, sending under the earlier reserves
+	// all through this one, so spliceLenient lasts the whole connection,
+	// and on the next until the peer's first commitment_signed there.
+	spliceSwitchConn bool
+
+	// spliceSubst holds, for this connection only, the reserves the
+	// peer's channel_reestablish named when it named less than the lock
+	// it had sent us (ApplyReestablishReserves): what the peer sends is
+	// accepted under them, ours stays on the current reserves.
+	spliceSubst []channeldb.ReservePair
+
+	// spliceFloor holds, for this connection only, reserves our own
+	// updates keep besides the current ones (BOLT 2's sending floor): the
+	// reserves before a change at this connection, and those of a splice
+	// whose lock completes at this channel_reestablish.
+	spliceFloor []reserveFloor
+
 	// spliceRestoreErr is set when the pending splices couldn't be
 	// restored. Updating the channel without them could leave a splice
 	// that confirms without a commitment we can publish, so every update
@@ -4226,9 +4246,21 @@ func (lc *LightningChannel) validateCommitmentSanity(theirLogCounter,
 			ErrBelowChanReserve)
 	}
 
+	// An add of ours keeps the sending floor too (spliceFloor).
+	if predictOurAdd != nil {
+		err := lc.floorAllows(
+			lc.channelState.CurrentFundingOutpoint().Hash,
+			ourBalance, ourInitialBalance, theirBalance,
+			theirInitialBalance,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
 	err = lc.checkPendingFundingBalances(
 		ourPreFee, theirPreFee, ourInitialBalance, theirInitialBalance,
-		commitWeight, feePerKw, buffer, lenience,
+		commitWeight, feePerKw, buffer, lenience, predictOurAdd != nil,
 	)
 	if err != nil {
 		return err
@@ -9761,10 +9793,17 @@ func (lc *LightningChannel) availableCommitmentBalanceOn(view *HtlcView,
 	}
 
 	// We can never spend from the channel reserve, so we'll subtract it
-	// from our available balance.
-	ourReserve := lnwire.NewMSatFromSatoshis(
-		lc.channelState.LocalChanCfg.ChanReserve,
-	)
+	// from our available balance, or the floor our updates keep on this
+	// connection if higher (spliceFloor).
+	reserve := lc.channelState.LocalChanCfg.ChanReserve
+	fundingTxid := funding.txIn.PreviousOutPoint.Hash
+	if fundingTxid == (chainhash.Hash{}) {
+		fundingTxid = lc.channelState.CurrentFundingOutpoint().Hash
+	}
+	if floor, _, ok := lc.floorReserves(fundingTxid); ok {
+		reserve = max(reserve, floor)
+	}
+	ourReserve := lnwire.NewMSatFromSatoshis(reserve)
 	if ourReserve <= ourBalance {
 		ourBalance -= ourReserve
 	} else {

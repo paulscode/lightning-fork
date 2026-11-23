@@ -1922,3 +1922,109 @@ func TestLinkShutdownWithdrawsStfu(t *testing.T) {
 		}
 	}
 }
+
+// TestLinkSpliceReserveSwitchConnection checks the connection at which a
+// splice's reserves take effect, against a peer that switches one connection
+// later: Bob never got Alice's splice_locked, so he completed the lock from
+// her channel_reestablish and keeps the opening reserves for this connection,
+// while Alice, whose lock was complete, holds both sides to the splice's,
+// more than Bob's balance. Bob's adds under the opening reserves, before his
+// commitment_signed and after it, are taken: refusing one fails the link with
+// an error sent to Bob, on which the Core Lightning port fails the channel.
+func TestLinkSpliceReserveSwitchConnection(t *testing.T) {
+	t.Parallel()
+
+	s := newSpliceLinkHarnessReserve(t, btcutil.SatoshiPerBitcoin/10, nil)
+	s.link.channel.ApplySpliceReserves()
+	s.bob.ApplySpliceReserves()
+
+	txid := pendSplice(
+		t, s.link.channel, s.bob, 1_000*btcutil.SatoshiPerBitcoin,
+	)
+	scid := lnwire.ShortChannelID{BlockHeight: 900_000, TxIndex: 1}
+	require.NoError(t, s.bob.LockPendingFunding(txid, scid))
+	require.NoError(t, s.link.channel.LockPendingFunding(txid, scid))
+	s.link.channel.ApplySpliceReserves()
+
+	add := func() {
+		t.Helper()
+
+		amt := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin / 2)
+		var blob [lnwire.OnionPacketSize]byte
+		_, htlc, _, err := generatePayment(amt, amt, 5, blob)
+		require.NoError(t, err)
+		htlc.ID, err = s.bob.AddHTLC(htlc, nil)
+		require.NoError(t, err)
+		htlc.ChanID = s.link.ChanID()
+		s.link.HandleChannelUpdate(htlc)
+	}
+	sign := func() {
+		t.Helper()
+
+		sigs, err := s.bob.SignNextCommitment(t.Context())
+		require.NoError(t, err)
+		s.link.HandleChannelUpdate(&lnwire.CommitSig{
+			ChanID: s.link.ChanID(), CommitSig: sigs.CommitSig,
+			HtlcSigs: sigs.HtlcSigs,
+		})
+	}
+
+	// Bob's first add and commitment_signed, Alice's revocation and
+	// commitment back. Bob's revocation stays with him: the link would
+	// go on to forward his HTLC, which this harness has no route for.
+	add()
+	sign()
+	rev := nextSent[*lnwire.RevokeAndAck](t, s)
+	_, _, err := s.bob.ReceiveRevocation(rev)
+	require.NoError(t, err)
+	cs := nextSent[*lnwire.CommitSig](t, s)
+	require.NoError(t, s.bob.ReceiveNewCommitment(&lnwallet.CommitSigs{
+		CommitSig: cs.CommitSig, HtlcSigs: cs.HtlcSigs,
+	}))
+	_, _, _, err = s.bob.RevokeCurrentCommitment()
+	require.NoError(t, err)
+	s.requireNoFailure(t)
+
+	// After his first commitment_signed, still under the opening
+	// reserves: his add, and the commitment that carries it.
+	add()
+	s.requireNoFailure(t)
+	sign()
+	nextSent[*lnwire.RevokeAndAck](t, s)
+	s.requireNoFailure(t)
+}
+
+// TestLinkReestablishLockFloor checks that the link hands both
+// channel_reestablish messages' my_current_funding_locked to the channel
+// before the connection's updates: both naming a pending splice-in, a lock
+// that completes now, Bob's own updates keep the splice's reserve, 1% of
+// about 1008 BTC, which his 5 BTC can't cover, so his link has no
+// bandwidth. Alice, with 1003 BTC on the splice's funding, still has hers.
+func TestLinkReestablishLockFloor(t *testing.T) {
+	t.Parallel()
+
+	alice, bob, err := createMirroredChannel(
+		t, btcutil.SatoshiPerBitcoin*3, btcutil.SatoshiPerBitcoin*5,
+	)
+	require.NoError(t, err)
+	txid := pendSplice(
+		t, alice.channel, bob.channel, 1_000*btcutil.SatoshiPerBitcoin,
+	)
+
+	locked := fn.Some(lnwire.FundingTxidFlags{Txid: txid})
+	aliceHandler := &recordingSpliceHandler{fundingLocked: locked}
+	bobHandler := &recordingSpliceHandler{fundingLocked: locked}
+	n := newTwoHopNetworkStopped(
+		t, alice.channel, bob.channel, testStartingHeight,
+		func(c *ChannelLinkConfig) { c.SpliceHandler = aliceHandler },
+		func(c *ChannelLinkConfig) { c.SpliceHandler = bobHandler },
+	)
+	require.NoError(t, n.aliceServer.Start())
+	require.NoError(t, n.bobServer.Start())
+
+	require.Eventually(t, func() bool {
+		return n.bobChannelLink.Bandwidth() == 0
+	}, 10*time.Second, 20*time.Millisecond)
+	require.Greater(t, n.aliceChannelLink.Bandwidth(),
+		lnwire.MilliSatoshi(0))
+}
