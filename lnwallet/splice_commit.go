@@ -1650,8 +1650,10 @@ func (lc *LightningChannel) ApplySpliceReserves() {
 	// the one before it if the last splice locked during that
 	// connection. Not knowing which, the one before it is taken as the
 	// reserves applied then: at worst one entry of leniency that wasn't
-	// needed, over at the peer's first commitment_signed, rather than
-	// refusing an update it sends again under them.
+	// needed, for this connection and the next until the peer's first
+	// commitment_signed there, and a floor of those reserves for our own
+	// updates on this connection, rather than refusing an update it sends
+	// again under them.
 	if !found && spliced {
 		if prev, ok := lc.previousFundingReserve(); ok {
 			rec.InForceLocal, rec.InForceRemote = prev, prev
@@ -1700,12 +1702,31 @@ func (lc *LightningChannel) spliceReserveFor(
 // once, whether or not the peer's commitment_signed came in. Called with the
 // channel's lock held.
 func (lc *LightningChannel) clearSpliceLenienceLocked() {
+	// On the connection at which the reserves changed, a peer that applies
+	// reserves as the channel loads is still on the set in force before
+	// the change for the rest of it, splice or no splice. That one set is
+	// kept for this connection, in memory only, and the record is cleared
+	// as for any splice, so nothing stacks and the next connection holds
+	// the peer to the current reserves.
+	var keep []channeldb.ReservePair
+	switchConn := lc.spliceSwitchConn && len(lc.spliceLenient) > 0
+	if switchConn {
+		keep = lc.spliceLenient[len(lc.spliceLenient)-1:]
+	}
+
 	lc.spliceSwitchConn = false
 	if len(lc.spliceLenient) == 0 {
 		return
 	}
 	lc.spliceLenientCS = true
 	lc.endSpliceLenience()
+
+	if switchConn {
+		lc.spliceLenient = keep
+		lc.spliceLenientCS = false
+		lc.spliceLenientCSSaved = false
+		lc.spliceSwitchConn = true
+	}
 }
 
 // recordReservesLocked records the reserves just applied, and, when they
@@ -1927,6 +1948,10 @@ func (lc *LightningChannel) addLenience() reserveLenience {
 type reserveFloor struct {
 	funding       fn.Option[chainhash.Hash]
 	local, remote btcutil.Amount
+
+	// fromReestablish marks a floor ApplyReestablishReserves set, which a
+	// later call replaces.
+	fromReestablish bool
 }
 
 // floorReserves returns the highest of each side's floor on the funding
@@ -1986,7 +2011,8 @@ func (lc *LightningChannel) floorAllows(funding chainhash.Hash, ourBalance,
 // earlier splice, nothing, or a transaction we don't know: a node restored
 // from a static backup, or one that lost its record in a crash) takes the
 // reserves that transaction gives, and its updates on this connection are
-// accepted under those; ours stay on the current reserves (spliceSubst).
+// accepted under those (spliceSubst); ours meet the current reserves and,
+// as a floor, those too, for a peer that applies reserves as it loads.
 //
 // Both naming a pending splice is a lock that completes now, which a peer
 // switching at the exchange applies at once: our own updates also keep that
@@ -2000,7 +2026,7 @@ func (lc *LightningChannel) ApplyReestablishReserves(ours,
 	lc.spliceSubst = nil
 	var floors []reserveFloor
 	for _, f := range lc.spliceFloor {
-		if f.funding.IsNone() {
+		if !f.fromReestablish {
 			floors = append(floors, f)
 		}
 	}
@@ -2025,6 +2051,7 @@ func (lc *LightningChannel) ApplyReestablishReserves(ours,
 			r := lc.spliceReserveFor(p.Capacity)
 			lc.spliceFloor = append(lc.spliceFloor, reserveFloor{
 				funding: fn.Some(txid), local: r, remote: r,
+				fromReestablish: true,
 			})
 			lc.log.Infof("splice reserves: the lock of %v completes "+
 				"at this channel_reestablish; our updates keep its "+
@@ -2073,8 +2100,16 @@ func (lc *LightningChannel) ApplyReestablishReserves(ours,
 	}
 
 	lc.spliceSubst = []channeldb.ReservePair{{Local: local, Remote: remote}}
+
+	// The peer, having lost its record, may hold us to those reserves too
+	// if it applies them as the channel loads: after a splice-out they are
+	// the higher. Ours keep them as well on this connection, which costs
+	// only an add of ours.
+	lc.spliceFloor = append(lc.spliceFloor, reserveFloor{
+		local: local, remote: remote, fromReestablish: true,
+	})
 	lc.log.Infof("splice reserves: the peer's channel_reestablish names "+
 		"%v, not the funding it locked; on this connection its updates "+
-		"are accepted under the reserves that gives, %v/%v", named,
-		local, remote)
+		"are accepted under the reserves that gives, %v/%v, and ours "+
+		"keep them too", named, local, remote)
 }

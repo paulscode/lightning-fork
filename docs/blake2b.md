@@ -625,12 +625,17 @@ A peer that reconnects naming less than the lock it sent (after restoring
 from a channel backup, or losing its record in a crash) keeps this node on
 the new reserves, but its own updates are accepted on that connection
 under the reserves of the transaction it named, or of the channel's
-funding transaction if it named none.
+funding transaction if it named none or one this node doesn't know. This
+node's own updates on that connection meet those reserves as well as the
+new ones, as such a peer may hold them to the reserves it named.
 
 The node keeps a small record per channel for this (the reserves applied
 at each connection), from the first connection with this release on. A
 channel spliced before that takes the reserve of the funding its last
-splice replaced as the earlier one. The next splice ends the leniency.
+splice replaced as the earlier one. The next splice ends the leniency,
+except that on the connection at which the reserves changed the peer's
+updates stay acceptable under the reserves from before the change for the
+rest of that connection.
 
 **Backups and towers.** A channel backup made after a splice carries the
 channel's funding outputs in a trailer older versions skip, so a restore
