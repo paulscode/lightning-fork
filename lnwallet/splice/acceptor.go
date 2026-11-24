@@ -106,6 +106,9 @@ func (m *Machine) handleSpliceInit(msg *lnwire.SpliceInit) {
 		return
 	}
 	a.session = session
+	inFlight := m.ourMaxInFlight(a.capacity)
+	a.ourMaxInFlight = inFlight.UnwrapOr(0)
+	a.theirMaxInFlight = theirMaxInFlight(msg.MaxHtlcValueInFlight, nil)
 	m.setActive(a)
 	m.startTimeout()
 
@@ -115,6 +118,7 @@ func (m *Machine) handleSpliceInit(msg *lnwire.SpliceInit) {
 		FundingContribution:    0,
 		FundingPubKey:          ourKey.PubKey,
 		RequireConfirmedInputs: true,
+		MaxHtlcValueInFlight:   inFlight,
 	})
 }
 
@@ -553,6 +557,9 @@ func (m *Machine) constructionDone(res *interactivetx.Result) {
 			OursReplaced: a.oursReplaced,
 			OurOutputs:   txOutputs(a.ourOutputs),
 			AgreedAt:     a.agreedAt.Unix(),
+
+			OurMaxInFlight:   a.ourMaxInFlight,
+			TheirMaxInFlight: a.theirMaxInFlight,
 		},
 	}
 	if err := m.cfg.Channel.State().PutSpliceRecord(record); err != nil {

@@ -146,6 +146,12 @@ type Policy struct {
 	// PeerInputConfs is how deep a locked splice must be before the
 	// link lets the peer spend what it put in: 0 holds nothing.
 	PeerInputConfs uint32
+
+	// MaxValueInFlight returns the max_htlc_value_in_flight_msat this
+	// node requires of its peer at opening for a channel of a capacity: a
+	// splice raises ours to it for the splice's capacity (bolts#20). Nil
+	// raises nothing.
+	MaxValueInFlight func(capacity btcutil.Amount) lnwire.MilliSatoshi
 }
 
 // Config is a channel's splice machine's environment.
@@ -337,6 +343,17 @@ type active struct {
 
 	// capacity is the new funding output's value.
 	capacity btcutil.Amount
+
+	// ourMaxInFlight and theirMaxInFlight are the
+	// max_htlc_value_in_flight_msat each node set for the transaction
+	// (OurMaxInFlight and TheirMaxInFlight in the record), zero if none.
+	ourMaxInFlight, theirMaxInFlight lnwire.MilliSatoshi
+
+	// lastAgreed holds the values of the splice's last attempt agreed,
+	// when that isn't this one: a later one dropped or dead after it was
+	// agreed. A replacement whose message omits a value inherits it from
+	// there, as BOLT 2 has it (bolts#20). Nil when this one is the last.
+	lastAgreed *inFlightPair
 
 	// feeRate is the transaction's fee rate.
 	feeRate chainfee.SatPerKWeight

@@ -438,9 +438,17 @@ func (m *Machine) quiesced(a *active,
 		return
 	}
 
+	// The new capacity is the current one with our contribution only:
+	// handleSpliceAck refuses a contribution from the peer (M1). If that
+	// is lifted, splice_init still goes before the peer's part is known,
+	// and the value set here stays below the one for the final capacity.
+	inFlight := m.ourMaxInFlight(m.cfg.Channel.State().Capacity +
+		a.ourContribution)
+
 	m.update(func(a *active) {
 		a.phase = phaseNegotiating
 		a.lockTime = height
+		a.ourMaxInFlight = inFlight.UnwrapOr(0)
 	})
 	m.startTimeout()
 	m.report(Update{State: StateNegotiating})
@@ -453,6 +461,7 @@ func (m *Machine) quiesced(a *active,
 		LockTime:               height,
 		FundingPubKey:          a.ourKey.PubKey,
 		RequireConfirmedInputs: true,
+		MaxHtlcValueInFlight:   inFlight,
 	})
 }
 
@@ -570,6 +579,9 @@ func (m *Machine) handleSpliceAck(msg *lnwire.SpliceAck) {
 		a.theirKey = b.theirKey
 		a.theirContribution = 0
 		a.capacity = b.capacity
+		a.theirMaxInFlight = theirMaxInFlight(
+			msg.MaxHtlcValueInFlight, nil,
+		)
 	})
 
 	m.advanceConstruction()

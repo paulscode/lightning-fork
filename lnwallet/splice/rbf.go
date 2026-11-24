@@ -132,6 +132,13 @@ func (m *Machine) handleTxInitRbf(msg *lnwire.TxInitRbf) {
 	b.ourOutputs = outputs
 	b.oursReplaced = weStarted(a)
 
+	// Each node's max_htlc_value_in_flight for the replacement: set
+	// again in the messages, or the one set for the splice's last
+	// attempt agreed.
+	inFlight := m.ourMaxInFlight(b.capacity)
+	b.ourMaxInFlight = inFlight.UnwrapOr(inherited(a).ours)
+	b.theirMaxInFlight = theirMaxInFlight(msg.MaxHtlcValueInFlight, a)
+
 	// The user's request follows the splice to its latest transaction.
 	handOver(a, b)
 
@@ -150,6 +157,7 @@ func (m *Machine) handleTxInitRbf(msg *lnwire.TxInitRbf) {
 		ChannelID:                 m.cfg.ChanID,
 		FundingOutputContribution: fn.Some(ours),
 		RequireConfirmedInputs:    true,
+		MaxHtlcValueInFlight:      inFlight,
 	})
 }
 
@@ -407,6 +415,7 @@ func (m *Machine) forgetReplacement() {
 	prev := a.replaced[len(a.replaced)-1]
 	prev.replaced = a.replaced[:len(a.replaced)-1]
 	handOver(a, prev)
+	keepLastAgreed(a, prev)
 	m.mu.Lock()
 	m.active = prev
 	m.mu.Unlock()
@@ -518,6 +527,7 @@ func (m *Machine) fallBackTo(prev *active, op wire.OutPoint) {
 	}
 	prev.replaced = kept
 	handOver(a, prev)
+	keepLastAgreed(a, prev)
 	m.mu.Lock()
 	m.active = prev
 	m.mu.Unlock()
