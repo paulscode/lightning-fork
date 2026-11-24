@@ -1848,7 +1848,13 @@ func (c *OpenChannel) fullSync(tx kvdb.RwTx) error {
 		return err
 	}
 
-	return putOpenChannel(chanBucket, c)
+	if err := putOpenChannel(chanBucket, c); err != nil {
+		return err
+	}
+
+	// The max_htlc_value_in_flight_msat of the opening, kept apart from
+	// the config, which can later hold others (see SpliceInFlight).
+	return putSpliceInFlight(chanBucket, openingInFlight(c))
 }
 
 // MarkConfirmationHeight updates the channel's confirmation height once the
