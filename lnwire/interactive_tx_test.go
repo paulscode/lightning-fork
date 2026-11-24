@@ -183,6 +183,34 @@ func TestInteractiveTxGolden(t *testing.T) {
 		}, h(t, "0049", chanIDHex))
 	})
 
+	// max_htlc_value_in_flight (bolts#20): type 4073 is the BigSize
+	// fd0fe9, after the lower types.
+	t.Run("tx_init_rbf in flight", func(t *testing.T) {
+		checkGolden(t, &TxInitRbf{
+			ChannelID:                 testChanID(),
+			LockTime:                  800_000,
+			FeeRatePerKw:              253,
+			FundingOutputContribution: fn.Some(btcutil.Amount(0)),
+			RequireConfirmedInputs:    true,
+			MaxHtlcValueInFlight: fn.Some(
+				MilliSatoshi(1_980_000_000),
+			),
+		}, h(t,
+			"0048", chanIDHex, "000c3500", "000000fd",
+			"00 08 0000000000000000",     // TLV 0, s64 0
+			"02 00",                      // TLV 2, no value
+			"fd0fe9 08 0000000076046700", // TLV 4073, u64
+		))
+	})
+
+	t.Run("tx_ack_rbf in flight", func(t *testing.T) {
+		checkGolden(t, &TxAckRbf{
+			ChannelID:                 testChanID(),
+			FundingOutputContribution: fn.None[btcutil.Amount](),
+			MaxHtlcValueInFlight:      fn.Some(MilliSatoshi(1)),
+		}, h(t, "0049", chanIDHex, "fd0fe9 08 0000000000000001"))
+	})
+
 	t.Run("tx_abort", func(t *testing.T) {
 		checkGolden(t, &TxAbort{
 			ChannelID: testChanID(),
@@ -218,6 +246,38 @@ func TestSpliceGolden(t *testing.T) {
 			FundingContribution: 0,
 			FundingPubKey:       key,
 		}, h(t, "0051", chanIDHex, "0000000000000000", pubKeyHex))
+	})
+
+	t.Run("splice_init in flight", func(t *testing.T) {
+		checkGolden(t, &SpliceInit{
+			ChannelID:              testChanID(),
+			FundingContribution:    btcutil.Amount(1_000_000),
+			FundingFeeRatePerKw:    1000,
+			LockTime:               800_000,
+			FundingPubKey:          key,
+			RequireConfirmedInputs: true,
+			MaxHtlcValueInFlight: fn.Some(
+				MilliSatoshi(1_980_000_000),
+			),
+		}, h(t,
+			"0050", chanIDHex,
+			"00000000000f4240", // s64 1000000
+			"000003e8", "000c3500", pubKeyHex,
+			"02 00",
+			"fd0fe9 08 0000000076046700",
+		))
+	})
+
+	t.Run("splice_ack in flight", func(t *testing.T) {
+		checkGolden(t, &SpliceAck{
+			ChannelID:           testChanID(),
+			FundingContribution: 0,
+			FundingPubKey:       key,
+			MaxHtlcValueInFlight: fn.Some(
+				MilliSatoshi(990_000_000),
+			),
+		}, h(t, "0051", chanIDHex, "0000000000000000", pubKeyHex,
+			"fd0fe9 08 000000003b023380"))
 	})
 
 	t.Run("splice_locked", func(t *testing.T) {

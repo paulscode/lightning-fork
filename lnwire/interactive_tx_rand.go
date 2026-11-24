@@ -33,6 +33,15 @@ func randExtra(t *rapid.T, known ...uint64) ExtraOpaqueData {
 	return ExtraOpaqueData(encoded)
 }
 
+// randInFlight returns a random max_htlc_value_in_flight, or none.
+func randInFlight(t *rapid.T) fn.Option[MilliSatoshi] {
+	if !rapid.Bool().Draw(t, "inFlight") {
+		return fn.None[MilliSatoshi]()
+	}
+
+	return fn.Some(MilliSatoshi(rapid.Uint64().Draw(t, "inFlightMsat")))
+}
+
 // randBytes returns a random byte slice of length within [lo, hi], nil when
 // empty.
 func randBytes(t *rapid.T, lo, hi int, label string) []byte {
@@ -152,7 +161,8 @@ func (m *TxInitRbf) RandTestMessage(t *rapid.T) Message {
 		FeeRatePerKw:              rapid.Uint32().Draw(t, "feeRate"),
 		FundingOutputContribution: fn.None[btcutil.Amount](),
 		RequireConfirmedInputs:    rapid.Bool().Draw(t, "confirmed"),
-		ExtraData:                 randExtra(t, 0, 2),
+		MaxHtlcValueInFlight:      randInFlight(t),
+		ExtraData:                 randExtra(t, 0, 2, 4073),
 	}
 	if rapid.Bool().Draw(t, "contribution") {
 		msg.FundingOutputContribution = fn.Some(
@@ -169,7 +179,8 @@ func (m *TxAckRbf) RandTestMessage(t *rapid.T) Message {
 		ChannelID:                 RandChannelID(t),
 		FundingOutputContribution: fn.None[btcutil.Amount](),
 		RequireConfirmedInputs:    rapid.Bool().Draw(t, "confirmed"),
-		ExtraData:                 randExtra(t, 0, 2),
+		MaxHtlcValueInFlight:      randInFlight(t),
+		ExtraData:                 randExtra(t, 0, 2, 4073),
 	}
 	if rapid.Bool().Draw(t, "contribution") {
 		msg.FundingOutputContribution = fn.Some(
@@ -198,7 +209,8 @@ func (m *SpliceInit) RandTestMessage(t *rapid.T) Message {
 		LockTime:               rapid.Uint32().Draw(t, "lockTime"),
 		FundingPubKey:          RandPubKey(t),
 		RequireConfirmedInputs: rapid.Bool().Draw(t, "confirmed"),
-		ExtraData:              randExtra(t, 2),
+		MaxHtlcValueInFlight:   randInFlight(t),
+		ExtraData:              randExtra(t, 2, 4073),
 	}
 }
 
@@ -209,7 +221,8 @@ func (m *SpliceAck) RandTestMessage(t *rapid.T) Message {
 		FundingContribution:    randContribution(t, "contribution"),
 		FundingPubKey:          RandPubKey(t),
 		RequireConfirmedInputs: rapid.Bool().Draw(t, "confirmed"),
-		ExtraData:              randExtra(t, 2),
+		MaxHtlcValueInFlight:   randInFlight(t),
+		ExtraData:              randExtra(t, 2, 4073),
 	}
 }
 

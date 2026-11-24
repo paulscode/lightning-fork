@@ -37,6 +37,11 @@ type SpliceInit struct {
 	// inputs (TLV type 2, no value).
 	RequireConfirmedInputs bool
 
+	// MaxHtlcValueInFlight is the max_htlc_value_in_flight_msat the
+	// sender requires of the receiver once the splice takes effect, to
+	// raise it (TLV type 4073, u64).
+	MaxHtlcValueInFlight fn.Option[MilliSatoshi]
+
 	// ExtraData holds the TLV stream.
 	ExtraData ExtraOpaqueData
 }
@@ -63,6 +68,7 @@ func (m *SpliceInit) Encode(w *bytes.Buffer, _ uint32) error {
 	if m.RequireConfirmedInputs {
 		records = append(records, requireConfirmedInputsType)
 	}
+	records = append(records, inFlightRecords(m.MaxHtlcValueInFlight)...)
 
 	return encodeTLVs(w, m.ExtraData, records...)
 }
@@ -86,7 +92,10 @@ func (m *SpliceInit) Decode(r io.Reader, _ uint32) error {
 		return err
 	}
 
-	return decodeFlagExtra(r, &m.RequireConfirmedInputs, &m.ExtraData)
+	return decodeFlagExtra(
+		r, &m.RequireConfirmedInputs, &m.MaxHtlcValueInFlight,
+		&m.ExtraData,
+	)
 }
 
 // MsgType returns MsgSpliceInit.
@@ -116,6 +125,11 @@ type SpliceAck struct {
 	// inputs (TLV type 2, no value).
 	RequireConfirmedInputs bool
 
+	// MaxHtlcValueInFlight is the max_htlc_value_in_flight_msat the
+	// sender requires of the receiver once the splice takes effect, to
+	// raise it (TLV type 4073, u64).
+	MaxHtlcValueInFlight fn.Option[MilliSatoshi]
+
 	// ExtraData holds the TLV stream.
 	ExtraData ExtraOpaqueData
 }
@@ -136,6 +150,7 @@ func (m *SpliceAck) Encode(w *bytes.Buffer, _ uint32) error {
 	if m.RequireConfirmedInputs {
 		records = append(records, requireConfirmedInputsType)
 	}
+	records = append(records, inFlightRecords(m.MaxHtlcValueInFlight)...)
 
 	return encodeTLVs(w, m.ExtraData, records...)
 }
@@ -156,7 +171,10 @@ func (m *SpliceAck) Decode(r io.Reader, _ uint32) error {
 		return err
 	}
 
-	return decodeFlagExtra(r, &m.RequireConfirmedInputs, &m.ExtraData)
+	return decodeFlagExtra(
+		r, &m.RequireConfirmedInputs, &m.MaxHtlcValueInFlight,
+		&m.ExtraData,
+	)
 }
 
 // MsgType returns MsgSpliceAck.
@@ -287,18 +305,23 @@ func (m *StartBatch) SerializedSize() (uint32, error) {
 // TargetChanID returns the channel the message is for.
 func (m *StartBatch) TargetChanID() ChannelID { return m.ChannelID }
 
-// decodeFlagExtra reads a TLV stream whose only known record is
-// require_confirmed_inputs.
+// decodeFlagExtra reads the TLV stream of splice_init and splice_ack, whose
+// known records are require_confirmed_inputs and max_htlc_value_in_flight.
 func decodeFlagExtra(r io.Reader, requireConfirmed *bool,
-	extra *ExtraOpaqueData) error {
+	inFlight *fn.Option[MilliSatoshi], extra *ExtraOpaqueData) error {
 
-	parsed, data, err := decodeTLVs(r, requireConfirmedInputsType)
+	var v uint64
+	parsed, data, err := decodeTLVs(
+		r, requireConfirmedInputsType,
+		u64Record{maxHtlcValueInFlightType, &v},
+	)
 	if err != nil {
 		return err
 	}
 	*requireConfirmed = parsed.Contains(
 		tlv.Type(requireConfirmedInputsType),
 	)
+	*inFlight = inFlightOption(parsed, v)
 	*extra = data
 
 	return nil

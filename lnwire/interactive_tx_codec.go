@@ -89,6 +89,50 @@ func (f flagRecord) Record() tlv.Record {
 // requireConfirmedInputsType is the TLV type of require_confirmed_inputs.
 const requireConfirmedInputsType = flagRecord(2)
 
+// maxHtlcValueInFlightType is the TLV type of max_htlc_value_in_flight in
+// splice_init, splice_ack, tx_init_rbf and tx_ack_rbf (bolts#20): the
+// max_htlc_value_in_flight_msat its sender requires of its peer once the
+// splice transaction takes effect. Odd: a peer that doesn't know it ignores
+// it.
+const maxHtlcValueInFlightType tlv.Type = 4073
+
+// u64Record is a TLV record holding a u64.
+type u64Record struct {
+	typ tlv.Type
+	val *uint64
+}
+
+// Record returns the eight-byte record for the value.
+func (u u64Record) Record() tlv.Record {
+	return tlv.MakePrimitiveRecord(u.typ, u.val)
+}
+
+// inFlightRecords returns max_htlc_value_in_flight's record if the value is
+// set, for a message's known records.
+func inFlightRecords(inFlight fn.Option[MilliSatoshi]) []tlv.RecordProducer {
+	var records []tlv.RecordProducer
+	inFlight.WhenSome(func(msat MilliSatoshi) {
+		v := uint64(msat)
+		records = append(records, u64Record{
+			maxHtlcValueInFlightType, &v,
+		})
+	})
+
+	return records
+}
+
+// inFlightOption returns max_htlc_value_in_flight as decoded into v, if the
+// stream had it.
+func inFlightOption(parsed fn.Set[tlv.Type],
+	v uint64) fn.Option[MilliSatoshi] {
+
+	if !parsed.Contains(maxHtlcValueInFlightType) {
+		return fn.None[MilliSatoshi]()
+	}
+
+	return fn.Some(MilliSatoshi(v))
+}
+
 // s64Record is a TLV record holding a signed amount as an s64.
 type s64Record struct {
 	typ tlv.Type

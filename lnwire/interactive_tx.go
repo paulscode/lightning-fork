@@ -457,6 +457,12 @@ type TxInitRbf struct {
 	// inputs (TLV type 2, no value).
 	RequireConfirmedInputs bool
 
+	// MaxHtlcValueInFlight is, for a splice's replacement, the
+	// max_htlc_value_in_flight_msat the sender requires of the receiver
+	// once it takes effect (TLV type 4073, u64). Absent, the value the
+	// sender set for the splice's last attempt applies.
+	MaxHtlcValueInFlight fn.Option[MilliSatoshi]
+
 	// ExtraData holds the TLV stream.
 	ExtraData ExtraOpaqueData
 }
@@ -475,6 +481,7 @@ func (m *TxInitRbf) Encode(w *bytes.Buffer, _ uint32) error {
 
 	records := rbfRecords(
 		m.FundingOutputContribution, m.RequireConfirmedInputs,
+		m.MaxHtlcValueInFlight,
 	)
 
 	return encodeTLVs(w, m.ExtraData, records...)
@@ -489,7 +496,7 @@ func (m *TxInitRbf) Decode(r io.Reader, _ uint32) error {
 
 	return decodeRbfExtra(
 		r, &m.FundingOutputContribution, &m.RequireConfirmedInputs,
-		&m.ExtraData,
+		&m.MaxHtlcValueInFlight, &m.ExtraData,
 	)
 }
 
@@ -517,6 +524,12 @@ type TxAckRbf struct {
 	// inputs (TLV type 2, no value).
 	RequireConfirmedInputs bool
 
+	// MaxHtlcValueInFlight is, for a splice's replacement, the
+	// max_htlc_value_in_flight_msat the sender requires of the receiver
+	// once it takes effect (TLV type 4073, u64). Absent, the value the
+	// sender set for the splice's last attempt applies.
+	MaxHtlcValueInFlight fn.Option[MilliSatoshi]
+
 	// ExtraData holds the TLV stream.
 	ExtraData ExtraOpaqueData
 }
@@ -529,6 +542,7 @@ func (m *TxAckRbf) Encode(w *bytes.Buffer, _ uint32) error {
 
 	records := rbfRecords(
 		m.FundingOutputContribution, m.RequireConfirmedInputs,
+		m.MaxHtlcValueInFlight,
 	)
 
 	return encodeTLVs(w, m.ExtraData, records...)
@@ -542,7 +556,7 @@ func (m *TxAckRbf) Decode(r io.Reader, _ uint32) error {
 
 	return decodeRbfExtra(
 		r, &m.FundingOutputContribution, &m.RequireConfirmedInputs,
-		&m.ExtraData,
+		&m.MaxHtlcValueInFlight, &m.ExtraData,
 	)
 }
 
@@ -648,7 +662,8 @@ func readExtraData(r io.Reader, extra *ExtraOpaqueData) error {
 
 // rbfRecords returns the records of tx_init_rbf and tx_ack_rbf.
 func rbfRecords(contribution fn.Option[btcutil.Amount],
-	requireConfirmed bool) []tlv.RecordProducer {
+	requireConfirmed bool,
+	inFlight fn.Option[MilliSatoshi]) []tlv.RecordProducer {
 
 	var records []tlv.RecordProducer
 	contribution.WhenSome(func(amt btcutil.Amount) {
@@ -658,16 +673,21 @@ func rbfRecords(contribution fn.Option[btcutil.Amount],
 		records = append(records, requireConfirmedInputsType)
 	}
 
-	return records
+	return append(records, inFlightRecords(inFlight)...)
 }
 
 // decodeRbfExtra reads the TLV stream of tx_init_rbf and tx_ack_rbf.
 func decodeRbfExtra(r io.Reader, contribution *fn.Option[btcutil.Amount],
-	requireConfirmed *bool, extra *ExtraOpaqueData) error {
+	requireConfirmed *bool, inFlight *fn.Option[MilliSatoshi],
+	extra *ExtraOpaqueData) error {
 
-	var amt btcutil.Amount
+	var (
+		amt btcutil.Amount
+		v   uint64
+	)
 	parsed, data, err := decodeTLVs(
 		r, s64Record{0, &amt}, requireConfirmedInputsType,
+		u64Record{maxHtlcValueInFlightType, &v},
 	)
 	if err != nil {
 		return err
@@ -680,6 +700,7 @@ func decodeRbfExtra(r io.Reader, contribution *fn.Option[btcutil.Amount],
 	*requireConfirmed = parsed.Contains(
 		tlv.Type(requireConfirmedInputsType),
 	)
+	*inFlight = inFlightOption(parsed, v)
 	*extra = data
 
 	return nil
