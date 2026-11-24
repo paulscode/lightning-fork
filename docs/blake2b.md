@@ -609,14 +609,33 @@ The channel keeps working at its old size meanwhile.
 is 1% of the new capacity (or the opener's dust limit, if larger), as the
 splicing text in the specification has it. It takes effect at the next
 connection, not at the lock. Updates the peer sends again on that
-connection were added under the old reserves. Until the peer's first
-`commitment_signed` there, they are accepted when the old reserves allow
-them, so a resent HTLC doesn't close the connection on every
-reconnection. Updates of this node's own always meet the new reserves.
+connection were added under the old reserves, and a peer that completed
+the lock from this node's `channel_reestablish` may keep the old reserves
+for the whole connection. So on that connection the peer's updates are
+accepted when the old reserves allow them, and on the next one until the
+peer's first `commitment_signed` there; a resent HTLC doesn't close the
+connection on every reconnection, and an HTLC under the old reserves
+doesn't fail the channel. This node's own updates on that connection meet
+both the new reserves and the old ones, so they can't trip a peer that
+switches at a different point. When both nodes name a splice whose lock
+completes as they reconnect, this node's updates also meet that splice's
+reserves on its funding.
+
+A peer that reconnects naming less than the lock it sent (after restoring
+from a channel backup, or losing its record in a crash) keeps this node on
+the new reserves, but its own updates are accepted on that connection
+under the reserves of the transaction it named, or of the channel's
+funding transaction if it named none or one this node doesn't know. This
+node's own updates on that connection meet those reserves as well as the
+new ones, as such a peer may hold them to the reserves it named.
+
 The node keeps a small record per channel for this (the reserves applied
 at each connection), from the first connection with this release on. A
 channel spliced before that takes the reserve of the funding its last
-splice replaced as the earlier one. The next splice ends the leniency.
+splice replaced as the earlier one. The next splice ends the leniency,
+except that on the connection at which the reserves changed the peer's
+updates stay acceptable under the reserves from before the change for the
+rest of that connection.
 
 **Backups and towers.** A channel backup made after a splice carries the
 channel's funding outputs in a trailer older versions skip, so a restore

@@ -1078,7 +1078,7 @@ var ErrSpliceReserve = fmt.Errorf("%w on a pending splice",
 func (lc *LightningChannel) checkPendingFundingBalances(ours,
 	theirs, ourInitial, theirInitial lnwire.MilliSatoshi,
 	commitWeight lntypes.WeightUnit, feePerKw chainfee.SatPerKWeight,
-	buffer BufferType, lenience reserveLenience) error {
+	buffer BufferType, lenience reserveLenience, ourAdd bool) error {
 
 	ourReserve := lnwire.NewMSatFromSatoshis(
 		lc.channelState.LocalChanCfg.ChanReserve,
@@ -1114,6 +1114,14 @@ func (lc *LightningChannel) checkPendingFundingBalances(ours,
 		if err != nil {
 			return fmt.Errorf("%w: splice %v: %w", ErrSpliceReserve,
 				p.txid(), err)
+		}
+
+		// An add of ours keeps the sending floor on this funding.
+		if ourAdd {
+			if err := lc.floorAllows(p.txid(), ob, oi, tb, ti); err != nil {
+				return fmt.Errorf("%w: splice %v: %w",
+					ErrSpliceReserve, p.txid(), err)
+			}
 		}
 
 		// The splice reserves owed leniency apply here as on the
@@ -1611,6 +1619,11 @@ func (lc *LightningChannel) ApplySpliceReserves() {
 	lc.Lock()
 	defer lc.Unlock()
 
+	// What is kept for one connection only starts again.
+	lc.spliceSwitchConn = false
+	lc.spliceSubst = nil
+	lc.spliceFloor = nil
+
 	rec, found, err := lc.channelState.FetchSpliceReserves()
 	if err != nil {
 		lc.log.Errorf("unable to read splice reserves: %v", err)
@@ -1637,8 +1650,10 @@ func (lc *LightningChannel) ApplySpliceReserves() {
 	// the one before it if the last splice locked during that
 	// connection. Not knowing which, the one before it is taken as the
 	// reserves applied then: at worst one entry of leniency that wasn't
-	// needed, over at the peer's first commitment_signed, rather than
-	// refusing an update it sends again under them.
+	// needed, for this connection and the next until the peer's first
+	// commitment_signed there, and a floor of those reserves for our own
+	// updates on this connection, rather than refusing an update it sends
+	// again under them.
 	if !found && spliced {
 		if prev, ok := lc.previousFundingReserve(); ok {
 			rec.InForceLocal, rec.InForceRemote = prev, prev
@@ -1664,26 +1679,54 @@ func (lc *LightningChannel) previousFundingReserve() (btcutil.Amount, bool) {
 		if p.LockedTo != current {
 			continue
 		}
-		dust := lc.channelState.RemoteChanCfg.DustLimit
-		if lc.channelState.IsInitiator {
-			dust = lc.channelState.LocalChanCfg.DustLimit
-		}
-
-		return max(p.Capacity/100, dust), true
+		return lc.spliceReserveFor(p.Capacity), true
 	}
 
 	return 0, false
+}
+
+// spliceReserveFor is the reserve, each side's, of a splice transaction of
+// the capacity given: 1% of it, or the opener's dust limit if more.
+func (lc *LightningChannel) spliceReserveFor(
+	capacity btcutil.Amount) btcutil.Amount {
+
+	dust := lc.channelState.RemoteChanCfg.DustLimit
+	if lc.channelState.IsInitiator {
+		dust = lc.channelState.LocalChanCfg.DustLimit
+	}
+
+	return max(capacity/100, dust)
 }
 
 // clearSpliceLenienceLocked ends the leniency for earlier splice reserves at
 // once, whether or not the peer's commitment_signed came in. Called with the
 // channel's lock held.
 func (lc *LightningChannel) clearSpliceLenienceLocked() {
+	// On the connection at which the reserves changed, a peer that applies
+	// reserves as the channel loads is still on the set in force before
+	// the change for the rest of it, splice or no splice. That one set is
+	// kept for this connection, in memory only, and the record is cleared
+	// as for any splice, so nothing stacks and the next connection holds
+	// the peer to the current reserves.
+	var keep []channeldb.ReservePair
+	switchConn := lc.spliceSwitchConn && len(lc.spliceLenient) > 0
+	if switchConn {
+		keep = lc.spliceLenient[len(lc.spliceLenient)-1:]
+	}
+
+	lc.spliceSwitchConn = false
 	if len(lc.spliceLenient) == 0 {
 		return
 	}
 	lc.spliceLenientCS = true
 	lc.endSpliceLenience()
+
+	if switchConn {
+		lc.spliceLenient = keep
+		lc.spliceLenientCS = false
+		lc.spliceLenientCSSaved = false
+		lc.spliceSwitchConn = true
+	}
 }
 
 // recordReservesLocked records the reserves just applied, and, when they
@@ -1702,10 +1745,19 @@ func (lc *LightningChannel) recordReservesLocked(rec channeldb.SpliceReserves,
 			Local: rec.InForceLocal, Remote: rec.InForceRemote,
 		})
 		rec.PeerCommitSeen = false
+
+		// The earlier reserves are also our own floor on this
+		// connection, and what the peer sends is held to them for all
+		// of it (spliceSwitchConn).
+		lc.spliceSwitchConn = true
+		lc.spliceFloor = append(lc.spliceFloor, reserveFloor{
+			local: rec.InForceLocal, remote: rec.InForceRemote,
+		})
 		lc.log.Infof("splice reserves now %v/%v (were %v/%v): what "+
-			"the earlier ones allowed is accepted from the peer "+
-			"until its next commitment", local, remote,
-			rec.InForceLocal, rec.InForceRemote)
+			"the earlier ones allowed is accepted from the peer on "+
+			"this connection and until its next commitment on a "+
+			"later one, and our own updates keep both", local,
+			remote, rec.InForceLocal, rec.InForceRemote)
 	}
 	if changed {
 		rec.InForceLocal, rec.InForceRemote = local, remote
@@ -1727,8 +1779,10 @@ func (lc *LightningChannel) recordReservesLocked(rec channeldb.SpliceReserves,
 // the reserves changed is in, so a reconnection doesn't give its later
 // updates the earlier reserves again. Called with the channel's lock held.
 func (lc *LightningChannel) saveSplicePeerCommit() {
+	// On the connection that changed the reserves it doesn't count: the
+	// peer may still be sending under the earlier ones.
 	if len(lc.spliceLenient) == 0 || !lc.spliceLenientCS ||
-		lc.spliceLenientCSSaved {
+		lc.spliceLenientCSSaved || lc.spliceSwitchConn {
 
 		return
 	}
@@ -1753,7 +1807,8 @@ func (lc *LightningChannel) saveSplicePeerCommit() {
 // signed a commitment after the peer's first commitment_signed since the
 // change. Called with the channel's lock held.
 func (lc *LightningChannel) endSpliceLenience() {
-	if len(lc.spliceLenient) == 0 || !lc.spliceLenientCS {
+	if len(lc.spliceLenient) == 0 || !lc.spliceLenientCS ||
+		lc.spliceSwitchConn {
 		return
 	}
 
@@ -1825,7 +1880,9 @@ func (lc *LightningChannel) spliceLenientAllows(mode reserveLenience,
 	ourOK, _ := reservesAllow(ourBalance, ourInitial, theirBalance,
 		theirInitial, lc.channelState.LocalChanCfg.ChanReserve,
 		lc.channelState.RemoteChanCfg.ChanReserve)
-	for _, p := range lc.spliceLenient {
+	sets := append(append([]channeldb.ReservePair(nil),
+		lc.spliceLenient...), lc.spliceSubst...)
+	for _, p := range sets {
 		o, t := reservesAllow(ourBalance, ourInitial, theirBalance,
 			theirInitial, p.Local, p.Remote)
 		// The peer's balance held to the earlier set, ours to it or
@@ -1844,13 +1901,21 @@ func (lc *LightningChannel) spliceLenientAllows(mode reserveLenience,
 }
 
 // receiveLenience is the leniency for what the peer sends: full until its
-// first commitment_signed after the reserves changed, none after.
+// first commitment_signed after the reserves changed, none after; full all
+// through the connection that changed them, and the one whose peer named
+// less than it had locked.
 func (lc *LightningChannel) receiveLenience() reserveLenience {
-	if len(lc.spliceLenient) == 0 || lc.spliceLenientCS {
-		return lenientNone
+	switch {
+	case len(lc.spliceSubst) > 0:
+		return lenientFull
+
+	case len(lc.spliceLenient) > 0 &&
+		(lc.spliceSwitchConn || !lc.spliceLenientCS):
+
+		return lenientFull
 	}
 
-	return lenientFull
+	return lenientNone
 }
 
 // signLenience is the leniency for the commitment we sign while the
@@ -1859,7 +1924,7 @@ func (lc *LightningChannel) receiveLenience() reserveLenience {
 // since the change were held to the current reserves when that commitment
 // came in, so the earlier reserves still cover the ones before.
 func (lc *LightningChannel) signLenience() reserveLenience {
-	if len(lc.spliceLenient) == 0 {
+	if len(lc.spliceLenient) == 0 && len(lc.spliceSubst) == 0 {
 		return lenientNone
 	}
 
@@ -1870,9 +1935,181 @@ func (lc *LightningChannel) signLenience() reserveLenience {
 // current reserve, the peer's may still be held to an earlier one, its
 // updates from before its commitment_signed being in the view.
 func (lc *LightningChannel) addLenience() reserveLenience {
-	if len(lc.spliceLenient) == 0 {
+	if len(lc.spliceLenient) == 0 && len(lc.spliceSubst) == 0 {
 		return lenientNone
 	}
 
 	return lenientTheirs
+}
+
+// reserveFloor is a set of reserves our own updates keep on this connection
+// besides the current ones (LightningChannel.spliceFloor): on every funding,
+// or on one splice's only.
+type reserveFloor struct {
+	funding       fn.Option[chainhash.Hash]
+	local, remote btcutil.Amount
+
+	// fromReestablish marks a floor ApplyReestablishReserves set, which a
+	// later call replaces.
+	fromReestablish bool
+}
+
+// floorReserves returns the highest of each side's floor on the funding
+// given, or false if none applies.
+func (lc *LightningChannel) floorReserves(
+	funding chainhash.Hash) (btcutil.Amount, btcutil.Amount, bool) {
+
+	var local, remote btcutil.Amount
+	found := false
+	for _, f := range lc.spliceFloor {
+		if f.funding.IsSome() && f.funding.UnsafeFromSome() != funding {
+			continue
+		}
+		local, remote = max(local, f.local), max(remote, f.remote)
+		found = true
+	}
+
+	return local, remote, found
+}
+
+// floorAllows checks an add of ours against the floor on the funding given,
+// from the balances after it. Our balance keeps our floor reserve. The
+// peer's, which our add lowers only by the commitment fee and only when it
+// is the opener, keeps its floor reserve then: if its own updates took it
+// below that already, our add waits, which costs us an add and never the
+// connection.
+func (lc *LightningChannel) floorAllows(funding chainhash.Hash, ourBalance,
+	ourInitial, theirBalance, theirInitial lnwire.MilliSatoshi) error {
+
+	local, remote, ok := lc.floorReserves(funding)
+	if !ok {
+		return nil
+	}
+	ourOK, theirOK := reservesAllow(ourBalance, ourInitial, theirBalance,
+		theirInitial, local, remote)
+	switch {
+	case !ourOK:
+		return fmt.Errorf("%w: our balance below the reserve %v our "+
+			"updates keep on this connection", ErrBelowChanReserve,
+			local)
+
+	case !theirOK && !lc.channelState.IsInitiator:
+		return fmt.Errorf("%w: their balance below the reserve %v our "+
+			"updates keep on this connection", ErrBelowChanReserve,
+			remote)
+	}
+
+	return nil
+}
+
+// ApplyReestablishReserves takes the transactions both channel_reestablish
+// messages name in my_current_funding_locked, ours and the peer's, before any
+// update of this connection. The channel's reserves stay those applied as it
+// loaded (ApplySpliceReserves); this adds what BOLT 2 asks for around them.
+//
+// The peer naming less than the lock it sent us (the funding transaction, an
+// earlier splice, nothing, or a transaction we don't know: a node restored
+// from a static backup, or one that lost its record in a crash) takes the
+// reserves that transaction gives, and its updates on this connection are
+// accepted under those (spliceSubst); ours meet the current reserves and,
+// as a floor, those too, for a peer that applies reserves as it loads.
+//
+// Both naming a pending splice is a lock that completes now, which a peer
+// switching at the exchange applies at once: our own updates also keep that
+// splice's reserves on its funding on this connection (spliceFloor).
+func (lc *LightningChannel) ApplyReestablishReserves(ours,
+	theirs fn.Option[chainhash.Hash]) {
+
+	lc.Lock()
+	defer lc.Unlock()
+
+	lc.spliceSubst = nil
+	var floors []reserveFloor
+	for _, f := range lc.spliceFloor {
+		if !f.fromReestablish {
+			floors = append(floors, f)
+		}
+	}
+	lc.spliceFloor = floors
+
+	isPending := func(txid chainhash.Hash) (*pendingFunding, bool) {
+		for _, p := range lc.pendingFundings {
+			if p.txid() == txid {
+				return p, true
+			}
+		}
+
+		return nil, false
+	}
+
+	// A lock completing at this exchange.
+	if ours.IsSome() && theirs.IsSome() &&
+		ours.UnsafeFromSome() == theirs.UnsafeFromSome() {
+
+		txid := ours.UnsafeFromSome()
+		if p, ok := isPending(txid); ok {
+			r := lc.spliceReserveFor(p.Capacity)
+			lc.spliceFloor = append(lc.spliceFloor, reserveFloor{
+				funding: fn.Some(txid), local: r, remote: r,
+				fromReestablish: true,
+			})
+			lc.log.Infof("splice reserves: the lock of %v completes "+
+				"at this channel_reestablish; our updates keep its "+
+				"reserves %v on it on this connection", txid, r)
+		}
+	}
+
+	// Our lock is complete and the peer's last splice_locked is our
+	// current funding, or a pending splice: naming either, or a splice
+	// pending on it, leaves the reserves as they are.
+	state := lc.channelState
+	current := state.CurrentFundingOutpoint().Hash
+	original := state.FundingOutpoint.Hash
+	if current == original {
+		return
+	}
+	named := theirs.UnwrapOr(original)
+	if _, ok := isPending(named); ok || named == current {
+		return
+	}
+
+	rec, found, err := state.FetchSpliceReserves()
+	if err != nil || !found {
+		lc.log.Errorf("unable to read splice reserves: found=%v, %v",
+			found, err)
+
+		return
+	}
+	local, remote := rec.OpeningLocal, rec.OpeningRemote
+	if named != original {
+		prevs, err := state.PreviousFundings()
+		if err != nil {
+			lc.log.Errorf("unable to read previous fundings: %v", err)
+		}
+		for _, p := range prevs {
+			if p.OutPoint.Hash == named {
+				r := lc.spliceReserveFor(p.Capacity)
+				local, remote = r, r
+			}
+		}
+	}
+	if curLocal, curRemote := state.Reserves(); local == curLocal &&
+		remote == curRemote {
+
+		return
+	}
+
+	lc.spliceSubst = []channeldb.ReservePair{{Local: local, Remote: remote}}
+
+	// The peer, having lost its record, may hold us to those reserves too
+	// if it applies them as the channel loads: after a splice-out they are
+	// the higher. Ours keep them as well on this connection, which costs
+	// only an add of ours.
+	lc.spliceFloor = append(lc.spliceFloor, reserveFloor{
+		local: local, remote: remote, fromReestablish: true,
+	})
+	lc.log.Infof("splice reserves: the peer's channel_reestablish names "+
+		"%v, not the funding it locked; on this connection its updates "+
+		"are accepted under the reserves that gives, %v/%v, and ours "+
+		"keep them too", named, local, remote)
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/stretchr/testify/require"
 )
@@ -38,9 +39,10 @@ func lockedSplice(t *testing.T, record bool) (*LightningChannel,
 // opening reserves after the lock; at the next connection the reserves are
 // 1% of the new capacity, 10.1 BTC each, more than Bob's 5 BTC. The
 // commitments that carry his HTLC, as the reconnection sends them again, are
-// still accepted under the reserves before the change; once Alice has
-// received his commitment_signed and signed one back, a new HTLC of Bob's is
-// held to the new reserves again. Without the record of the earlier
+// still accepted under the reserves before the change, all through that
+// connection; on the next, once Alice has received his commitment_signed
+// and signed one back, a new HTLC of Bob's is held to the new reserves
+// again. Without the record of the earlier
 // reserves (a channel last connected before this release), the same
 // commitment fails on the new reserves, which is what the leniency is for.
 func TestSpliceReserveLenience(t *testing.T) {
@@ -69,6 +71,16 @@ func TestSpliceReserveLenience(t *testing.T) {
 		if !record {
 			continue
 		}
+		require.NotEmpty(t, alice.spliceLenient,
+			"leniency over on the connection that changed them")
+
+		// The next connection: Bob's first commitment_signed there,
+		// signed back, ends it.
+		alice.ApplySpliceReserves()
+		bob.ApplySpliceReserves()
+		ours, _ := createHTLC(3, lnwire.NewMSatFromSatoshis(1_000_000))
+		addAndReceiveHTLC(t, alice, bob, ours, nil)
+		require.NoError(t, ForceStateTransition(alice, bob))
 		require.Empty(t, alice.spliceLenient, "leniency not over")
 
 		rec, found, err := alice.channelState.FetchSpliceReserves()
@@ -213,8 +225,11 @@ func TestSpliceReserveSignLenience(t *testing.T) {
 
 // TestSpliceReserveLeniencePeerCommitSaved checks that the peer's
 // commitment_signed since the change is recorded when we revoke owing a
-// commitment: after a restart its new updates meet the current reserves,
-// while a commitment we sign is still lenient for the ones before.
+// commitment, on a connection after the one that changed the reserves: after
+// a restart its new updates meet the current reserves, while a commitment we
+// sign is still lenient for the ones before. On the connection that changed
+// them it isn't recorded, the peer possibly still sending under the earlier
+// ones.
 func TestSpliceReserveLeniencePeerCommitSaved(t *testing.T) {
 	t.Parallel()
 
@@ -223,6 +238,19 @@ func TestSpliceReserveLeniencePeerCommitSaved(t *testing.T) {
 	addAndReceiveHTLC(t, bob, alice, htlc, nil)
 	alice.ApplySpliceReserves()
 	bob.ApplySpliceReserves()
+	require.NoError(t, ForceStateTransition(bob, alice))
+	rec, found, err := alice.channelState.FetchSpliceReserves()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.False(t, rec.PeerCommitSeen)
+	require.NotEmpty(t, rec.Lenient)
+
+	// The next connection: Bob fulfils Alice's first HTLC and signs.
+	alice.ApplySpliceReserves()
+	bob.ApplySpliceReserves()
+	_, preimage := createHTLC(0, lnwire.NewMSatFromSatoshis(150_000))
+	require.NoError(t, bob.SettleHTLC(preimage, 0, nil, nil, nil))
+	require.NoError(t, alice.ReceiveHTLCSettle(preimage, 0))
 
 	bobSig, err := bob.SignNextCommitment(ctxb)
 	require.NoError(t, err)
@@ -230,7 +258,7 @@ func TestSpliceReserveLeniencePeerCommitSaved(t *testing.T) {
 	_, _, _, err = alice.RevokeCurrentCommitment()
 	require.NoError(t, err)
 
-	rec, found, err := alice.channelState.FetchSpliceReserves()
+	rec, found, err = alice.channelState.FetchSpliceReserves()
 	require.NoError(t, err)
 	require.True(t, found)
 	require.True(t, rec.PeerCommitSeen)
@@ -333,11 +361,303 @@ func TestSpliceReserveLenienceEndsAtSplice(t *testing.T) {
 	keys := newSpliceKeys(t, alice, bob)
 	addSplice(t, alice, bob, keys, chainhash.Hash{0x7e},
 		btcutil.SatoshiPerBitcoin, 0)
-	require.Empty(t, alice.spliceLenient)
+
+	// On the connection that changed them, the set in force before the
+	// change stays for the rest of it (a peer applying reserves at load is
+	// still on it), one set only, and nothing of it is recorded.
+	require.Len(t, alice.spliceLenient, 1)
 
 	rec, found, err := alice.channelState.FetchSpliceReserves()
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Empty(t, rec.Lenient)
 	require.False(t, rec.PeerCommitSeen)
+
+	// A second splice on the same connection stacks nothing.
+	addSplice(t, alice, bob, keys, chainhash.Hash{0x7f},
+		btcutil.SatoshiPerBitcoin, 0)
+	require.Len(t, alice.spliceLenient, 1)
+
+	// The next connection: none.
+	alice.ApplySpliceReserves()
+	require.Empty(t, alice.spliceLenient)
+}
+
+// TestSpliceReserveLenienceSwitchConnection checks the leniency on the
+// connection at which the reserves change, against a peer that switches one
+// connection later: Bob never got Alice's splice_locked, so he completes the
+// lock from her channel_reestablish and, applying reserves as the channel
+// loads, keeps the opening ones for that connection. Alice, whose lock was
+// complete, loads the splice's. Bob's adds under the opening reserves are
+// accepted for the whole connection, not only until his first
+// commitment_signed, and on the next connection until his first
+// commitment_signed there; refusing one sends the peer an error, on which
+// it may fail the channel. With a restart in between, the same.
+func TestSpliceReserveLenienceSwitchConnection(t *testing.T) {
+	t.Parallel()
+
+	for _, restart := range []bool{false, true} {
+		alice, bob := lockedSplice(t, true)
+
+		// The switch connection: Alice applies the splice's reserves,
+		// Bob keeps the opening ones.
+		alice.ApplySpliceReserves()
+		require.Greater(t, alice.channelState.RemoteChanCfg.ChanReserve,
+			bob.channelState.LocalChanCfg.ChanReserve)
+
+		htlc, _ := createHTLC(1, lnwire.NewMSatFromSatoshis(1_000_000))
+		addAndReceiveHTLC(t, bob, alice, htlc, nil)
+		require.NoError(t, ForceStateTransition(bob, alice))
+
+		// After his first commitment_signed, Bob still sends under
+		// the opening reserves on this connection.
+		htlc, _ = createHTLC(2, lnwire.NewMSatFromSatoshis(1_000_000))
+		addAndReceiveHTLC(t, bob, alice, htlc, nil)
+		require.NoError(t, ForceStateTransition(bob, alice))
+
+		// The next connection: both switch. Until Bob's first
+		// commitment_signed there, what the earlier reserves allow is
+		// still taken from him (sent again, or sent before he
+		// switched); once it is in and signed back, the new reserves
+		// hold.
+		if restart {
+			var err error
+			alice, err = restartChannel(alice)
+			require.NoError(t, err)
+		}
+		alice.ApplySpliceReserves()
+		bob.ApplySpliceReserves()
+		require.Equal(t, lenientFull, alice.receiveLenience())
+
+		ours, _ := createHTLC(3, lnwire.NewMSatFromSatoshis(1_000_000))
+		addAndReceiveHTLC(t, alice, bob, ours, nil)
+		require.NoError(t, ForceStateTransition(alice, bob))
+		require.Equal(t, lenientNone, alice.receiveLenience())
+		require.Empty(t, alice.spliceLenient)
+	}
+}
+
+// TestSpliceReserveFloor checks the sending floor: after a splice-out lowers
+// the reserves from 0.1 BTC to 0.06, the connection that applies them still
+// keeps our own adds to the earlier 0.1, in what we report as available and
+// in what we add, so a peer that switches later never sees us break them.
+// The next connection drops it.
+func TestSpliceReserveFloor(t *testing.T) {
+	t.Parallel()
+
+	alice, bob, txid := splicedPair(t, -4*btcutil.SatoshiPerBitcoin, 0)
+	alice.ApplySpliceReserves()
+	bob.ApplySpliceReserves()
+	scid := lnwire.ShortChannelID{BlockHeight: 900_100, TxIndex: 4}
+	require.NoError(t, alice.LockPendingFunding(txid, scid))
+	require.NoError(t, bob.LockPendingFunding(txid, scid))
+
+	alice.ApplySpliceReserves()
+	require.Equal(t, btcutil.Amount(6_000_000),
+		alice.channelState.LocalChanCfg.ChanReserve)
+
+	withFloor := alice.AvailableBalance()
+	floor := alice.spliceFloor
+	alice.spliceFloor = nil
+	without := alice.AvailableBalance()
+	alice.spliceFloor = floor
+	require.Equal(t, lnwire.NewMSatFromSatoshis(4_000_000),
+		without-withFloor)
+
+	// An add the new reserve allows and the earlier one doesn't.
+	htlc, _ := createHTLC(5, withFloor+lnwire.NewMSatFromSatoshis(2_000_000))
+	_, err := alice.AddHTLC(htlc, nil)
+	require.ErrorIs(t, err, ErrBelowChanReserve)
+
+	// The next connection: no floor, and the same add goes.
+	alice.ApplySpliceReserves()
+	require.Empty(t, alice.spliceFloor)
+	require.Equal(t, without, alice.AvailableBalance())
+	_, err = alice.AddHTLC(htlc, nil)
+	require.NoError(t, err)
+}
+
+// substitutedPair returns a locked splice whose reserves changed two
+// connections ago, the leniency for that change over: Alice holds both sides
+// to the splice's 10.1 BTC with nothing owed. Bob is set back to the opening
+// reserves, as a node that lost its record of the lock would hold them.
+func substitutedPair(t *testing.T) (*LightningChannel, *LightningChannel,
+	btcutil.Amount) {
+
+	t.Helper()
+
+	alice, bob := lockedSplice(t, true)
+	opening := alice.channelState.LocalChanCfg.ChanReserve
+	alice.ApplySpliceReserves()
+	bob.ApplySpliceReserves()
+	alice.ApplySpliceReserves()
+	bob.ApplySpliceReserves()
+	ours, _ := createHTLC(3, lnwire.NewMSatFromSatoshis(1_000_000))
+	addAndReceiveHTLC(t, alice, bob, ours, nil)
+	require.NoError(t, ForceStateTransition(alice, bob))
+	alice.ApplySpliceReserves()
+	require.Equal(t, lenientNone, alice.receiveLenience())
+
+	bob.channelState.SetChanReserves(opening, opening)
+
+	return alice, bob, opening
+}
+
+// TestSpliceReserveSubstitution checks the leniency of a node that
+// substitutes its peer's last splice_locked: Bob's channel_reestablish
+// names the funding transaction (a restore, or a crash that lost his record
+// of the lock), nothing, or a transaction Alice doesn't know. Alice keeps
+// the splice's reserves, and on this connection takes Bob's updates under
+// the opening ones that transaction gives, before and after his
+// commitment_signed. Bob naming the splice itself gets no leniency, and the
+// next connection ends it.
+func TestSpliceReserveSubstitution(t *testing.T) {
+	t.Parallel()
+
+	for name, named := range map[string]func(*LightningChannel) fn.Option[chainhash.Hash]{
+		"funding": func(lc *LightningChannel) fn.Option[chainhash.Hash] {
+			return fn.Some(lc.channelState.FundingOutpoint.Hash)
+		},
+		"missing": func(*LightningChannel) fn.Option[chainhash.Hash] {
+			return fn.None[chainhash.Hash]()
+		},
+		"unknown": func(*LightningChannel) fn.Option[chainhash.Hash] {
+			return fn.Some(chainhash.Hash{0xee})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			alice, bob, opening := substitutedPair(t)
+			current := alice.channelState.CurrentFundingOutpoint().Hash
+			alice.ApplyReestablishReserves(fn.Some(current),
+				named(alice))
+			require.Equal(t, []channeldb.ReservePair{
+				{Local: opening, Remote: opening},
+			}, alice.spliceSubst)
+			require.Greater(t,
+				alice.channelState.RemoteChanCfg.ChanReserve,
+				opening, "Alice's reserves stay the splice's")
+
+			for i := uint64(1); i < 3; i++ {
+				htlc, _ := createHTLC(int(i),
+					lnwire.NewMSatFromSatoshis(1_000_000))
+				addAndReceiveHTLC(t, bob, alice, htlc, nil)
+				require.NoError(t, ForceStateTransition(bob, alice))
+			}
+
+			alice.ApplySpliceReserves()
+			require.Empty(t, alice.spliceSubst)
+			htlc, _ := createHTLC(3,
+				lnwire.NewMSatFromSatoshis(1_000_000))
+			_, err := alice.ReceiveHTLC(htlc)
+			require.ErrorIs(t, err, ErrBelowChanReserve)
+		})
+	}
+
+	// Bob naming the splice: no leniency.
+	alice, bob, _ := substitutedPair(t)
+	current := alice.channelState.CurrentFundingOutpoint().Hash
+	alice.ApplyReestablishReserves(fn.Some(current), fn.Some(current))
+	require.Empty(t, alice.spliceSubst)
+	htlc, _ := createHTLC(1, lnwire.NewMSatFromSatoshis(1_000_000))
+	_, err := bob.AddHTLC(htlc, nil)
+	require.NoError(t, err)
+	_, err = alice.ReceiveHTLC(htlc)
+	require.ErrorIs(t, err, ErrBelowChanReserve)
+}
+
+// TestSpliceReserveFloorLockAtReestablish checks the floor for a lock that
+// completes at channel_reestablish, both naming the pending splice: a peer
+// switching at the exchange holds us to the splice's reserves at once, so
+// ours keep them on its funding on this connection. Bob, with 5 BTC against
+// the splice's 10.1 BTC reserve, can add nothing; Alice, whose balance on
+// the splice's funding is 1005 BTC, is not held back on the current one,
+// where she has 5. Both naming different transactions adds no floor.
+func TestSpliceReserveFloorLockAtReestablish(t *testing.T) {
+	t.Parallel()
+
+	alice, bob, txid := splicedPair(t, 1_000*btcutil.SatoshiPerBitcoin, 0)
+	alice.ApplySpliceReserves()
+	bob.ApplySpliceReserves()
+
+	current := bob.channelState.CurrentFundingOutpoint().Hash
+	bob.ApplyReestablishReserves(fn.Some(txid), fn.Some(current))
+	require.Empty(t, bob.spliceFloor)
+
+	bob.ApplyReestablishReserves(fn.Some(txid), fn.Some(txid))
+	alice.ApplyReestablishReserves(fn.Some(txid), fn.Some(txid))
+	require.Len(t, bob.spliceFloor, 1)
+
+	htlc, _ := createHTLC(5, lnwire.NewMSatFromSatoshis(1_000_000))
+	_, err := bob.AddHTLC(htlc, nil)
+	require.ErrorIs(t, err, ErrSpliceReserve)
+	require.Zero(t, bob.AvailableBalance())
+
+	ours, _ := createHTLC(6, lnwire.NewMSatFromSatoshis(
+		btcutil.SatoshiPerBitcoin))
+	_, err = alice.AddHTLC(ours, nil)
+	require.NoError(t, err)
+}
+
+// TestSpliceReserveSwitchConnectionSurvivesSplice checks a second splice on
+// the connection at which the reserves changed: the peer that applies
+// reserves as the channel loads is still on the earlier ones for the rest of
+// that connection, so its adds under them are still taken after the new
+// splice starts, on the current funding and the pending one. The leniency
+// is over at the next connection, as the new splice ends it.
+func TestSpliceReserveSwitchConnectionSurvivesSplice(t *testing.T) {
+	t.Parallel()
+
+	alice, bob := lockedSplice(t, true)
+	alice.ApplySpliceReserves()
+
+	keys := newSpliceKeys(t, alice, bob)
+	txid := chainhash.Hash{0x8f}
+	addSplice(t, alice, bob, keys, txid, btcutil.SatoshiPerBitcoin, 0)
+	exchangeSpliceCommitments(t, alice, bob, txid)
+
+	htlc, _ := createHTLC(1, lnwire.NewMSatFromSatoshis(1_000_000))
+	addAndReceiveHTLC(t, bob, alice, htlc, nil)
+	forceBatchTransition(t, bob, alice)
+
+	htlc, _ = createHTLC(2, lnwire.NewMSatFromSatoshis(1_000_000))
+	addAndReceiveHTLC(t, bob, alice, htlc, nil)
+
+	rec, found, err := alice.channelState.FetchSpliceReserves()
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Empty(t, rec.Lenient, "kept past this connection")
+
+	alice.ApplySpliceReserves()
+	require.Equal(t, lenientNone, alice.receiveLenience())
+}
+
+// TestSpliceReserveSubstitutionFloor checks our own sends when we substitute
+// for a peer that names the funding transaction: after a splice-out lowered
+// the reserves from 0.1 BTC to 0.06, the peer, having lost its record, may
+// hold us to the opening 0.1 if it applies reserves as the channel loads, so
+// ours keep 0.1 on that connection too. Naming the splice adds no floor.
+func TestSpliceReserveSubstitutionFloor(t *testing.T) {
+	t.Parallel()
+
+	alice, bob, txid := splicedPair(t, -4*btcutil.SatoshiPerBitcoin, 0)
+	alice.ApplySpliceReserves()
+	bob.ApplySpliceReserves()
+	scid := lnwire.ShortChannelID{BlockHeight: 900_100, TxIndex: 4}
+	require.NoError(t, alice.LockPendingFunding(txid, scid))
+	require.NoError(t, bob.LockPendingFunding(txid, scid))
+
+	// Two connections on: the change and its floor are behind us.
+	alice.ApplySpliceReserves()
+	alice.ApplySpliceReserves()
+	require.Empty(t, alice.spliceFloor)
+	current := alice.channelState.CurrentFundingOutpoint().Hash
+	plain := alice.AvailableBalance()
+
+	alice.ApplyReestablishReserves(fn.Some(current), fn.Some(current))
+	require.Equal(t, plain, alice.AvailableBalance())
+
+	alice.ApplyReestablishReserves(fn.Some(current),
+		fn.Some(alice.channelState.FundingOutpoint.Hash))
+	require.Equal(t, lnwire.NewMSatFromSatoshis(4_000_000),
+		plain-alice.AvailableBalance())
 }

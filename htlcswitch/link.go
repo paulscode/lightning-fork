@@ -1267,6 +1267,21 @@ func (l *channelLink) syncChanStates(ctx context.Context) error {
 					l.peerTxSigs = true
 				}
 			}
+			// The reserves around what both name, before any
+			// update of this connection: the machine takes the
+			// peer's message on its own queue, after updates may
+			// already be coming in.
+			txid := func(f lnwire.FundingTxidFlags) chainhash.Hash {
+				return f.Txid
+			}
+			l.channel.ApplyReestablishReserves(
+				fn.MapOption(txid)(
+					localChanSyncMsg.MyCurrentFundingLocked,
+				),
+				fn.MapOption(txid)(
+					remoteChanSyncMsg.MyCurrentFundingLocked,
+				),
+			)
 			remoteChanSyncMsg.MyCurrentFundingLocked.WhenSome(
 				func(f lnwire.FundingTxidFlags) {
 					l.notePeerLocked(f.Txid)
