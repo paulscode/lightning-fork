@@ -263,7 +263,8 @@ func (s *server) newSpliceMachine(base splice.Config,
 				s.cfg.ProtocolOptions.SplicePeerInputConfs,
 			)
 		},
-		PeerInputConfs: s.cfg.ProtocolOptions.SplicePeerInputConfs,
+		PeerInputConfs:   s.cfg.ProtocolOptions.SplicePeerInputConfs,
+		MaxValueInFlight: requiredRemoteMaxValue,
 	}
 
 	ch := base.Channel
@@ -847,4 +848,17 @@ func (s *server) notifyFundingSpentUnknown(chanPoint wire.OutPoint,
 		Kind:                 "funding_spent_unknown",
 		Txid:                 txid,
 	})
+}
+
+// recordOpeningInFlight records, for each open channel that has none yet, the
+// max_htlc_value_in_flight_msat of its opening as its stored config holds
+// them (bolts#20): before any subsystem loads the channels and applies the
+// values a splice raised to the config in memory. A channel opened since
+// this was added has them from its first save; a failure here leaves them to
+// be recorded on first use (see channeldb.OpenChannel.SpliceInFlight).
+func (s *server) recordOpeningInFlight() {
+	if err := s.chanStateDB.RecordOpeningInFlight(); err != nil {
+		srvrLog.Errorf("Recording the channels' opening "+
+			"max_htlc_value_in_flight: %v", err)
+	}
 }

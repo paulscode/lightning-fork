@@ -129,6 +129,13 @@ func (c *OpenChannel) LockSplice(l SpliceLock) error {
 			LockedTo:  l.Funding.OutPoint,
 			Scid:      channel.CurrentShortChanID(),
 		}
+		// Before the swap, which deletes the splice's record.
+		err = spliceLockInFlight(
+			chanBucket, channel, &previous, l.Funding.OutPoint,
+		)
+		if err != nil {
+			return err
+		}
 		if l.LocalCommit != nil {
 			err := swapSpliceCommitments(chanBucket, channel, l)
 			if err != nil {
@@ -355,6 +362,16 @@ type PreviousFunding struct {
 	// invoice's route hints carry the one current when it was issued.
 	// Written last; zero in a record written without it.
 	Scid lnwire.ShortChannelID
+
+	// OurMaxInFlight and TheirMaxInFlight are the
+	// max_htlc_value_in_flight_msat this node and the peer set for the
+	// splice transaction that created this output (bolts#20), as
+	// SpliceNegotiation keeps them: zero if not set, for the channel's
+	// original funding output (its opening values are kept apart, see
+	// SpliceInFlight), and in a record written without them. Written
+	// after Scid.
+	OurMaxInFlight   lnwire.MilliSatoshi
+	TheirMaxInFlight lnwire.MilliSatoshi
 }
 
 // putPreviousFunding records a funding output the channel moved away from.
@@ -375,7 +392,8 @@ func putPreviousFunding(chanBucket kvdb.RwBucket, f *PreviousFunding) error {
 	}
 	err = WriteElements(&value, uint64(f.Capacity),
 		uint32(f.LocalKey.Family), f.LocalKey.Index, f.LocalKey.PubKey,
-		f.RemoteKey, f.Scid.ToUint64(),
+		f.RemoteKey, f.Scid.ToUint64(), uint64(f.OurMaxInFlight),
+		uint64(f.TheirMaxInFlight),
 	)
 	if err != nil {
 		return err
@@ -409,48 +427,70 @@ func (c *OpenChannel) PreviousFundings() ([]PreviousFunding, error) {
 		case err != nil:
 			return err
 		}
-		bucket := chanBucket.NestedReadBucket(
-			splicePreviousFundingsBucket,
-		)
-		if bucket == nil {
-			return nil
-		}
+		fundings, err = readPreviousFundings(chanBucket)
 
-		return bucket.ForEach(func(k, v []byte) error {
-			var (
-				f        PreviousFunding
-				capacity uint64
-				family   uint32
-			)
-			err := graphdb.ReadOutpoint(bytes.NewReader(k), &f.OutPoint)
-			if err != nil {
-				return err
-			}
-			r := bytes.NewReader(v)
-			if err := graphdb.ReadOutpoint(r, &f.LockedTo); err != nil {
-				return err
-			}
-			err = ReadElements(r, &capacity, &family,
-				&f.LocalKey.Index, &f.LocalKey.PubKey, &f.RemoteKey,
-			)
-			if err != nil {
-				return err
-			}
-			if r.Len() > 0 {
-				var scid uint64
-				if err := ReadElements(r, &scid); err != nil {
-					return err
-				}
-				f.Scid = lnwire.NewShortChanIDFromInt(scid)
-			}
-			f.Capacity = btcutil.Amount(capacity)
-			f.LocalKey.Family = keychain.KeyFamily(family)
-			fundings = append(fundings, f)
-
-			return nil
-		})
+		return err
 	}, func() {
 		fundings = nil
+	})
+
+	return fundings, err
+}
+
+// readPreviousFundings reads the funding outputs a channel moved away from,
+// from its bucket.
+func readPreviousFundings(chanBucket kvdb.RBucket) ([]PreviousFunding,
+	error) {
+
+	var fundings []PreviousFunding
+	bucket := chanBucket.NestedReadBucket(
+		splicePreviousFundingsBucket,
+	)
+	if bucket == nil {
+		return nil, nil
+	}
+
+	err := bucket.ForEach(func(k, v []byte) error {
+		var (
+			f        PreviousFunding
+			capacity uint64
+			family   uint32
+		)
+		err := graphdb.ReadOutpoint(bytes.NewReader(k), &f.OutPoint)
+		if err != nil {
+			return err
+		}
+		r := bytes.NewReader(v)
+		if err := graphdb.ReadOutpoint(r, &f.LockedTo); err != nil {
+			return err
+		}
+		err = ReadElements(r, &capacity, &family,
+			&f.LocalKey.Index, &f.LocalKey.PubKey, &f.RemoteKey,
+		)
+		if err != nil {
+			return err
+		}
+		if r.Len() > 0 {
+			var scid uint64
+			if err := ReadElements(r, &scid); err != nil {
+				return err
+			}
+			f.Scid = lnwire.NewShortChanIDFromInt(scid)
+		}
+		if r.Len() > 0 {
+			var ours, theirs uint64
+			err := ReadElements(r, &ours, &theirs)
+			if err != nil {
+				return err
+			}
+			f.OurMaxInFlight = lnwire.MilliSatoshi(ours)
+			f.TheirMaxInFlight = lnwire.MilliSatoshi(theirs)
+		}
+		f.Capacity = btcutil.Amount(capacity)
+		f.LocalKey.Family = keychain.KeyFamily(family)
+		fundings = append(fundings, f)
+
+		return nil
 	})
 
 	return fundings, err

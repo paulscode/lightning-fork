@@ -168,6 +168,20 @@ type SpliceNegotiation struct {
 	// OurOutputs are the outputs this node added: change, or the
 	// destination of funds moved out.
 	OurOutputs []*wire.TxOut
+
+	// OurMaxInFlight is the max_htlc_value_in_flight_msat this node set
+	// for the transaction in splice_init, splice_ack or the RBF message
+	// of its attempt (bolts#20): what it requires of the peer once the
+	// transaction takes effect. TheirMaxInFlight is the one the peer set,
+	// what it requires of this node. For a replacement that didn't set
+	// one, the value set for the splice's last attempt agreed. Zero if
+	// not set, or in a record written without them: the cap then doesn't
+	// rise with this transaction. An older build skips them when reading
+	// the record, but drops them if it writes the record again (as when
+	// it sends splice_locked): a node taken back to one with a splice
+	// pending can lose them for that splice.
+	OurMaxInFlight   lnwire.MilliSatoshi
+	TheirMaxInFlight lnwire.MilliSatoshi
 }
 
 // SpliceInput is an input of a splice transaction as negotiated.
@@ -185,20 +199,22 @@ type SpliceInput struct {
 
 // SpliceNegotiation TLV types.
 const (
-	negWeInitiatedType     tlv.Type = 0
-	negTxType              tlv.Type = 1
-	negFeeRateType         tlv.Type = 2
-	negOurInputsType       tlv.Type = 3
-	negOurTxSigsType       tlv.Type = 4
-	negTheirTxSigsType     tlv.Type = 5
-	negBroadcastHeightType tlv.Type = 6
-	negLockedType          tlv.Type = 7
-	negInputsType          tlv.Type = 8
-	negOurOutputsType      tlv.Type = 9
-	negLockedScidType      tlv.Type = 11
-	negAgreedAtType        tlv.Type = 13
-	negSignFailedAtType    tlv.Type = 15
-	negSignFailuresType    tlv.Type = 17
+	negWeInitiatedType      tlv.Type = 0
+	negTxType               tlv.Type = 1
+	negFeeRateType          tlv.Type = 2
+	negOurInputsType        tlv.Type = 3
+	negOurTxSigsType        tlv.Type = 4
+	negTheirTxSigsType      tlv.Type = 5
+	negBroadcastHeightType  tlv.Type = 6
+	negLockedType           tlv.Type = 7
+	negInputsType           tlv.Type = 8
+	negOurOutputsType       tlv.Type = 9
+	negLockedScidType       tlv.Type = 11
+	negAgreedAtType         tlv.Type = 13
+	negSignFailedAtType     tlv.Type = 15
+	negSignFailuresType     tlv.Type = 17
+	negOurMaxInFlightType   tlv.Type = 19
+	negTheirMaxInFlightType tlv.Type = 21
 )
 
 // encode serializes a negotiation as a TLV stream.
@@ -351,6 +367,18 @@ func (n *SpliceNegotiation) encode(w io.Writer) error {
 			negSignFailuresType, &n.SignFailures,
 		))
 	}
+	if n.OurMaxInFlight > 0 {
+		ours := uint64(n.OurMaxInFlight)
+		records = append(records, tlv.MakePrimitiveRecord(
+			negOurMaxInFlightType, &ours,
+		))
+	}
+	if n.TheirMaxInFlight > 0 {
+		theirs := uint64(n.TheirMaxInFlight)
+		records = append(records, tlv.MakePrimitiveRecord(
+			negTheirMaxInFlightType, &theirs,
+		))
+	}
 
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
@@ -371,6 +399,7 @@ func decodeSpliceNegotiation(r io.Reader) (*SpliceNegotiation, error) {
 		ourOutputs         []byte
 		scid, agreed       uint64
 		signFailed         uint64
+		ourCap, theirCap   uint64
 	)
 	stream, err := tlv.NewStream(
 		tlv.MakePrimitiveRecord(negWeInitiatedType, &flags),
@@ -389,6 +418,8 @@ func decodeSpliceNegotiation(r io.Reader) (*SpliceNegotiation, error) {
 		tlv.MakePrimitiveRecord(negAgreedAtType, &agreed),
 		tlv.MakePrimitiveRecord(negSignFailedAtType, &signFailed),
 		tlv.MakePrimitiveRecord(negSignFailuresType, &n.SignFailures),
+		tlv.MakePrimitiveRecord(negOurMaxInFlightType, &ourCap),
+		tlv.MakePrimitiveRecord(negTheirMaxInFlightType, &theirCap),
 	)
 	if err != nil {
 		return nil, err
@@ -404,6 +435,8 @@ func decodeSpliceNegotiation(r io.Reader) (*SpliceNegotiation, error) {
 	n.LockedSent = locked&1 != 0
 	n.LockedReceived = locked&2 != 0
 	n.LockedScid = lnwire.NewShortChanIDFromInt(scid)
+	n.OurMaxInFlight = lnwire.MilliSatoshi(ourCap)
+	n.TheirMaxInFlight = lnwire.MilliSatoshi(theirCap)
 	if agreed <= math.MaxInt64 {
 		n.AgreedAt = int64(agreed)
 	}
@@ -854,22 +887,32 @@ func (c *OpenChannel) SpliceRecords() ([]*SpliceRecord, error) {
 		case err != nil:
 			return err
 		}
-		bucket := chanBucket.NestedReadBucket(spliceRecordsBucket)
-		if bucket == nil {
-			return nil
-		}
+		records, err = readSpliceRecords(chanBucket)
 
-		return bucket.ForEach(func(_, v []byte) error {
-			r, err := decodeSpliceRecord(bytes.NewReader(v))
-			if err != nil {
-				return err
-			}
-			records = append(records, r)
-
-			return nil
-		})
+		return err
 	}, func() {
 		records = nil
+	})
+
+	return records, err
+}
+
+// readSpliceRecords reads a channel's pending splices from its bucket.
+func readSpliceRecords(chanBucket kvdb.RBucket) ([]*SpliceRecord, error) {
+	bucket := chanBucket.NestedReadBucket(spliceRecordsBucket)
+	if bucket == nil {
+		return nil, nil
+	}
+
+	var records []*SpliceRecord
+	err := bucket.ForEach(func(_, v []byte) error {
+		r, err := decodeSpliceRecord(bytes.NewReader(v))
+		if err != nil {
+			return err
+		}
+		records = append(records, r)
+
+		return nil
 	})
 
 	return records, err

@@ -1904,13 +1904,7 @@ func newServer(ctx context.Context, cfg *Config, listenAddrs []net.Addr,
 
 			return reserve
 		},
-		RequiredRemoteMaxValue: func(chanAmt btcutil.Amount) lnwire.MilliSatoshi {
-			// By default, we'll allow the remote peer to fully
-			// utilize the full bandwidth of the channel, minus our
-			// required reserve.
-			reserve := lnwire.NewMSatFromSatoshis(chanAmt / 100)
-			return lnwire.NewMSatFromSatoshis(chanAmt) - reserve
-		},
+		RequiredRemoteMaxValue: requiredRemoteMaxValue,
 		RequiredRemoteMaxHTLCs: func(chanAmt btcutil.Amount) uint16 {
 			if cfg.DefaultRemoteMaxHtlcs > 0 {
 				return cfg.DefaultRemoteMaxHtlcs
@@ -2505,6 +2499,10 @@ func (s *server) Start(ctx context.Context) error {
 
 			return
 		}
+
+		// Before anything loads the channels: their opening
+		// max_htlc_value_in_flight, for those without it recorded.
+		s.recordOpeningInFlight()
 
 		cleanup = cleanup.add(s.customMessageServer.Stop)
 		if err := s.customMessageServer.Start(); err != nil {
@@ -6581,4 +6579,14 @@ func hasPersistentConnReq(reqs []*connmgr.ConnReq,
 	}
 
 	return false
+}
+
+// requiredRemoteMaxValue is the max_htlc_value_in_flight_msat we require of
+// a peer for a channel of the capacity given, at opening or, raised, after a
+// splice to that capacity.
+func requiredRemoteMaxValue(chanAmt btcutil.Amount) lnwire.MilliSatoshi {
+	// By default, we'll allow the remote peer to fully utilize the full
+	// bandwidth of the channel, minus our required reserve.
+	reserve := lnwire.NewMSatFromSatoshis(chanAmt / 100)
+	return lnwire.NewMSatFromSatoshis(chanAmt) - reserve
 }

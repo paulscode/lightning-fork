@@ -517,13 +517,24 @@ func (m *Machine) restore() error {
 
 	// The splice's transactions: one, or several when the peer replaced
 	// it, the latest paying the highest fee rate.
-	var attempts []*active
+	var (
+		attempts []*active
+
+		// The splice's last attempt agreed, dead ones included: a
+		// replacement inherits its values (bolts#20).
+		lastAgreed *channeldb.SpliceRecord
+	)
 	for _, r := range records {
 		// A dead one can't confirm: nothing to follow, though its
 		// funding stays in the channel's set.
 		n := r.Negotiation
 		if r.Retired || n == nil || n.Tx == nil {
 			continue
+		}
+		if lastAgreed == nil ||
+			n.AgreedAt > lastAgreed.Negotiation.AgreedAt {
+
+			lastAgreed = r
 		}
 		if n.Dead {
 			m.restoreDead(r)
@@ -539,15 +550,19 @@ func (m *Machine) restore() error {
 		return nil
 	}
 	// The latest is the one not yet signed both ways, if any (only the
-	// latest can be); else the highest fee rate, then the highest fee.
-	// Equal ones were both signed and published: either does.
+	// latest can be); else the highest fee rate, then the one agreed
+	// last, then the highest fee. Equal ones were both signed and
+	// published: either does.
 	sort.SliceStable(attempts, func(i, j int) bool {
 		si, sj := signedBoth(attempts[i]), signedBoth(attempts[j])
+		ai, aj := attempts[i].agreedAt, attempts[j].agreedAt
 		switch {
 		case si != sj:
 			return si
 		case attempts[i].feeRate != attempts[j].feeRate:
 			return attempts[i].feeRate < attempts[j].feeRate
+		case !ai.IsZero() && !aj.IsZero() && !ai.Equal(aj):
+			return ai.Before(aj)
 		default:
 			return attempts[i].res.Fee < attempts[j].res.Fee
 		}
@@ -562,6 +577,17 @@ func (m *Machine) restore() error {
 		}
 		c.phase = phasePending
 		a.replaced = append(a.replaced, c)
+	}
+
+	// Agreed after it, a later attempt was dropped or died: still the
+	// one a replacement inherits from.
+	if n := lastAgreed.Negotiation; lastAgreed.Txid() != a.txid &&
+		n.AgreedAt != 0 && time.Unix(n.AgreedAt, 0).After(a.agreedAt) {
+
+		a.lastAgreed = &inFlightPair{
+			ours:   n.OurMaxInFlight,
+			theirs: n.TheirMaxInFlight,
+		}
 	}
 
 	m.active = a
@@ -705,6 +731,8 @@ func restoredActive(r *channeldb.SpliceRecord) (*active, error) {
 		lockedSent:        n.LockedSent,
 		lockedReceived:    n.LockedReceived,
 		broadcastHeight:   n.BroadcastHeight,
+		ourMaxInFlight:    n.OurMaxInFlight,
+		theirMaxInFlight:  n.TheirMaxInFlight,
 	}
 	if n.AgreedAt != 0 {
 		a.agreedAt = time.Unix(n.AgreedAt, 0)
